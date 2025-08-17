@@ -123,33 +123,41 @@ realtime-en2ko-captions/
   * `st.components.v1.html(html_string, ...)`에 JSON 직렬화하여 내장
 * **AC**: ✅ 시작 클릭 시 토큰 발급 성공/실패 메시지 표시(로그/토스트)
 
-### Day 3 — 장치 권한/선택 & WebRTC 연결
+### Day 3 — 장치 권한/선택 & WebRTC 연결 ✅
 
-* [ ] 컴포넌트 JS:
+* [x] 컴포넌트 JS:
 
   * `navigator.mediaDevices.getUserMedia({audio:true})` 권한 요청
   * `enumerateDevices()`로 **audioinput** 나열(레이블 확인) → Streamlit selectbox와 동기화
   * 선택된 `deviceId`로 `getUserMedia({ audio: { deviceId, echoCancellation:false, noiseSuppression:false, autoGainControl:false }})` 재호출
-  * **AC**: USB/기본 마이크를 실제로 전환 가능, 레이블 보임 ([MDN Web Docs][2])
-* [ ] WebRTC **SDP 교환**
+  * **AC**: ✅ USB/기본 마이크를 실제로 전환 가능, 레이블 보임 ([MDN Web Docs][2])
+* [x] WebRTC **SDP 교환**
 
   * `RTCPeerConnection` 생성 → `createDataChannel('oai-events')`
   * 오디오 트랙 attach → `createOffer()`/`setLocalDescription()`
   * `fetch("https://api.openai.com/v1/realtime?model=...")` (Headers: `Authorization: Bearer <EPHEMERAL>`, `Content-Type: application/sdp`, `OpenAI-Beta: realtime=v1`) → `answer.sdp` 수신 → `setRemoteDescription()`
-  * **AC**: 연결 성공 로그, 데이터채널 open
+  * **AC**: ✅ 연결 성공 로그, 데이터채널 open
+* [x] **추가 개선사항**:
+  * 영어 강제 인식 및 번역 전용 모드 설정
+  * 실시간 자막 표시 개선 (unstable → stable 전환)
+  * 색상 구분 및 띄어쓰기 처리 최적화
 
-### Day 4 — 자막 스트림 처리(unstable→stable) + 크레딧 뷰어
+### Day 4 — 자막 스트림 처리(unstable→stable) + 크레딧 뷰어 ✅
 
-* [ ] 데이터채널 `message` 이벤트에서 **이벤트 라우팅**
+* [x] 데이터채널 `message` 이벤트에서 **이벤트 라우팅**
 
   * `type`이 `response.text.delta` 또는 전사 계열(예: `conversation.item.input_audio_transcription.delta`) 등 **델타 텍스트**를 임시 라인으로 반영
   * `...completed`/`...done`에서 **확정 라인**으로 append
-  * (모델 시스템 인스트럭션: “영어→한국어 자막(2줄/줄당\~23자), 고유명사 원어 유지”)
-* [ ] **크레딧형 뷰어**
+  * (모델 시스템 인스트럭션: ✅ "영어→한국어 자막(줄당 최대 20자), 고유명사 원어 유지, 구어체 번역")
+* [x] **크레딧형 뷰어**
 
   * `overflow:auto; resize:both;` 컨테이너 + **자동 스크롤(맨 아래일 때만)** 구현
-  * 필요시 `overflow-anchor`로 앵커링 제어(브라우저 지원 차이는 감수) ([MDN Web Docs][3])
-* **AC**: 사람이 말하면 **한국어 문장**이 아래로 계속 쌓이고, 사용자가 위로 스크롤하면 자동 스크롤이 멈춘다
+  * ✅ `overflow-anchor`로 앵커링 제어, `scroll-behavior: smooth` 적용
+* [x] **추가 개선사항**:
+  * 한국어 폰트 최적화 ('맑은 고딕' 우선)
+  * unstable/stable 시각적 구분 강화 (애니메이션, 그라데이션)
+  * 부드러운 스크롤 애니메이션 (`requestAnimationFrame` 활용)
+* **AC**: ✅ 사람이 말하면 **한국어 문장**이 아래로 계속 쌓이고, 사용자가 위로 스크롤하면 자동 스크롤이 멈춘다
 
 ### Day 5 — 정지/리셋 & 에러 핸들링/지연 배지
 

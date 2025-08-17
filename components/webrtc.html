@@ -59,31 +59,47 @@
       margin: 8px;
       border-radius: 8px;
       box-shadow: inset 0 1px 3px rgba(0,0,0,0.1);
+      min-height: 200px;
+      max-height: 80vh;
+      overflow-anchor: auto;
+      scroll-behavior: smooth;
     }
 
     .caption-line {
-      margin-bottom: 12px;
-      line-height: 1.6;
-      font-size: 16px;
+      margin-bottom: 8px;
+      line-height: 1.8;
+      font-size: 18px;
+      font-family: 'Malgun Gothic', '맑은 고딕', sans-serif;
+      padding: 8px 12px;
+      border-radius: 6px;
+      transition: all 0.3s ease;
+      word-break: keep-all;
+      overflow-wrap: break-word;
     }
 
     .unstable {
-      color: #888;
+      color: #666;
       font-style: italic;
-      opacity: 0.8;
-      border-left: 3px solid #ffd700;
-      padding-left: 12px;
-      background-color: #fafafa;
+      opacity: 0.7;
+      border-left: 4px solid #ff9800;
+      background: linear-gradient(90deg, #fff8e1 0%, #ffffff 100%);
+      box-shadow: 0 1px 3px rgba(255, 152, 0, 0.1);
+      animation: pulse 1.5s ease-in-out infinite alternate;
     }
 
     .stable {
-      color: #111;
-      font-weight: normal;
+      color: #222;
+      font-weight: 500;
       font-style: normal;
       opacity: 1;
-      border-left: 3px solid #4CAF50;
-      padding-left: 12px;
-      background-color: #fff;
+      border-left: 4px solid #4CAF50;
+      background: linear-gradient(90deg, #e8f5e8 0%, #ffffff 100%);
+      box-shadow: 0 2px 4px rgba(76, 175, 80, 0.1);
+    }
+
+    @keyframes pulse {
+      0% { opacity: 0.7; }
+      100% { opacity: 0.9; }
     }
 
     .badge {
@@ -356,8 +372,8 @@ function appendLine(text, className = 'stable') {
     emptyState.remove();
   }
 
-  // Check if we're at the bottom for auto-scroll
-  const atBottom = Math.abs(viewer.scrollHeight - viewer.scrollTop - viewer.clientHeight) < 4;
+  // Check if we're at the bottom for auto-scroll with more tolerance
+  const atBottom = Math.abs(viewer.scrollHeight - viewer.scrollTop - viewer.clientHeight) < 10;
 
   if (className === 'unstable') {
     // For unstable text, update the current line or create new one
@@ -386,9 +402,14 @@ function appendLine(text, className = 'stable') {
     }
   }
 
-  // Auto-scroll only if user was at bottom
+  // Auto-scroll only if user was at bottom with smooth animation
   if (atBottom) {
-    viewer.scrollTop = viewer.scrollHeight;
+    requestAnimationFrame(() => {
+      viewer.scrollTo({
+        top: viewer.scrollHeight,
+        behavior: 'smooth'
+      });
+    });
   }
 
   console.log(`[Caption] ${className}: ${text.trim()}`);
@@ -492,7 +513,7 @@ async function connectRealtime(ephemeral, model) {
       const sessionUpdate = {
         type: 'session.update',
         session: {
-          instructions: '입력 오디오는 무조건 영어입니다. 영어 발화를 한국어로 번역해서 텍스트로만 보여주세요. 대화하지 말고 번역만 하세요. 2줄/줄당 16~23자, 고유명사 원어 유지.',
+          instructions: '입력 오디오는 무조건 영어입니다. 영어 발화를 한국어 자막으로 번역해서 텍스트로만 출력하세요. 대화하지 말고 번역만 하세요. 자막 규칙: 1) 줄당 최대 20자 2) 문장당 최대 2줄 3) 고유명사는 원어 유지 4) 자연스러운 한국어 어순 5) 구어체 번역',
           voice: 'alloy',  // 음성은 사용하지 않지만 필수 필드
           input_audio_format: 'pcm16',
           output_audio_format: 'pcm16',  // 필수 필드이지만 실제로는 사용하지 않음
