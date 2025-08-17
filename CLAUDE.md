@@ -15,10 +15,17 @@ Real-time English-to-Korean caption system for conference scenarios. Browser con
 uv init --python 3.11
 uv add streamlit requests python-dotenv
 
-# Development workflow  
+# Development workflow
 uv sync                           # Install dependencies
 uv run streamlit run app.py       # Run development server
 uv run pytest -q                  # Run tests
+
+# Code quality
+uv run ruff check .               # Check linting issues
+uv run ruff check --fix .         # Fix auto-fixable linting issues
+uv run black .                    # Apply black formatting
+uv run pre-commit run --all-files # Run all pre-commit hooks
+uv run pre-commit install         # Install pre-commit hooks (one-time)
 
 # Docker deployment
 uv export -o requirements.txt     # Export for container
