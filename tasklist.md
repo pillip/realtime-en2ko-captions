@@ -99,19 +99,19 @@ realtime-en2ko-captions/
 
 ## 6) 작업 지시(1주 플랜) — **가장 빠른 결과 우선**
 
-### Day 1 — 프로젝트 세팅 & 기본 UI
+### Day 1 — 프로젝트 세팅 & 기본 UI ✅
 
-* [ ] **uv 초기화**
+* [x] **uv 초기화**
 
   * `uv init --python 3.11`
   * `uv add streamlit requests python-dotenv`
-* [ ] **Streamlit 기본 페이지** (`app.py`)
+* [x] **Streamlit 기본 페이지** (`app.py`)
 
   * 타이틀/설명 + 버튼 2개(시작/정지) + 오디오 장치 선택 selectbox UI
-* [ ] **컴포넌트 프레임** (`components/webrtc.html`)
+* [x] **컴포넌트 프레임** (`components/webrtc.html`)
 
   * 최소 HTML/JS 삽입, Streamlit에서 불러 렌더
-* **AC**: 앱 실행 시 UI 노출, 버튼 클릭/장치 선택 UI가 반응
+* **AC**: ✅ 앱 실행 시 UI 노출, 버튼 클릭/장치 선택 UI가 반응
 
 ### Day 2 — 에페메럴 토큰 발급 + 토큰 전달
 

@@ -1,0 +1,502 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { 
+      margin: 0; 
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      background: #fafafa;
+    }
+    
+    .bar { 
+      padding: 12px 16px; 
+      display: flex; 
+      gap: 12px; 
+      align-items: center; 
+      border-bottom: 1px solid #ddd;
+      background: white;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+    
+    .bar button {
+      padding: 8px 16px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      background: white;
+      cursor: pointer;
+      font-size: 14px;
+      transition: all 0.2s;
+    }
+    
+    .bar button:hover {
+      background: #f5f5f5;
+      border-color: #999;
+    }
+    
+    .bar button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+    
+    .bar select {
+      padding: 8px 12px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      background: white;
+      font-size: 14px;
+      min-width: 200px;
+    }
+    
+    #viewer { 
+      height: calc(100vh - 80px); 
+      padding: 16px; 
+      overflow: auto; 
+      resize: both; 
+      border-top: 1px solid #eee;
+      background: #fff;
+      margin: 8px;
+      border-radius: 8px;
+      box-shadow: inset 0 1px 3px rgba(0,0,0,0.1);
+    }
+    
+    .caption-line {
+      margin-bottom: 12px;
+      line-height: 1.6;
+      font-size: 16px;
+    }
+    
+    .unstable { 
+      color: #888; 
+      font-style: italic; 
+      opacity: 0.8;
+      border-left: 3px solid #ffd700;
+      padding-left: 12px;
+    }
+    
+    .stable { 
+      color: #111; 
+      border-left: 3px solid #4CAF50;
+      padding-left: 12px;
+    }
+    
+    .badge { 
+      font-size: 12px; 
+      color: #666;
+      padding: 4px 8px;
+      background: #f0f0f0;
+      border-radius: 12px;
+      border: 1px solid #ddd;
+    }
+    
+    .badge.connected { background: #e8f5e8; color: #2e7d32; border-color: #4caf50; }
+    .badge.connecting { background: #fff3e0; color: #f57c00; border-color: #ff9800; }
+    .badge.error { background: #ffebee; color: #c62828; border-color: #f44336; }
+    
+    .empty-state {
+      text-align: center;
+      color: #666;
+      margin-top: 100px;
+      font-size: 18px;
+    }
+    
+    .empty-state .icon {
+      font-size: 48px;
+      margin-bottom: 16px;
+      opacity: 0.5;
+    }
+    
+    /* 필요 시 overflow-anchor 제어 */
+    #viewer {
+      overflow-anchor: auto;
+    }
+  </style>
+</head>
+<body>
+  <div class="bar">
+    <button id="btnPerm">🎤 권한요청</button>
+    <select id="selMic" disabled>
+      <option value="">오디오 장치를 선택하세요</option>
+    </select>
+    <span id="status" class="badge">idle</span>
+    <div style="margin-left: auto; font-size: 12px; color: #666;">
+      <span id="latency"></span>
+    </div>
+  </div>
+  
+  <div id="viewer">
+    <div class="empty-state">
+      <div class="icon">🎙️</div>
+      <div>마이크 권한을 허용하고 시작 버튼을 눌러주세요</div>
+      <div style="font-size: 14px; margin-top: 8px; color: #999;">
+        영어로 말하면 한국어 자막이 실시간으로 표시됩니다
+      </div>
+    </div>
+  </div>
+
+<script>
+// Bootstrap data from Streamlit
+const BOOT = {{BOOTSTRAP_JSON}};
+
+// Global state
+let pc = null;
+let dc = null;
+let localStream = null;
+let currentDeviceId = null;
+let startTime = null;
+
+// DOM elements
+const viewer = document.getElementById('viewer');
+const selMic = document.getElementById('selMic');
+const statusEl = document.getElementById('status');
+const latencyEl = document.getElementById('latency');
+const btnPerm = document.getElementById('btnPerm');
+
+// Utility functions
+function logStatus(status, className = '') {
+  statusEl.textContent = status;
+  statusEl.className = `badge ${className}`;
+  console.log(`[Status] ${status}`);
+}
+
+function logLatency(ms) {
+  if (ms > 0) {
+    latencyEl.textContent = `${ms}ms`;
+  } else {
+    latencyEl.textContent = '';
+  }
+}
+
+// Permission and device handling
+async function ensurePermission() {
+  try {
+    logStatus('권한 요청 중...', 'connecting');
+    await navigator.mediaDevices.getUserMedia({ audio: true });
+    logStatus('권한 허용됨', 'connected');
+    return true;
+  } catch (error) {
+    logStatus('권한 거부됨', 'error');
+    console.error('Permission denied:', error);
+    return false;
+  }
+}
+
+async function listMics() {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const audioInputs = devices.filter(d => d.kind === 'audioinput');
+    
+    selMic.innerHTML = '<option value="">오디오 장치를 선택하세요</option>';
+    
+    audioInputs.forEach((device, index) => {
+      const option = document.createElement('option');
+      option.value = device.deviceId;
+      option.textContent = device.label || `마이크 ${index + 1}`;
+      selMic.appendChild(option);
+    });
+    
+    if (currentDeviceId) {
+      selMic.value = currentDeviceId;
+    }
+    
+    selMic.disabled = false;
+    console.log(`Found ${audioInputs.length} audio input devices`);
+  } catch (error) {
+    console.error('Failed to enumerate devices:', error);
+  }
+}
+
+async function getStream(deviceId) {
+  try {
+    // Stop previous stream
+    if (localStream) {
+      localStream.getTracks().forEach(track => track.stop());
+    }
+    
+    currentDeviceId = deviceId || selMic.value || undefined;
+    
+    const constraints = { 
+      audio: {
+        deviceId: currentDeviceId ? { exact: currentDeviceId } : undefined,
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+        sampleRate: 24000  // OpenAI Realtime optimal sample rate
+      }
+    };
+    
+    localStream = await navigator.mediaDevices.getUserMedia(constraints);
+    console.log('Audio stream acquired:', constraints);
+    return localStream;
+  } catch (error) {
+    console.error('Failed to get audio stream:', error);
+    throw error;
+  }
+}
+
+// Caption viewer functions
+function appendLine(text, className = 'stable') {
+  if (!text || !text.trim()) return;
+  
+  // Remove empty state if present
+  const emptyState = viewer.querySelector('.empty-state');
+  if (emptyState) {
+    emptyState.remove();
+  }
+  
+  // Check if we're at the bottom for auto-scroll
+  const atBottom = Math.abs(viewer.scrollHeight - viewer.scrollTop - viewer.clientHeight) < 4;
+  
+  const div = document.createElement('div');
+  div.className = `caption-line ${className}`;
+  div.textContent = text.trim();
+  viewer.appendChild(div);
+  
+  // Auto-scroll only if user was at bottom
+  if (atBottom) {
+    viewer.scrollTop = viewer.scrollHeight;
+  }
+  
+  console.log(`[Caption] ${className}: ${text.trim()}`);
+}
+
+function clearViewer() {
+  viewer.innerHTML = `
+    <div class="empty-state">
+      <div class="icon">🎙️</div>
+      <div>마이크 권한을 허용하고 시작 버튼을 눌러주세요</div>
+      <div style="font-size: 14px; margin-top: 8px; color: #999;">
+        영어로 말하면 한국어 자막이 실시간으로 표시됩니다
+      </div>
+    </div>
+  `;
+  console.log('[Caption] Viewer cleared');
+}
+
+// WebRTC connection handling
+async function connectRealtime(ephemeral, model) {
+  try {
+    logStatus('연결 중...', 'connecting');
+    startTime = Date.now();
+    
+    // Create RTCPeerConnection
+    pc = new RTCPeerConnection({
+      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+    });
+    
+    // Create data channel for OpenAI events
+    dc = pc.createDataChannel('oai-events');
+    
+    dc.onopen = () => {
+      logStatus('연결됨', 'connected');
+      console.log('[WebRTC] Data channel opened');
+      
+      // Send session configuration
+      const sessionUpdate = {
+        type: 'session.update',
+        session: {
+          instructions: '영어 발화를 한국어 자막으로 자연스럽게 번역. 2줄/줄당 16~23자, 고유명사 원어 유지.',
+          voice: 'alloy',
+          input_audio_format: 'pcm16',
+          output_audio_format: 'pcm16',
+          input_audio_transcription: {
+            model: 'whisper-1'
+          }
+        }
+      };
+      
+      dc.send(JSON.stringify(sessionUpdate));
+      console.log('[WebRTC] Session configuration sent');
+    };
+    
+    dc.onmessage = (event) => {
+      try {
+        const message = JSON.parse(event.data);
+        handleRealtimeMessage(message);
+      } catch (error) {
+        console.error('[WebRTC] Failed to parse message:', error);
+      }
+    };
+    
+    dc.onerror = (error) => {
+      console.error('[WebRTC] Data channel error:', error);
+      logStatus('연결 오류', 'error');
+    };
+    
+    dc.onclose = () => {
+      console.log('[WebRTC] Data channel closed');
+      logStatus('연결 종료됨', '');
+    };
+    
+    // Add audio track
+    const stream = await getStream(currentDeviceId);
+    stream.getTracks().forEach(track => {
+      pc.addTrack(track, stream);
+      console.log('[WebRTC] Audio track added');
+    });
+    
+    // Create offer and set local description
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    
+    // Send SDP to OpenAI
+    const sdpResponse = await fetch(
+      `https://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`,
+      {
+        method: 'POST',
+        body: offer.sdp,
+        headers: {
+          'Authorization': `Bearer ${ephemeral?.client_secret?.value}`,
+          'Content-Type': 'application/sdp',
+          'OpenAI-Beta': 'realtime=v1',
+        }
+      }
+    );
+    
+    if (!sdpResponse.ok) {
+      throw new Error(`SDP exchange failed: ${sdpResponse.status} ${sdpResponse.statusText}`);
+    }
+    
+    const answerSdp = await sdpResponse.text();
+    const answer = { type: 'answer', sdp: answerSdp };
+    await pc.setRemoteDescription(answer);
+    
+    console.log('[WebRTC] Connection established successfully');
+    
+  } catch (error) {
+    console.error('[WebRTC] Connection failed:', error);
+    logStatus('연결 실패', 'error');
+    throw error;
+  }
+}
+
+function handleRealtimeMessage(message) {
+  // Record first message latency
+  if (startTime && !latencyEl.textContent) {
+    const latency = Date.now() - startTime;
+    logLatency(latency);
+    startTime = null;
+  }
+  
+  console.log('[Realtime]', message.type, message);
+  
+  // Handle different message types
+  switch (message.type) {
+    case 'response.text.delta':
+      if (message.delta) {
+        appendLine(message.delta, 'unstable');
+      }
+      break;
+      
+    case 'response.text.done':
+      if (message.text) {
+        appendLine(message.text, 'stable');
+      }
+      break;
+      
+    case 'conversation.item.input_audio_transcription.delta':
+      if (message.delta) {
+        appendLine(`[음성인식] ${message.delta}`, 'unstable');
+      }
+      break;
+      
+    case 'conversation.item.input_audio_transcription.completed':
+      if (message.transcript) {
+        appendLine(`[원문] ${message.transcript}`, 'stable');
+      }
+      break;
+      
+    case 'error':
+      console.error('[Realtime] Error:', message.error);
+      logStatus('API 오류', 'error');
+      break;
+      
+    default:
+      // Handle other message types generically
+      if (message.delta || message.text) {
+        const text = message.delta || message.text;
+        const isUnstable = message.type?.includes('delta');
+        appendLine(text, isUnstable ? 'unstable' : 'stable');
+      }
+      break;
+  }
+}
+
+function closeConnection() {
+  try {
+    if (dc) {
+      dc.close();
+      dc = null;
+    }
+    
+    if (pc) {
+      pc.close();
+      pc = null;
+    }
+    
+    if (localStream) {
+      localStream.getTracks().forEach(track => track.stop());
+      localStream = null;
+    }
+    
+    logStatus('idle', '');
+    logLatency(0);
+    console.log('[WebRTC] Connection closed');
+  } catch (error) {
+    console.error('[WebRTC] Error closing connection:', error);
+  }
+}
+
+// Event handlers
+btnPerm.onclick = async () => {
+  const success = await ensurePermission();
+  if (success) {
+    await listMics();
+  }
+};
+
+selMic.onchange = async (event) => {
+  currentDeviceId = event.target.value;
+  console.log('[Device] Selected:', currentDeviceId);
+  
+  // If connected, we'd need to restart connection with new device
+  // For MVP, we'll just log the change
+  if (pc && pc.connectionState === 'connected') {
+    console.log('[Device] Device changed during connection - restart recommended');
+  }
+};
+
+// Bootstrap actions based on Streamlit state
+(async () => {
+  console.log('[Bootstrap] Action:', BOOT.action, BOOT);
+  
+  try {
+    if (BOOT.action === 'start' && BOOT.ephemeral) {
+      // Ensure permission and list devices
+      const hasPermission = await ensurePermission();
+      if (hasPermission) {
+        await listMics();
+        // Start WebRTC connection
+        await connectRealtime(BOOT.ephemeral, BOOT.model);
+      }
+    } else if (BOOT.action === 'stop') {
+      closeConnection();
+      clearViewer();
+    } else if (BOOT.action === 'idle') {
+      logStatus('대기 중', '');
+    }
+  } catch (error) {
+    console.error('[Bootstrap] Failed:', error);
+    logStatus('초기화 실패', 'error');
+  }
+})();
+
+// Cleanup on page unload
+window.addEventListener('beforeunload', () => {
+  closeConnection();
+});
+
+</script>
+</body>
+</html>
