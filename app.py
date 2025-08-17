@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-REALTIME_MODEL = os.getenv("REALTIME_MODEL", "gpt-4o-mini-realtime-preview")
+REALTIME_MODEL = os.getenv("REALTIME_MODEL", "gpt-4o-realtime-preview")
 
 st.set_page_config(page_title="Live EN→KO Captions", layout="wide")
 st.title("🎤 Live EN→KO Captions (Streamlit + Realtime)")
