@@ -113,15 +113,15 @@ realtime-en2ko-captions/
   * 최소 HTML/JS 삽입, Streamlit에서 불러 렌더
 * **AC**: ✅ 앱 실행 시 UI 노출, 버튼 클릭/장치 선택 UI가 반응
 
-### Day 2 — 에페메럴 토큰 발급 + 토큰 전달
+### Day 2 — 에페메럴 토큰 발급 + 토큰 전달 ✅
 
-* [ ] `app.py`에 **세션 생성 함수** 구현: `create_ephemeral_session(model) -> dict`
+* [x] `app.py`에 **세션 생성 함수** 구현: `create_ephemeral_session(model) -> dict`
 
   * `requests.post("/v1/realtime/sessions")` 호출, 응답 JSON 반환
-* [ ] **시작 버튼** 누르면 서버에서 토큰 발급 → `webrtc.html`에 **프로퍼티로 전달**
+* [x] **시작 버튼** 누르면 서버에서 토큰 발급 → `webrtc.html`에 **프로퍼티로 전달**
 
   * `st.components.v1.html(html_string, ...)`에 JSON 직렬화하여 내장
-* **AC**: 시작 클릭 시 토큰 발급 성공/실패 메시지 표시(로그/토스트)
+* **AC**: ✅ 시작 클릭 시 토큰 발급 성공/실패 메시지 표시(로그/토스트)
 
 ### Day 3 — 장치 권한/선택 & WebRTC 연결
 

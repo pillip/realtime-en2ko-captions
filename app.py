@@ -37,8 +37,20 @@ with st.sidebar:
 
 
 def create_ephemeral_session(model: str) -> dict:
-    """OpenAI Realtime API에서 에페메럴 세션 토큰을 생성합니다."""
-    assert OPENAI_API_KEY, "OPENAI_API_KEY not set"
+    """OpenAI Realtime API에서 에페메럴 세션 토큰을 생성합니다.
+    
+    Args:
+        model: 사용할 OpenAI 모델명 (예: gpt-4o-mini-realtime-preview)
+        
+    Returns:
+        dict: 에페메럴 토큰과 세션 정보가 포함된 응답
+        
+    Raises:
+        requests.exceptions.RequestException: API 호출 실패 시
+        ValueError: 잘못된 응답 형식 시
+    """
+    if not OPENAI_API_KEY or OPENAI_API_KEY.startswith("sk-test-"):
+        raise ValueError("유효하지 않은 OPENAI_API_KEY입니다. 실제 API 키를 설정해주세요.")
     
     url = "https://api.openai.com/v1/realtime/sessions"
     headers = {
@@ -48,12 +60,38 @@ def create_ephemeral_session(model: str) -> dict:
     }
     body = {
         "model": model,
-        # "voice": "none",  # 음성 출력 사용 안 함
+        "modalities": ["text", "audio"],
+        "instructions": "You are a helpful assistant that translates English speech to Korean captions in real-time.",
     }
     
-    r = requests.post(url, headers=headers, json=body, timeout=10)
-    r.raise_for_status()
-    return r.json()
+    try:
+        st.write(f"🔄 토큰 요청 중... (모델: {model})")
+        r = requests.post(url, headers=headers, json=body, timeout=15)
+        
+        if r.status_code == 401:
+            raise ValueError("API 키가 유효하지 않습니다. OPENAI_API_KEY를 확인해주세요.")
+        elif r.status_code == 429:
+            raise ValueError("API 요청 한도를 초과했습니다. 잠시 후 다시 시도해주세요.")
+        elif r.status_code == 400:
+            error_detail = r.json().get("error", {}).get("message", "알 수 없는 오류")
+            raise ValueError(f"잘못된 요청: {error_detail}")
+        
+        r.raise_for_status()
+        response_data = r.json()
+        
+        # 응답 검증
+        if "client_secret" not in response_data:
+            raise ValueError("응답에 client_secret이 없습니다.")
+        
+        st.write(f"✅ 토큰 발급 성공! (만료: {response_data.get('expires_at', 'N/A')})")
+        return response_data
+        
+    except requests.exceptions.Timeout:
+        raise ValueError("API 요청 시간이 초과되었습니다. 네트워크 연결을 확인해주세요.")
+    except requests.exceptions.ConnectionError:
+        raise ValueError("OpenAI API에 연결할 수 없습니다. 인터넷 연결을 확인해주세요.")
+    except requests.exceptions.RequestException as e:
+        raise ValueError(f"API 요청 실패: {str(e)}")
 
 
 # --- Session state initialization
@@ -63,18 +101,40 @@ if 'action' not in st.session_state:
 # --- Handle button clicks
 ephemeral = None
 if start:
+    # Clear previous error messages
+    if "error_message" in st.session_state:
+        del st.session_state["error_message"]
+    
     try:
         with st.spinner("에페메럴 토큰 생성 중..."):
             ephemeral = create_ephemeral_session(REALTIME_MODEL)
             st.session_state["ephemeral"] = ephemeral
             st.session_state["action"] = "start"
-        st.success("✅ 에페메럴 토큰 발급 완료! 브라우저에서 마이크 권한을 허용해주세요.")
-    except Exception as e:
-        st.error(f"❌ 토큰 발급 실패: {e}")
+            st.session_state["token_created_at"] = ephemeral.get("expires_at", "Unknown")
+        
+        # Success message with detailed info
+        expires_at = ephemeral.get("expires_at", "Unknown")
+        st.success(f"✅ 에페메럴 토큰 발급 완료! (만료: {expires_at})")
+        st.info("🎤 브라우저에서 마이크 권한을 허용하고 오디오 장치를 선택해주세요.")
+        
+    except ValueError as e:
+        st.error(f"❌ {str(e)}")
         st.session_state["action"] = "error"
+        st.session_state["error_message"] = str(e)
+    except Exception as e:
+        error_msg = f"예상치 못한 오류가 발생했습니다: {str(e)}"
+        st.error(f"❌ {error_msg}")
+        st.session_state["action"] = "error"
+        st.session_state["error_message"] = error_msg
+        # Log detailed error for debugging
+        st.write("**디버그 정보:**")
+        st.code(f"Error type: {type(e).__name__}\nError details: {str(e)}")
+        
 elif stop:
     st.session_state["action"] = "stop"
-    st.info("⏹️ 연결을 종료합니다.")
+    st.session_state.pop("ephemeral", None)  # Clear token
+    st.session_state.pop("error_message", None)  # Clear errors
+    st.info("⏹️ 연결을 종료하고 토큰을 삭제했습니다.")
 else:
     st.session_state.setdefault("action", "idle")
 
@@ -115,7 +175,7 @@ except Exception as e:
 # Footer
 st.markdown("---")
 st.markdown("🔧 **Debug Info**")
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 with col1:
     st.metric("Status", st.session_state["action"])
 with col2:
@@ -123,3 +183,21 @@ with col2:
 with col3:
     has_token = "✅" if st.session_state.get("ephemeral") else "❌"
     st.metric("Token", has_token)
+with col4:
+    token_expires = st.session_state.get("token_created_at", "N/A")
+    st.metric("Token Expires", token_expires if token_expires != "Unknown" else "N/A")
+
+# Show error details if any
+if st.session_state.get("error_message"):
+    with st.expander("❌ 오류 세부정보", expanded=False):
+        st.text(st.session_state["error_message"])
+
+# Show token details if available
+if st.session_state.get("ephemeral"):
+    with st.expander("🔑 토큰 정보", expanded=False):
+        token_data = st.session_state["ephemeral"]
+        st.json({
+            "client_secret_preview": token_data.get("client_secret", {}).get("value", "")[:20] + "...",
+            "expires_at": token_data.get("expires_at", "Unknown"),
+            "session_id": token_data.get("id", "Unknown")
+        })
