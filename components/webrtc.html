@@ -525,11 +525,11 @@ async function connectRealtime(ephemeral, model) {
       logStatus('연결됨', 'connected');
       console.log('[WebRTC] Data channel opened successfully');
 
-      // Send session configuration
+      // Send session configuration with auto-response enabled
       const sessionUpdate = {
         type: 'session.update',
         session: {
-          instructions: 'You are a translation-only bot. ONLY translate English to Korean. Do NOT greet, ask questions, or provide assistance. Do NOT say things like "I\'m here to assist" or "How may I help". ONLY output the Korean translation of the English input. No quotes, no explanations, no conversation. Just translate.',
+          instructions: 'You are a translation-only bot. ONLY translate English to Korean. Rules: 1) Translate naturally avoiding awkward passive voice 2) Use active voice when appropriate 3) Make it sound natural in Korean 4) No quotes, greetings, or explanations 5) Just output the Korean translation 6) Preserve proper nouns in original language. ALWAYS respond with Korean translation immediately after hearing English.',
           voice: 'alloy',  // 음성은 사용하지 않지만 필수 필드
           input_audio_format: 'pcm16',
           output_audio_format: 'pcm16',  // 필수 필드이지만 실제로는 사용하지 않음
@@ -541,7 +541,8 @@ async function connectRealtime(ephemeral, model) {
             type: 'server_vad',
             threshold: 0.5,
             prefix_padding_ms: 300,
-            silence_duration_ms: 700
+            silence_duration_ms: 700,
+            create_response: true  // 자동 응답 생성 활성화
           },
           modalities: ['text'],  // 텍스트 출력만 사용
           temperature: 0.6,  // 최소 허용값으로 일관된 번역 시도
@@ -736,9 +737,8 @@ function handleRealtimeMessage(message) {
 
         console.log('[Transcription] Completed:', message.transcript);
 
-        // 번역 요청 (강제, 상태 확인 완화)
-        if (dc && dc.readyState === 'open') {
-          // 이전 응답이 진행 중이어도 새로운 transcription에 대해서는 요청 허용
+        // 번역 요청 (응답 진행 중일 때는 대기)
+        if (dc && dc.readyState === 'open' && !responseInProgress) {
           responseInProgress = true;
           const responseCreateRequest = {
             type: 'response.create'
@@ -748,16 +748,14 @@ function handleRealtimeMessage(message) {
             dc.send(JSON.stringify(responseCreateRequest));
             console.log('[Translation] Requested translation for:', message.transcript);
 
-            // 타임아웃 설정 (5초 후 강제 해제)
+            // 타임아웃 설정 (10초 후 강제 해제, 표시하지 않음)
             setTimeout(() => {
               if (responseInProgress && pendingTranscript === message.transcript) {
-                console.warn('[Translation] Timeout - forcing completion');
+                console.warn('[Translation] Timeout - releasing response lock but keeping transcript');
                 responseInProgress = false;
-                displayTranscriptAndTranslation(pendingTranscript, '[번역 시간초과]');
-                pendingTranscript = null;
-                pendingTranslation = '';
+                // 타임아웃이어도 번역이 나중에 올 수 있으므로 표시하지 않음
               }
-            }, 5000);
+            }, 10000);
 
           } catch (error) {
             console.error('[Translation] Failed to request translation:', error);
@@ -766,6 +764,9 @@ function handleRealtimeMessage(message) {
             displayTranscriptAndTranslation(pendingTranscript, '[번역 실패]');
             pendingTranscript = null;
           }
+        } else if (responseInProgress) {
+          console.log('[Translation] Response already in progress, will wait for next opportunity');
+          // 응답이 진행 중이면 현재 transcript는 유지하고 다음 기회를 기다림
         } else {
           // 연결 상태가 좋지 않은 경우
           console.warn('[Translation] DataChannel not ready, state:', dc?.readyState);
@@ -824,8 +825,19 @@ function handleRealtimeMessage(message) {
           cleanText = '';
         }
 
-        // 최종 번역 결과 사용 (delta 누적 우선, 없으면 done 텍스트 사용)
-        const finalTranslation = pendingTranslation.trim() || cleanText;
+        // 최종 번역 결과 사용 (done 텍스트 우선, delta 누적은 보조)
+        const deltaTranslation = pendingTranslation.trim();
+        const doneTranslation = cleanText;
+
+        // done 텍스트가 더 완전한 경우가 많으므로 우선 사용
+        let finalTranslation = doneTranslation || deltaTranslation;
+
+        // 두 번역이 모두 있고 done이 delta보다 긴 경우 done 사용
+        if (doneTranslation && deltaTranslation && doneTranslation.length > deltaTranslation.length) {
+          finalTranslation = doneTranslation;
+        }
+
+        console.log('[Translation Debug] Delta:', deltaTranslation, 'Done:', doneTranslation, 'Final:', finalTranslation);
 
         if (finalTranslation && finalTranslation.length >= 1) {
           // 원문과 번역을 순서대로 표시
@@ -853,12 +865,26 @@ function handleRealtimeMessage(message) {
       console.log('[Realtime] Response generation completed');
       responseInProgress = false;
 
-      // 번역이 완료되지 않은 경우 강제 완료
+      // 번역이 완료되지 않은 경우에도 기다림 (이후에 번역이 올 수 있음)
       if (pendingTranscript && !pendingTranslation.trim()) {
-        console.warn('[Translation] Response done but no translation received');
-        displayTranscriptAndTranslation(pendingTranscript, '[번역 누락]');
-        pendingTranscript = null;
-        pendingTranslation = '';
+        console.log('[Translation] Response done but waiting for translation...');
+        // 번역 누락 표시하지 않고 기다림
+
+        // 응답이 완료되었으므로 새로운 번역 요청 시도
+        if (dc && dc.readyState === 'open') {
+          console.log('[Translation] Retrying translation request after response done');
+          responseInProgress = true;
+          const retryRequest = {
+            type: 'response.create'
+          };
+
+          try {
+            dc.send(JSON.stringify(retryRequest));
+          } catch (error) {
+            console.error('[Translation] Retry request failed:', error);
+            responseInProgress = false;
+          }
+        }
       }
       break;
 
