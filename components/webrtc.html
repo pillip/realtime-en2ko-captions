@@ -137,6 +137,7 @@
 <body>
   <div class="bar">
     <button id="btnPerm">🎤 권한요청</button>
+    <button id="btnPause" style="display: none;">⏸️ 일시정지</button>
     <select id="selMic" disabled>
       <option value="">오디오 장치를 선택하세요</option>
     </select>
@@ -156,6 +157,15 @@
     </div>
   </div>
 
+  <!-- Toast Container -->
+  <div id="toastContainer" style="
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    z-index: 1000;
+    max-width: 400px;
+  "></div>
+
 <script>
 // Bootstrap data from Streamlit
 const BOOT = {{BOOTSTRAP_JSON}};
@@ -168,8 +178,11 @@ let currentDeviceId = null;
 let startTime = null;
 let currentUnstableLine = null;  // 현재 진행 중인 unstable 라인
 let responseInProgress = false;  // 응답 생성 중인지 추적
+let currentResponseId = null;  // 현재 진행 중인 응답 ID 추적
 let pendingTranscript = null;  // 번역 대기 중인 원문
 let pendingTranslation = '';  // 누적 중인 번역
+let lastProcessedTranscript = null;  // 마지막으로 처리된 전사 중복 방지용
+let isPaused = false;  // 일시정지 상태
 
 // DOM elements
 const viewer = document.getElementById('viewer');
@@ -177,6 +190,7 @@ const selMic = document.getElementById('selMic');
 const statusEl = document.getElementById('status');
 const latencyEl = document.getElementById('latency');
 const btnPerm = document.getElementById('btnPerm');
+const btnPause = document.getElementById('btnPause');
 
 // Utility functions
 function logStatus(status, className = '') {
@@ -188,9 +202,81 @@ function logStatus(status, className = '') {
 function logLatency(ms) {
   if (ms > 0) {
     latencyEl.textContent = `${ms}ms`;
+
+    // Color code based on latency performance
+    if (ms < 1000) {
+      latencyEl.style.color = '#10b981'; // Green - excellent
+    } else if (ms < 2000) {
+      latencyEl.style.color = '#3b82f6'; // Blue - good
+    } else if (ms < 5000) {
+      latencyEl.style.color = '#f59e0b'; // Yellow - okay
+    } else {
+      latencyEl.style.color = '#ef4444'; // Red - slow
+    }
   } else {
     latencyEl.textContent = '';
+    latencyEl.style.color = '';
   }
+}
+
+// Toast functions
+function showToast(message, type = 'info', duration = 5000) {
+  const toastContainer = document.getElementById('toastContainer');
+  const toast = document.createElement('div');
+
+  const colors = {
+    'success': '#10b981',
+    'error': '#ef4444',
+    'warning': '#f59e0b',
+    'info': '#3b82f6'
+  };
+
+  toast.style.cssText = `
+    background: ${colors[type] || colors.info};
+    color: white;
+    padding: 12px 16px;
+    margin-bottom: 10px;
+    border-radius: 6px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    opacity: 0;
+    transform: translateX(100%);
+    transition: all 0.3s ease;
+    font-size: 14px;
+    line-height: 1.4;
+    word-break: break-word;
+  `;
+
+  toast.textContent = message;
+  toastContainer.appendChild(toast);
+
+  // Animate in
+  setTimeout(() => {
+    toast.style.opacity = '1';
+    toast.style.transform = 'translateX(0)';
+  }, 10);
+
+  // Auto remove
+  setTimeout(() => {
+    toast.style.opacity = '0';
+    toast.style.transform = 'translateX(100%)';
+    setTimeout(() => {
+      if (toast.parentNode) {
+        toast.parentNode.removeChild(toast);
+      }
+    }, 300);
+  }, duration);
+
+  // Manual close on click
+  toast.style.cursor = 'pointer';
+  toast.onclick = () => {
+    toast.style.opacity = '0';
+    toast.style.transform = 'translateX(100%)';
+    setTimeout(() => {
+      if (toast.parentNode) {
+        toast.parentNode.removeChild(toast);
+      }
+    }, 300);
+  };
 }
 
 // Permission and device handling
@@ -229,10 +315,17 @@ async function ensurePermission() {
     // Show more specific error message
     if (error.name === 'NotAllowedError') {
       console.error('[Permission] User denied microphone access');
+      showToast('마이크 권한이 필요합니다. 브라우저에서 마이크 사용을 허용해주세요.', 'warning', 8000);
     } else if (error.name === 'NotFoundError') {
       console.error('[Permission] No microphone found');
+      showToast('마이크를 찾을 수 없습니다. 마이크가 연결되어 있는지 확인해주세요.', 'error', 7000);
     } else if (error.name === 'NotReadableError') {
       console.error('[Permission] Microphone is being used by another application');
+      showToast('마이크가 다른 애플리케이션에서 사용 중입니다. 다른 프로그램을 종료하고 다시 시도해주세요.', 'warning', 8000);
+    } else if (error.message.includes('차단')) {
+      showToast(error.message, 'error', 8000);
+    } else {
+      showToast('마이크 권한 요청 중 오류가 발생했습니다. 다시 시도해주세요.', 'error', 6000);
     }
 
     return false;
@@ -485,9 +578,11 @@ async function connectRealtime(ephemeral, model) {
           break;
         case 'disconnected':
           logStatus('연결 끊김', 'error');
+          showToast('서버와의 연결이 끊어졌습니다. 다시 시도해주세요.', 'warning', 5000);
           break;
         case 'failed':
           logStatus('연결 실패', 'error');
+          showToast('서버 연결에 실패했습니다. 네트워크를 확인하고 다시 시도해주세요.', 'error', 7000);
           console.error('[WebRTC] Connection failed - cleaning up');
           closeConnection();
           break;
@@ -525,11 +620,18 @@ async function connectRealtime(ephemeral, model) {
       logStatus('연결됨', 'connected');
       console.log('[WebRTC] Data channel opened successfully');
 
+      // Show pause button when connected
+      btnPause.style.display = 'inline-block';
+
+      // Reset timer to measure time until first content
+      startTime = Date.now();
+      console.log('[Latency] Starting content latency measurement');
+
       // Send session configuration with auto-response enabled
       const sessionUpdate = {
         type: 'session.update',
         session: {
-          instructions: 'You are a translation-only bot. ONLY translate English to Korean. Rules: 1) Translate naturally avoiding awkward passive voice 2) Use active voice when appropriate 3) Make it sound natural in Korean 4) No quotes, greetings, or explanations 5) Just output the Korean translation 6) Preserve proper nouns in original language. ALWAYS respond with Korean translation immediately after hearing English.',
+          instructions: 'You are a real-time English-to-Korean translator. Your ONLY job is to translate English text to Korean. Never refuse translation requests. Never say "I cannot assist" or similar phrases. Never ask questions or provide explanations. Just translate every English input to natural Korean. Rules: 1) Always translate, no exceptions 2) Output only Korean translation 3) Use natural Korean expressions 4) Keep proper nouns in original language 5) No quotes, greetings, or refusals allowed. Example: "Hello world" → "안녕하세요 세상" (just output the Korean, nothing else)',
           voice: 'alloy',  // 음성은 사용하지 않지만 필수 필드
           input_audio_format: 'pcm16',
           output_audio_format: 'pcm16',  // 필수 필드이지만 실제로는 사용하지 않음
@@ -656,17 +758,31 @@ async function connectRealtime(ephemeral, model) {
 
     // Provide user-friendly error messages
     let userMessage = '연결 실패';
+    let toastMessage = error.message || '알 수 없는 오류가 발생했습니다.';
+    let toastType = 'error';
+
     if (error.message?.includes('인증')) {
       userMessage = '인증 실패';
+      toastType = 'warning';
     } else if (error.message?.includes('토큰')) {
       userMessage = '토큰 오류';
+      toastType = 'warning';
+    } else if (error.message?.includes('429') || error.message?.includes('한도')) {
+      userMessage = '요청 한도 초과';
+      toastType = 'warning';
     } else if (error.message?.includes('네트워크')) {
       userMessage = '네트워크 오류';
+      toastMessage = '네트워크 연결을 확인하고 다시 시도해주세요.';
     } else if (error.message?.includes('오디오')) {
       userMessage = '오디오 오류';
+      toastMessage = '오디오 장치를 확인하고 다시 시도해주세요.';
+    } else if (error.name === 'TypeError' && error.message.includes('fetch')) {
+      userMessage = '네트워크 오류';
+      toastMessage = '인터넷 연결을 확인하고 다시 시도해주세요.';
     }
 
     logStatus(userMessage, 'error');
+    showToast(toastMessage, toastType, 8000);
 
     // Clean up on failure
     closeConnection();
@@ -698,11 +814,34 @@ function waitForIceGathering(pc, timeout = 5000) {
 }
 
 function handleRealtimeMessage(message) {
-  // Record first message latency
+  // Skip processing if paused (except for connection-related messages)
+  if (isPaused && !message.type?.includes('error') && !message.type?.includes('server.heartbeat')) {
+    console.log('[Paused] Ignoring message:', message.type);
+    return;
+  }
+
+  // Record first meaningful content latency (text delta or transcription)
   if (startTime && !latencyEl.textContent) {
-    const latency = Date.now() - startTime;
-    logLatency(latency);
-    startTime = null;
+    const isTextContent = message.type?.includes('delta') &&
+      (message.delta || message.text || message.transcript);
+    const isTranscription = message.type?.includes('transcription') &&
+      (message.transcript || message.item?.content);
+
+    if (isTextContent || isTranscription) {
+      const latency = Date.now() - startTime;
+      logLatency(latency);
+      console.log('[Latency] First content received after', latency, 'ms');
+      startTime = null;
+
+      // Show success toast for good latency
+      if (latency < 2000) {
+        showToast(`연결 완료! (${latency}ms)`, 'success', 3000);
+      } else if (latency < 5000) {
+        showToast(`연결 완료 (${latency}ms) - 지연이 약간 있습니다`, 'info', 4000);
+      } else {
+        showToast(`연결 완료 (${latency}ms) - 네트워크가 느립니다`, 'warning', 5000);
+      }
+    }
   }
 
   console.log('[Realtime]', message.type, message);
@@ -726,19 +865,35 @@ function handleRealtimeMessage(message) {
 
     case 'conversation.item.input_audio_transcription.completed':
       if (message.transcript) {
+        const transcript = message.transcript.trim();
+
+        // 중복 전사 필터링 - 같은 내용이면 무시
+        if (transcript === lastProcessedTranscript) {
+          console.log('[Transcription] Duplicate transcript ignored:', transcript);
+          break;
+        }
+
+        // 너무 짧은 전사는 무시 (노이즈 방지)
+        if (transcript.length < 2) {
+          console.log('[Transcription] Too short, ignored:', transcript);
+          break;
+        }
+
+        lastProcessedTranscript = transcript;
+        console.log('[Transcription] Processing new transcript:', transcript);
+
         // 이전 번역이 완료되지 않았다면 강제로 완료 처리
-        if (pendingTranscript) {
-          displayTranscriptAndTranslation(pendingTranscript, pendingTranslation || '[번역 없음]');
+        if (pendingTranscript && pendingTranscript !== transcript) {
+          console.log('[Translation] Force completing previous:', pendingTranscript);
+          displayTranscriptAndTranslation(pendingTranscript, pendingTranslation || '[번역 중단]');
         }
 
         // 새로운 원문 설정
-        pendingTranscript = message.transcript;
+        pendingTranscript = transcript;
         pendingTranslation = '';
 
-        console.log('[Transcription] Completed:', message.transcript);
-
-        // 번역 요청 (응답 진행 중일 때는 대기)
-        if (dc && dc.readyState === 'open' && !responseInProgress) {
+        // 번역 요청 - 더 엄격한 조건 확인
+        if (dc && dc.readyState === 'open' && !responseInProgress && !currentResponseId) {
           responseInProgress = true;
           const responseCreateRequest = {
             type: 'response.create'
@@ -746,32 +901,36 @@ function handleRealtimeMessage(message) {
 
           try {
             dc.send(JSON.stringify(responseCreateRequest));
-            console.log('[Translation] Requested translation for:', message.transcript);
+            console.log('[Translation] Requested translation for:', transcript);
 
-            // 타임아웃 설정 (10초 후 강제 해제, 표시하지 않음)
+            // 응답 대기 타임아웃 (15초로 연장)
             setTimeout(() => {
-              if (responseInProgress && pendingTranscript === message.transcript) {
-                console.warn('[Translation] Timeout - releasing response lock but keeping transcript');
+              if (responseInProgress && pendingTranscript === transcript) {
+                console.warn('[Translation] Response timeout for:', transcript);
                 responseInProgress = false;
-                // 타임아웃이어도 번역이 나중에 올 수 있으므로 표시하지 않음
+                currentResponseId = null;
+
+                // 타임아웃 시 원문만 표시
+                if (pendingTranscript) {
+                  displayTranscriptAndTranslation(pendingTranscript, '[번역 시간초과]');
+                  pendingTranscript = null;
+                  pendingTranslation = '';
+                }
               }
-            }, 10000);
+            }, 15000);
 
           } catch (error) {
             console.error('[Translation] Failed to request translation:', error);
             responseInProgress = false;
-            // 번역 요청 실패 시 원문만 표시
-            displayTranscriptAndTranslation(pendingTranscript, '[번역 실패]');
+            currentResponseId = null;
+            displayTranscriptAndTranslation(transcript, '[번역 실패]');
             pendingTranscript = null;
+            pendingTranslation = '';
           }
-        } else if (responseInProgress) {
-          console.log('[Translation] Response already in progress, will wait for next opportunity');
-          // 응답이 진행 중이면 현재 transcript는 유지하고 다음 기회를 기다림
         } else {
-          // 연결 상태가 좋지 않은 경우
-          console.warn('[Translation] DataChannel not ready, state:', dc?.readyState);
-          displayTranscriptAndTranslation(pendingTranscript, '[연결 불안정]');
-          pendingTranscript = null;
+          // 응답이 진행 중이면 원문만 표시 (번역은 나중에 처리)
+          console.log('[Translation] Busy - showing transcript only:', transcript);
+          displayTranscriptAndTranslation(transcript, '');
         }
       }
       break;
@@ -837,16 +996,35 @@ function handleRealtimeMessage(message) {
           finalTranslation = doneTranslation;
         }
 
-        console.log('[Translation Debug] Delta:', deltaTranslation, 'Done:', doneTranslation, 'Final:', finalTranslation);
+        // 거부 응답 필터링
+        const refusalPhrases = [
+          "I'm sorry, but I can't assist",
+          "I cannot assist",
+          "I'm unable to help",
+          "I can't help",
+          "I'm not able to",
+          "I apologize, but I cannot"
+        ];
 
-        if (finalTranslation && finalTranslation.length >= 1) {
-          // 원문과 번역을 순서대로 표시
-          displayTranscriptAndTranslation(pendingTranscript, finalTranslation);
-          console.log('[Translation] Completed:', finalTranslation);
+        const isRefusal = refusalPhrases.some(phrase =>
+          finalTranslation.toLowerCase().includes(phrase.toLowerCase())
+        );
+
+        if (isRefusal) {
+          console.log('[Translation] Detected refusal, showing transcript only:', finalTranslation);
+          displayTranscriptAndTranslation(pendingTranscript, '[번역 거부됨]');
         } else {
-          // 번역이 없는 경우 원문만 표시
-          displayTranscriptAndTranslation(pendingTranscript, '[번역 없음]');
-          console.log('[Translation] No translation received for:', pendingTranscript);
+          console.log('[Translation Debug] Delta:', deltaTranslation, 'Done:', doneTranslation, 'Final:', finalTranslation);
+
+          if (finalTranslation && finalTranslation.length >= 1) {
+            // 원문과 번역을 순서대로 표시
+            displayTranscriptAndTranslation(pendingTranscript, finalTranslation);
+            console.log('[Translation] Completed:', finalTranslation);
+          } else {
+            // 번역이 없는 경우 원문만 표시
+            displayTranscriptAndTranslation(pendingTranscript, '[번역 없음]');
+            console.log('[Translation] No translation received for:', pendingTranscript);
+          }
         }
 
         // 상태 초기화
@@ -857,34 +1035,22 @@ function handleRealtimeMessage(message) {
 
     // Response generation tracking
     case 'response.created':
-      console.log('[Realtime] Response generation started');
+      currentResponseId = message.response?.id || Date.now().toString();
+      console.log('[Realtime] Response generation started, ID:', currentResponseId);
       responseInProgress = true;
       break;
 
     case 'response.done':
       console.log('[Realtime] Response generation completed');
       responseInProgress = false;
+      currentResponseId = null;
 
-      // 번역이 완료되지 않은 경우에도 기다림 (이후에 번역이 올 수 있음)
+      // 번역이 완료되지 않은 경우 원문만 표시
       if (pendingTranscript && !pendingTranslation.trim()) {
-        console.log('[Translation] Response done but waiting for translation...');
-        // 번역 누락 표시하지 않고 기다림
-
-        // 응답이 완료되었으므로 새로운 번역 요청 시도
-        if (dc && dc.readyState === 'open') {
-          console.log('[Translation] Retrying translation request after response done');
-          responseInProgress = true;
-          const retryRequest = {
-            type: 'response.create'
-          };
-
-          try {
-            dc.send(JSON.stringify(retryRequest));
-          } catch (error) {
-            console.error('[Translation] Retry request failed:', error);
-            responseInProgress = false;
-          }
-        }
+        console.log('[Translation] Response done but no translation - showing transcript only');
+        displayTranscriptAndTranslation(pendingTranscript, '[번역 없음]');
+        pendingTranscript = null;
+        pendingTranslation = '';
       }
       break;
 
@@ -947,17 +1113,25 @@ function handleRealtimeMessage(message) {
       const errorCode = message.error?.code;
       const errorMessage = message.error?.message || '알 수 없는 오류';
 
-      if (errorCode === 'invalid_api_key') {
+      if (errorCode === 'invalid_api_key' || errorCode === 'unauthorized') {
         logStatus('인증 오류', 'error');
+        showToast('인증 토큰이 유효하지 않습니다. 새로 시작해주세요.', 'error', 7000);
         appendLine('[오류] 인증 토큰이 유효하지 않습니다.', 'stable');
-      } else if (errorCode === 'rate_limit_exceeded') {
+      } else if (errorCode === 'rate_limit_exceeded' || errorCode === 'too_many_requests') {
         logStatus('사용량 한도 초과', 'error');
+        showToast('사용량 한도를 초과했습니다. 잠시 후 다시 시도해주세요.', 'warning', 10000);
         appendLine('[오류] 사용량 한도를 초과했습니다. 잠시 후 다시 시도해주세요.', 'stable');
       } else if (errorCode === 'insufficient_quota') {
         logStatus('할당량 부족', 'error');
+        showToast('계정 할당량이 부족합니다. OpenAI 계정을 확인해주세요.', 'error', 10000);
         appendLine('[오류] 계정 할당량이 부족합니다.', 'stable');
+      } else if (errorCode === 'session_expired') {
+        logStatus('세션 만료', 'error');
+        showToast('세션이 만료되었습니다. 새로 시작해주세요.', 'warning', 7000);
+        appendLine('[오류] 세션이 만료되었습니다.', 'stable');
       } else {
         logStatus('API 오류', 'error');
+        showToast(`API 오류가 발생했습니다: ${errorMessage}`, 'error', 7000);
         appendLine(`[오류] ${errorMessage}`, 'stable');
       }
       break;
@@ -1005,8 +1179,15 @@ function closeConnection() {
 
     currentUnstableLine = null;  // unstable 라인 상태 초기화
     responseInProgress = false;  // 응답 상태 초기화
+    currentResponseId = null;  // 응답 ID 초기화
     pendingTranscript = null;  // 대기 중인 원문 초기화
     pendingTranslation = '';  // 누적 중인 번역 초기화
+    lastProcessedTranscript = null;  // 중복 방지 초기화
+    isPaused = false;  // 일시정지 상태 초기화
+
+    // UI 초기화
+    btnPause.style.display = 'none';
+    btnPause.textContent = '⏸️ 일시정지';
     logStatus('idle', '');
     logLatency(0);
     console.log('[WebRTC] Connection closed');
@@ -1020,6 +1201,26 @@ btnPerm.onclick = async () => {
   const success = await ensurePermission();
   if (success) {
     await listMics();
+  }
+};
+
+// 일시정지/재개 버튼 이벤트 핸들러
+btnPause.onclick = () => {
+  if (isPaused) {
+    // 재개
+    isPaused = false;
+    btnPause.textContent = '⏸️ 일시정지';
+    logStatus('연결됨', 'connected');
+    showToast('재개되었습니다', 'success', 2000);
+    console.log('[Control] Resumed');
+  } else {
+    // 일시정지
+    isPaused = true;
+    btnPause.textContent = '▶️ 재개';
+    logStatus('일시정지됨', 'warning');
+    clearViewer();
+    showToast('일시정지되었습니다', 'info', 2000);
+    console.log('[Control] Paused');
   }
 };
 

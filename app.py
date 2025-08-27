@@ -26,8 +26,17 @@ with st.sidebar:
 
     st.success("✅ API Key 설정됨")
 
-    start = st.button("🎯 시작", type="primary", help="실시간 캡션 시작")
-    stop = st.button("⏹️ 정지", help="연결 종료 및 캡션 초기화")
+    # 버튼을 가로로 나란히 배치
+    col1, col2 = st.columns([1, 1])
+
+    with col1:
+        start = st.button(
+            "🎯 시작", type="primary", help="실시간 캡션 시작", use_container_width=True
+        )
+    with col2:
+        stop = st.button(
+            "⏹️ 정지", help="연결 종료 및 캡션 초기화", use_container_width=True
+        )
 
     st.markdown("---")
     st.subheader("🎚️ Settings")
