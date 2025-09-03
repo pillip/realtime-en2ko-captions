@@ -4,171 +4,440 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
+    * {
+      box-sizing: border-box;
+    }
+
     body {
       margin: 0;
-      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-      background: #fafafa;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: linear-gradient(135deg, #0f0f23 0%, #1a1a2e 50%, #16213e 100%);
+      color: #ffffff;
+      overflow: hidden;
+      height: 100vh;
     }
 
-    .bar {
-      padding: 12px 16px;
-      display: flex;
-      gap: 12px;
-      align-items: center;
-      border-bottom: 1px solid #ddd;
-      background: white;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-    }
-
-    .bar button {
-      padding: 8px 16px;
-      border: 1px solid #ddd;
-      border-radius: 6px;
-      background: white;
+    /* 플로팅 설정 버튼 */
+    .settings-fab {
+      position: fixed;
+      top: 24px;
+      right: 24px;
+      width: 56px;
+      height: 56px;
+      background: rgba(255, 255, 255, 0.1);
+      border: none;
+      border-radius: 50%;
       cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 24px;
+      z-index: 1001;
+      backdrop-filter: blur(10px);
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+    }
+
+    .settings-fab:hover {
+      background: rgba(255, 255, 255, 0.2);
+      transform: scale(1.1);
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+    }
+
+    .settings-fab.active {
+      background: rgba(59, 130, 246, 0.3);
+      color: #3b82f6;
+    }
+
+    /* 설정 패널 */
+    .settings-panel {
+      position: fixed;
+      top: 0;
+      right: 0;
+      width: 380px;
+      height: 100vh;
+      background: rgba(15, 15, 35, 0.95);
+      backdrop-filter: blur(20px);
+      border-left: 1px solid rgba(255, 255, 255, 0.1);
+      padding: 100px 28px 28px;
+      transform: translateX(100%);
+      transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+      z-index: 1000;
+      box-shadow: -10px 0 50px rgba(0, 0, 0, 0.5);
+      overflow-y: auto;
+    }
+
+    .settings-panel.open {
+      transform: translateX(0);
+    }
+
+    .settings-panel h2 {
+      margin: 0 0 32px 0;
+      color: #ffffff;
+      font-size: 24px;
+      font-weight: 300;
+    }
+
+    .control-group {
+      margin-bottom: 32px;
+    }
+
+    .control-group label {
+      display: block;
+      margin-bottom: 12px;
+      color: #a0a0a0;
       font-size: 14px;
-      transition: all 0.2s;
+      font-weight: 500;
+      letter-spacing: 0.5px;
     }
 
-    .bar button:hover {
-      background: #f5f5f5;
-      border-color: #999;
+    .control-group button {
+      width: 100%;
+      padding: 16px 20px;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.08);
+      color: white;
+      cursor: pointer;
+      font-size: 15px;
+      font-weight: 500;
+      transition: all 0.3s ease;
+      margin-bottom: 12px;
     }
 
-    .bar button:disabled {
-      opacity: 0.6;
+    .control-group button:hover {
+      background: rgba(255, 255, 255, 0.15);
+      border-color: rgba(255, 255, 255, 0.3);
+      transform: translateY(-1px);
+    }
+
+    .control-group button:disabled {
+      opacity: 0.4;
       cursor: not-allowed;
+      transform: none;
     }
 
-    .bar select {
-      padding: 8px 12px;
-      border: 1px solid #ddd;
-      border-radius: 6px;
-      background: white;
-      font-size: 14px;
-      min-width: 200px;
-    }
-
-    #viewer {
-      height: calc(100vh - 80px);
+    .control-group select {
+      width: 100%;
       padding: 16px;
-      overflow: auto;
-      resize: both;
-      border-top: 1px solid #eee;
-      background: #fff;
-      margin: 8px;
-      border-radius: 8px;
-      box-shadow: inset 0 1px 3px rgba(0,0,0,0.1);
-      min-height: 200px;
-      max-height: 80vh;
-      overflow-anchor: auto;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.08);
+      color: white;
+      font-size: 15px;
+    }
+
+    /* 상태 표시 */
+    .status-overlay {
+      position: fixed;
+      bottom: 32px;
+      left: 32px;
+      display: flex;
+      gap: 16px;
+      align-items: center;
+      z-index: 999;
+    }
+
+    .status-chip {
+      padding: 12px 20px;
+      background: rgba(0, 0, 0, 0.6);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 25px;
+      font-size: 14px;
+      font-weight: 500;
+      backdrop-filter: blur(10px);
+      transition: all 0.3s ease;
+    }
+
+    .status-chip.connected {
+      background: rgba(16, 185, 129, 0.2);
+      border-color: #10b981;
+      color: #10b981;
+    }
+
+    .status-chip.connecting {
+      background: rgba(59, 130, 246, 0.2);
+      border-color: #3b82f6;
+      color: #3b82f6;
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    .status-chip.error {
+      background: rgba(239, 68, 68, 0.2);
+      border-color: #ef4444;
+      color: #ef4444;
+    }
+
+    /* 실시간으로 버튼 - 상태바와 같은 높이 */
+    .back-to-live {
+      position: fixed;
+      bottom: 32px;  /* 상태바와 같은 높이 */
+      right: 32px;   /* 오른쪽에 배치 */
+      background: #10b981;
+      color: white;
+      border: none;
+      border-radius: 50px;
+      padding: 12px 20px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      z-index: 998;
+      box-shadow: 0 4px 20px rgba(16, 185, 129, 0.3);
+      transition: all 0.3s ease;
+      display: none;
+      align-items: center;
+      gap: 8px;
+      animation: bounce-gentle 2s ease-in-out infinite;
+    }
+
+    .back-to-live:hover {
+      background: #059669;
+      transform: translateY(-2px);
+      box-shadow: 0 8px 30px rgba(16, 185, 129, 0.4);
+    }
+
+    @keyframes bounce-gentle {
+      0%, 100% { transform: translateY(0px); }
+      50% { transform: translateY(-4px); }
+    }
+
+    /* 메인 캡션 뷰어 */
+    #viewer {
+      height: 100vh;
+      width: 100%;
+      padding: 120px 40px 120px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      background: transparent;
       scroll-behavior: smooth;
     }
 
     .caption-line {
-      margin-bottom: 8px;
-      line-height: 1.8;
-      font-size: 18px;
-      font-family: 'Malgun Gothic', '맑은 고딕', sans-serif;
-      padding: 8px 12px;
-      border-radius: 6px;
-      transition: all 0.3s ease;
+      margin-bottom: 24px;
+      line-height: 1.5;
+      padding: 20px 32px;
+      border-radius: 16px;
+      transition: all 0.4s ease;
       word-break: keep-all;
       overflow-wrap: break-word;
+      max-width: 90%;
+      margin-left: 0;
+      margin-right: auto;
+      text-align: left;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
     }
 
-    .unstable {
-      color: #666;
+    /* 원문 스타일 */
+    .caption-line.original {
+      font-size: 16px;
+      color: rgba(255, 255, 255, 0.6);
       font-style: italic;
-      opacity: 0.7;
-      border-left: 4px solid #ff9800;
-      background: linear-gradient(90deg, #fff8e1 0%, #ffffff 100%);
-      box-shadow: 0 1px 3px rgba(255, 152, 0, 0.1);
-      animation: pulse 1.5s ease-in-out infinite alternate;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-left: 3px solid rgba(255, 255, 255, 0.4);
+      margin-bottom: 12px;
+      font-weight: 300;
+      max-width: 85%;
     }
 
-    .stable {
-      color: #222;
+    /* 번역된 자막 스타일 */
+    .caption-line.stable {
+      font-size: 28px;
+      color: #ffffff;
       font-weight: 500;
-      font-style: normal;
-      opacity: 1;
-      border-left: 4px solid #4CAF50;
-      background: linear-gradient(90deg, #e8f5e8 0%, #ffffff 100%);
-      box-shadow: 0 2px 4px rgba(76, 175, 80, 0.1);
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-left: 4px solid #10b981;
+      box-shadow:
+        0 8px 32px rgba(0, 0, 0, 0.3),
+        inset 0 1px 0 rgba(255, 255, 255, 0.1);
+      max-width: 90%;
+    }
+
+    /* 실시간 입력 중 */
+    .caption-line.unstable {
+      font-size: 26px;
+      color: #fbbf24;
+      font-style: italic;
+      font-weight: 400;
+      background: rgba(251, 191, 36, 0.1);
+      border: 1px solid rgba(251, 191, 36, 0.3);
+      border-left: 4px solid #fbbf24;
+      animation: breathe 2s ease-in-out infinite;
+      max-width: 88%;
+    }
+
+    @keyframes breathe {
+      0%, 100% { opacity: 0.8; transform: scale(1); }
+      50% { opacity: 1; transform: scale(1.02); }
     }
 
     @keyframes pulse {
-      0% { opacity: 0.7; }
-      100% { opacity: 0.9; }
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.7; }
     }
 
-    .badge {
-      font-size: 12px;
-      color: #666;
-      padding: 4px 8px;
-      background: #f0f0f0;
-      border-radius: 12px;
-      border: 1px solid #ddd;
-    }
-
-    .badge.connected { background: #e8f5e8; color: #2e7d32; border-color: #4caf50; }
-    .badge.connecting { background: #fff3e0; color: #f57c00; border-color: #ff9800; }
-    .badge.error { background: #ffebee; color: #c62828; border-color: #f44336; }
-
-    .empty-state {
+    /* 빈 상태 */
+    .welcome-state {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
       text-align: center;
-      color: #666;
-      margin-top: 100px;
-      font-size: 18px;
+      color: rgba(255, 255, 255, 0.7);
+      max-width: 600px;
     }
 
-    .empty-state .icon {
-      font-size: 48px;
+    .welcome-state .icon {
+      font-size: 80px;
+      margin-bottom: 32px;
+      opacity: 0.8;
+      filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.3));
+    }
+
+    .welcome-state h1 {
+      font-size: 36px;
+      font-weight: 300;
       margin-bottom: 16px;
-      opacity: 0.5;
+      color: #ffffff;
     }
 
-    /* 필요 시 overflow-anchor 제어 */
-    #viewer {
-      overflow-anchor: auto;
+    .welcome-state p {
+      font-size: 18px;
+      color: rgba(255, 255, 255, 0.6);
+      margin-bottom: 32px;
+      line-height: 1.6;
+    }
+
+    .welcome-state .hint {
+      font-size: 14px;
+      color: rgba(255, 255, 255, 0.4);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+
+    /* 반응형 디자인 */
+    @media (max-width: 768px) {
+      .settings-panel {
+        width: 100%;
+      }
+
+      .caption-line.stable {
+        font-size: 22px;
+        padding: 16px 20px;
+        max-width: 95%;
+      }
+
+      .caption-line.original {
+        font-size: 14px;
+        padding: 12px 16px;
+      }
+
+      #viewer {
+        padding: 100px 20px 100px;
+      }
+
+      .welcome-state h1 {
+        font-size: 24px;
+      }
+
+      .welcome-state p {
+        font-size: 16px;
+      }
+
+      /* 모바일에서 버튼 위치 조정 */
+      .back-to-live {
+        bottom: 100px;
+        right: 20px;
+        padding: 10px 16px;
+        font-size: 13px;
+      }
+    }
+
+    /* 스크롤바 스타일링 */
+    #viewer::-webkit-scrollbar {
+      width: 8px;
+    }
+
+    #viewer::-webkit-scrollbar-track {
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 4px;
+    }
+
+    #viewer::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.3);
+      border-radius: 4px;
+    }
+
+    #viewer::-webkit-scrollbar-thumb:hover {
+      background: rgba(255, 255, 255, 0.5);
     }
   </style>
 </head>
 <body>
-  <div class="bar">
-    <button id="btnPerm">🎤 권한요청</button>
-    <button id="btnPause" style="display: none;">⏸️ 일시정지</button>
-    <select id="selMic" disabled>
-      <option value="">오디오 장치를 선택하세요</option>
-    </select>
-    <span id="status" class="badge">idle</span>
-    <div style="margin-left: auto; font-size: 12px; color: #666;">
-      <span id="latency"></span>
+  <!-- 플로팅 설정 버튼 -->
+  <button class="settings-fab" id="settingsFab">⚙️</button>
+
+  <!-- 설정 패널 -->
+  <div class="settings-panel" id="settingsPanel">
+    <h2>실시간 자막 설정</h2>
+
+    <div class="control-group">
+      <label>마이크 권한</label>
+      <button id="btnPerm">🎤 마이크 권한 요청</button>
+    </div>
+
+    <div class="control-group">
+      <label>오디오 장치</label>
+      <select id="selMic" disabled>
+        <option value="">마이크를 선택하세요</option>
+      </select>
+    </div>
+
+    <div class="control-group">
+      <label>제어</label>
+      <button id="btnPause" style="display: none;">⏸️ 일시정지</button>
+      <button id="btnClear">🗑️ 자막 지우기</button>
     </div>
   </div>
 
+  <!-- 상태 표시 -->
+  <div class="status-overlay">
+    <div id="status" class="status-chip">대기중</div>
+    <div id="latency" class="status-chip" style="display: none;"></div>
+  </div>
+
+  <!-- 실시간으로 버튼 -->
+  <button class="back-to-live" id="backToLive">
+    📺 실시간으로
+    <span style="margin-left: 4px;">⬇️</span>
+  </button>
+
+  <!-- 메인 캡션 뷰어 -->
   <div id="viewer">
-    <div class="empty-state">
+    <div class="welcome-state">
       <div class="icon">🎙️</div>
-      <div>마이크 권한을 허용하고 시작 버튼을 눌러주세요</div>
-      <div style="font-size: 14px; margin-top: 8px; color: #999;">
-        영어로 말하면 한국어 자막이 실시간으로 표시됩니다
+      <h1>실시간 영어-한국어 자막</h1>
+      <p>영어로 말하면 한국어 자막이<br>실시간으로 나타납니다</p>
+      <div class="hint">
+        <span>⚙️</span>
+        <span>우상단 설정에서 마이크를 활성화하세요</span>
       </div>
     </div>
   </div>
 
-  <!-- Toast Container -->
-  <div id="toastContainer" style="
-    position: fixed;
-    top: 20px;
-    right: 20px;
-    z-index: 1000;
-    max-width: 400px;
-  "></div>
-
 <script>
-// Bootstrap data from Streamlit
+// Bootstrap data
 const BOOT = {{BOOTSTRAP_JSON}};
+
+// 프로덕션 모드 - 로그 최소화
+const PRODUCTION = false; // 임시로 디버깅 활성화
+function log(...args) { if (!PRODUCTION) console.log(...args); }
 
 // Global state
 let pc = null;
@@ -176,13 +445,13 @@ let dc = null;
 let localStream = null;
 let currentDeviceId = null;
 let startTime = null;
-let currentUnstableLine = null;  // 현재 진행 중인 unstable 라인
-let responseInProgress = false;  // 응답 생성 중인지 추적
-let currentResponseId = null;  // 현재 진행 중인 응답 ID 추적
-let pendingTranscript = null;  // 번역 대기 중인 원문
-let pendingTranslation = '';  // 누적 중인 번역
-let lastProcessedTranscript = null;  // 마지막으로 처리된 전사 중복 방지용
-let isPaused = false;  // 일시정지 상태
+let currentUnstableLine = null;
+let responseInProgress = false;
+let currentResponseId = null;
+let pendingTranscript = null;
+let pendingTranslation = '';
+let lastProcessedTranscript = null;
+let isPaused = false;
 
 // DOM elements
 const viewer = document.getElementById('viewer');
@@ -191,108 +460,87 @@ const statusEl = document.getElementById('status');
 const latencyEl = document.getElementById('latency');
 const btnPerm = document.getElementById('btnPerm');
 const btnPause = document.getElementById('btnPause');
+const btnClear = document.getElementById('btnClear');
+const settingsFab = document.getElementById('settingsFab');
+const settingsPanel = document.getElementById('settingsPanel');
+const backToLiveBtn = document.getElementById('backToLive');
+
+// 설정 패널 토글
+settingsFab.onclick = () => {
+  settingsPanel.classList.toggle('open');
+  settingsFab.classList.toggle('active');
+};
+
+// 설정 패널 외부 클릭시 닫기
+document.addEventListener('click', (e) => {
+  if (!settingsPanel.contains(e.target) && !settingsFab.contains(e.target)) {
+    settingsPanel.classList.remove('open');
+    settingsFab.classList.remove('active');
+  }
+});
+
+// 자막 지우기
+btnClear.onclick = () => {
+  clearViewer();
+};
+
+// 실시간으로 버튼
+backToLiveBtn.onclick = () => {
+  viewer.scrollTo({
+    top: viewer.scrollHeight,
+    behavior: 'smooth'
+  });
+};
 
 // Utility functions
 function logStatus(status, className = '') {
   statusEl.textContent = status;
-  statusEl.className = `badge ${className}`;
-  console.log(`[Status] ${status}`);
+  statusEl.className = `status-chip ${className}`;
 }
 
 function logLatency(ms) {
   if (ms > 0) {
-    latencyEl.textContent = `${ms}ms`;
-
-    // Color code based on latency performance
-    if (ms < 1000) {
-      latencyEl.style.color = '#10b981'; // Green - excellent
-    } else if (ms < 2000) {
-      latencyEl.style.color = '#3b82f6'; // Blue - good
-    } else if (ms < 5000) {
-      latencyEl.style.color = '#f59e0b'; // Yellow - okay
-    } else {
-      latencyEl.style.color = '#ef4444'; // Red - slow
-    }
+    latencyEl.style.display = 'block';
+    latencyEl.textContent = `${Math.round(ms)}ms`;
   } else {
-    latencyEl.textContent = '';
-    latencyEl.style.color = '';
+    latencyEl.style.display = 'none';
   }
 }
 
-// Toast functions
-function showToast(message, type = 'info', duration = 5000) {
-  const toastContainer = document.getElementById('toastContainer');
-  const toast = document.createElement('div');
+// 토스트 메시지 (간소화)
+function showToast(message, type = 'info') {
+  if (type === 'error' || type === 'warning') {
+    const toast = document.createElement('div');
+    toast.style.cssText = `
+      position: fixed; top: 24px; left: 50%;
+      transform: translateX(-50%);
+      background: ${type === 'error' ? '#ef4444' : '#f59e0b'};
+      color: white; padding: 16px 24px; border-radius: 12px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+      z-index: 1002; font-size: 14px; font-weight: 500;
+      opacity: 0; transition: opacity 0.3s ease;
+    `;
+    toast.textContent = message;
+    document.body.appendChild(toast);
 
-  const colors = {
-    'success': '#10b981',
-    'error': '#ef4444',
-    'warning': '#f59e0b',
-    'info': '#3b82f6'
-  };
-
-  toast.style.cssText = `
-    background: ${colors[type] || colors.info};
-    color: white;
-    padding: 12px 16px;
-    margin-bottom: 10px;
-    border-radius: 6px;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-    opacity: 0;
-    transform: translateX(100%);
-    transition: all 0.3s ease;
-    font-size: 14px;
-    line-height: 1.4;
-    word-break: break-word;
-  `;
-
-  toast.textContent = message;
-  toastContainer.appendChild(toast);
-
-  // Animate in
-  setTimeout(() => {
-    toast.style.opacity = '1';
-    toast.style.transform = 'translateX(0)';
-  }, 10);
-
-  // Auto remove
-  setTimeout(() => {
-    toast.style.opacity = '0';
-    toast.style.transform = 'translateX(100%)';
+    setTimeout(() => toast.style.opacity = '1', 10);
     setTimeout(() => {
-      if (toast.parentNode) {
-        toast.parentNode.removeChild(toast);
-      }
-    }, 300);
-  }, duration);
-
-  // Manual close on click
-  toast.style.cursor = 'pointer';
-  toast.onclick = () => {
-    toast.style.opacity = '0';
-    toast.style.transform = 'translateX(100%)';
-    setTimeout(() => {
-      if (toast.parentNode) {
-        toast.parentNode.removeChild(toast);
-      }
-    }, 300);
-  };
+      toast.style.opacity = '0';
+      setTimeout(() => document.body.removeChild(toast), 300);
+    }, 3000);
+  }
 }
 
 // Permission and device handling
 async function ensurePermission() {
   try {
-    logStatus('권한 요청 중...', 'connecting');
+    logStatus('권한 요청 중', 'connecting');
 
-    // Check if permissions are already granted
     const permissionStatus = await navigator.permissions.query({name: 'microphone'});
-    console.log('[Permission] Current status:', permissionStatus.state);
-
     if (permissionStatus.state === 'denied') {
-      throw new Error('마이크 권한이 차단되었습니다. 브라우저 설정에서 허용해주세요.');
+      throw new Error('마이크 권한이 차단되었습니다.');
     }
 
-    // Request microphone access
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         echoCancellation: false,
@@ -302,195 +550,100 @@ async function ensurePermission() {
       }
     });
 
-    // Stop the temporary stream
     stream.getTracks().forEach(track => track.stop());
-
     logStatus('권한 허용됨', 'connected');
-    console.log('[Permission] Microphone access granted');
     return true;
   } catch (error) {
-    logStatus('권한 거부됨', 'error');
-    console.error('[Permission] Access denied:', error);
-
-    // Show more specific error message
-    if (error.name === 'NotAllowedError') {
-      console.error('[Permission] User denied microphone access');
-      showToast('마이크 권한이 필요합니다. 브라우저에서 마이크 사용을 허용해주세요.', 'warning', 8000);
-    } else if (error.name === 'NotFoundError') {
-      console.error('[Permission] No microphone found');
-      showToast('마이크를 찾을 수 없습니다. 마이크가 연결되어 있는지 확인해주세요.', 'error', 7000);
-    } else if (error.name === 'NotReadableError') {
-      console.error('[Permission] Microphone is being used by another application');
-      showToast('마이크가 다른 애플리케이션에서 사용 중입니다. 다른 프로그램을 종료하고 다시 시도해주세요.', 'warning', 8000);
-    } else if (error.message.includes('차단')) {
-      showToast(error.message, 'error', 8000);
-    } else {
-      showToast('마이크 권한 요청 중 오류가 발생했습니다. 다시 시도해주세요.', 'error', 6000);
-    }
-
+    logStatus('권한 필요', 'error');
+    showToast('마이크 권한이 필요합니다', 'warning');
     return false;
   }
 }
 
 async function listMics() {
   try {
-    console.log('[Devices] Enumerating audio input devices...');
     const devices = await navigator.mediaDevices.enumerateDevices();
     const audioInputs = devices.filter(d => d.kind === 'audioinput');
 
-    selMic.innerHTML = '<option value="">오디오 장치를 선택하세요</option>';
+    selMic.innerHTML = '<option value="">마이크를 선택하세요</option>';
 
     if (audioInputs.length === 0) {
-      const option = document.createElement('option');
-      option.value = '';
-      option.textContent = '오디오 장치를 찾을 수 없습니다';
-      option.disabled = true;
-      selMic.appendChild(option);
-      console.warn('[Devices] No audio input devices found');
+      selMic.innerHTML = '<option value="">마이크를 찾을 수 없습니다</option>';
       return;
     }
 
     audioInputs.forEach((device, index) => {
       const option = document.createElement('option');
       option.value = device.deviceId;
-
-      // Use device label if available, otherwise create a descriptive name
-      let deviceLabel = device.label;
-      if (!deviceLabel || deviceLabel.trim() === '') {
-        deviceLabel = `마이크 ${index + 1}`;
-        if (device.deviceId === 'default') {
-          deviceLabel = '기본 마이크';
-        }
-      }
-
-      option.textContent = deviceLabel;
+      option.textContent = device.label || `마이크 ${index + 1}`;
       selMic.appendChild(option);
-
-      console.log(`[Devices] Found: ${deviceLabel} (${device.deviceId.substring(0, 20)}...)`);
     });
 
-    // Auto-select default device if no device is currently selected
     if (!currentDeviceId && audioInputs.length > 0) {
       const defaultDevice = audioInputs.find(d => d.deviceId === 'default') || audioInputs[0];
       currentDeviceId = defaultDevice.deviceId;
       selMic.value = currentDeviceId;
-      console.log(`[Devices] Auto-selected: ${defaultDevice.label || 'default device'}`);
-    } else if (currentDeviceId) {
-      selMic.value = currentDeviceId;
     }
 
     selMic.disabled = false;
-    console.log(`[Devices] Successfully enumerated ${audioInputs.length} audio input devices`);
   } catch (error) {
-    console.error('[Devices] Failed to enumerate devices:', error);
-    selMic.innerHTML = '<option value="">장치 목록을 가져올 수 없습니다</option>';
-    selMic.disabled = true;
+    showToast('장치 목록을 가져올 수 없습니다', 'error');
   }
 }
 
 async function getStream(deviceId) {
   try {
-    console.log('[Stream] Acquiring audio stream...');
-
-    // Stop previous stream
     if (localStream) {
-      console.log('[Stream] Stopping previous stream');
-      localStream.getTracks().forEach(track => {
-        track.stop();
-        console.log(`[Stream] Stopped track: ${track.kind} - ${track.label}`);
-      });
+      localStream.getTracks().forEach(track => track.stop());
       localStream = null;
     }
 
-    // Determine device to use
-    const targetDeviceId = deviceId || selMic.value || currentDeviceId;
-    console.log(`[Stream] Target device: ${targetDeviceId || 'default'}`);
-
     const constraints = {
       audio: {
-        deviceId: targetDeviceId ? { exact: targetDeviceId } : undefined,
+        deviceId: deviceId ? { exact: deviceId } : undefined,
         echoCancellation: false,
         noiseSuppression: false,
         autoGainControl: false,
-        sampleRate: 24000,  // OpenAI Realtime optimal sample rate
-        channelCount: 1,    // Mono audio
-        latency: 0.01       // Low latency for real-time
+        sampleRate: 24000,
+        channelCount: 1
       }
     };
 
-    console.log('[Stream] Requesting stream with constraints:', constraints);
     localStream = await navigator.mediaDevices.getUserMedia(constraints);
-
-    // Update current device
-    currentDeviceId = targetDeviceId;
-
-    // Log stream info
-    const audioTrack = localStream.getAudioTracks()[0];
-    if (audioTrack) {
-      const settings = audioTrack.getSettings();
-      console.log('[Stream] Audio track acquired:', {
-        label: audioTrack.label,
-        deviceId: settings.deviceId,
-        sampleRate: settings.sampleRate,
-        channelCount: settings.channelCount,
-        echoCancellation: settings.echoCancellation,
-        noiseSuppression: settings.noiseSuppression,
-        autoGainControl: settings.autoGainControl
-      });
-    }
-
+    currentDeviceId = deviceId;
     return localStream;
   } catch (error) {
-    console.error('[Stream] Failed to get audio stream:', error);
-
-    // Provide specific error messages
-    if (error.name === 'NotFoundError') {
-      throw new Error(`지정된 오디오 장치를 찾을 수 없습니다: ${deviceId || 'default'}`);
-    } else if (error.name === 'NotAllowedError') {
-      throw new Error('마이크 권한이 거부되었습니다. 브라우저 설정을 확인해주세요.');
-    } else if (error.name === 'NotReadableError') {
-      throw new Error('마이크가 다른 애플리케이션에서 사용 중입니다.');
-    } else if (error.name === 'OverconstrainedError') {
-      throw new Error('요청된 오디오 설정을 지원하지 않는 장치입니다.');
-    }
-
-    throw error;
+    throw new Error('오디오 스트림을 가져올 수 없습니다.');
   }
 }
 
-// Caption viewer functions
+// Caption display functions
 function appendLine(text, className = 'stable') {
   if (!text || !text.trim()) return;
 
-  // Remove empty state if present
-  const emptyState = viewer.querySelector('.empty-state');
-  if (emptyState) {
-    emptyState.remove();
+  const welcomeState = viewer.querySelector('.welcome-state');
+  if (welcomeState) {
+    welcomeState.remove();
   }
 
-  // Check if we're at the bottom for auto-scroll with more tolerance
-  const atBottom = Math.abs(viewer.scrollHeight - viewer.scrollTop - viewer.clientHeight) < 10;
+  // 사용자가 수동으로 스크롤 중인지 감지
+  const isUserScrolling = viewer.scrollTop < (viewer.scrollHeight - viewer.clientHeight - 100);
 
   if (className === 'unstable') {
-    // For unstable text, update the current line or create new one
     if (!currentUnstableLine) {
       currentUnstableLine = document.createElement('div');
       currentUnstableLine.className = `caption-line ${className}`;
       currentUnstableLine.textContent = '';
       viewer.appendChild(currentUnstableLine);
     }
-    // Add space before new text if line already has content
     const needsSpace = currentUnstableLine.textContent.length > 0 && !text.startsWith(' ');
     currentUnstableLine.textContent += (needsSpace ? ' ' : '') + text.trim();
   } else {
-    // For stable text, replace unstable line or create new stable line
     if (currentUnstableLine) {
-      // Replace the unstable line with stable content
-      currentUnstableLine.className = 'caption-line stable';
+      currentUnstableLine.className = `caption-line ${className}`;
       currentUnstableLine.textContent = text.trim();
       currentUnstableLine = null;
     } else {
-      // Create new stable line
       const div = document.createElement('div');
       div.className = `caption-line ${className}`;
       div.textContent = text.trim();
@@ -498,8 +651,8 @@ function appendLine(text, className = 'stable') {
     }
   }
 
-  // Auto-scroll only if user was at bottom with smooth animation
-  if (atBottom) {
+  // 자동 스크롤 (사용자가 스크롤하고 있지 않을 때만)
+  if (!isUserScrolling) {
     requestAnimationFrame(() => {
       viewer.scrollTo({
         top: viewer.scrollHeight,
@@ -508,158 +661,114 @@ function appendLine(text, className = 'stable') {
     });
   }
 
-  console.log(`[Caption] ${className}: ${text.trim()}`);
+  // 자막 히스토리 관리 (최대 100개)
+  const captionLines = viewer.querySelectorAll('.caption-line');
+  if (captionLines.length > 100) {
+    captionLines[0].remove();
+  }
 }
+
+// 스크롤 이벤트 핸들링 (과거 자막 표시 제거, 실시간으로 버튼만)
+viewer.addEventListener('scroll', () => {
+  const isAtBottom = viewer.scrollTop >= (viewer.scrollHeight - viewer.clientHeight - 100);
+
+  if (!isAtBottom) {
+    backToLiveBtn.style.display = 'flex';  // flex로 변경하여 아이콘과 텍스트 정렬
+  } else {
+    backToLiveBtn.style.display = 'none';
+  }
+});
 
 function clearViewer() {
   viewer.innerHTML = `
-    <div class="empty-state">
+    <div class="welcome-state">
       <div class="icon">🎙️</div>
-      <div>마이크 권한을 허용하고 시작 버튼을 눌러주세요</div>
-      <div style="font-size: 14px; margin-top: 8px; color: #999;">
-        영어로 말하면 한국어 자막이 실시간으로 표시됩니다
+      <h1>실시간 영어-한국어 자막</h1>
+      <p>영어로 말하면 한국어 자막이<br>실시간으로 나타납니다</p>
+      <div class="hint">
+        <span>⚙️</span>
+        <span>우상단 설정에서 마이크를 활성화하세요</span>
       </div>
     </div>
   `;
-  currentUnstableLine = null;  // unstable 라인 상태 초기화
-  console.log('[Caption] Viewer cleared');
+  currentUnstableLine = null;
+  backToLiveBtn.style.display = 'none';
 }
 
-// 원문과 번역을 순서대로 표시하는 함수
 function displayTranscriptAndTranslation(transcript, translation) {
-  // 원문 먼저 표시
-  appendLine(`[원문] ${transcript}`, 'stable');
+  // 원문 표시
+  appendLine(transcript, 'original');
 
   // 번역 표시
-  if (translation && translation !== '[번역 없음]' && translation !== '[번역 실패]' && translation !== '[번역 불가]') {
-    appendLine(translation, 'stable');
-  } else {
+  if (translation &&
+      !translation.includes('[번역') &&
+      !translation.includes('[오류') &&
+      translation.trim().length > 0) {
     appendLine(translation, 'stable');
   }
 }
 
-// WebRTC connection handling
+// WebRTC connection
 async function connectRealtime(ephemeral, model) {
   try {
-    logStatus('연결 중...', 'connecting');
+    logStatus('연결 중', 'connecting');
     startTime = Date.now();
 
-    // Validate inputs
     if (!ephemeral?.client_secret?.value) {
-      throw new Error('유효하지 않은 인증 토큰입니다.');
+      throw new Error('인증 토큰이 필요합니다.');
     }
 
-    console.log('[WebRTC] Starting connection with model:', model);
-
-    // Create RTCPeerConnection with comprehensive configuration
     pc = new RTCPeerConnection({
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' }
-      ],
-      iceCandidatePoolSize: 10,
-      bundlePolicy: 'max-bundle',
-      rtcpMuxPolicy: 'require'
+      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
     });
 
-    // Monitor connection state changes
     pc.onconnectionstatechange = () => {
       const state = pc.connectionState;
-      console.log('[WebRTC] Connection state changed:', state);
-
       switch (state) {
-        case 'connecting':
-          logStatus('연결 중...', 'connecting');
-          break;
         case 'connected':
-          if (!dc || dc.readyState !== 'open') {
-            logStatus('데이터 채널 대기 중...', 'connecting');
+          if (dc && dc.readyState === 'open') {
+            logStatus('연결됨', 'connected');
           }
           break;
         case 'disconnected':
-          logStatus('연결 끊김', 'error');
-          showToast('서버와의 연결이 끊어졌습니다. 다시 시도해주세요.', 'warning', 5000);
-          break;
         case 'failed':
-          logStatus('연결 실패', 'error');
-          showToast('서버 연결에 실패했습니다. 네트워크를 확인하고 다시 시도해주세요.', 'error', 7000);
-          console.error('[WebRTC] Connection failed - cleaning up');
+          logStatus('연결 끊김', 'error');
           closeConnection();
           break;
-        case 'closed':
-          logStatus('연결 종료됨', '');
-          break;
       }
     };
 
-    // Monitor ICE connection state
-    pc.oniceconnectionstatechange = () => {
-      console.log('[WebRTC] ICE connection state:', pc.iceConnectionState);
-      if (pc.iceConnectionState === 'failed') {
-        console.error('[WebRTC] ICE connection failed');
-        logStatus('네트워크 연결 실패', 'error');
-      }
-    };
-
-    // Log ICE candidates for debugging
-    pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        console.log('[WebRTC] ICE candidate:', event.candidate.type, event.candidate.candidate.substring(0, 50) + '...');
-      } else {
-        console.log('[WebRTC] ICE gathering completed');
-      }
-    };
-
-    // Create data channel for OpenAI events
-    dc = pc.createDataChannel('oai-events', {
-      ordered: true,
-      maxRetransmits: 0  // Real-time priority over reliability
-    });
+    dc = pc.createDataChannel('oai-events', { ordered: true });
 
     dc.onopen = () => {
       logStatus('연결됨', 'connected');
-      console.log('[WebRTC] Data channel opened successfully');
-
-      // Show pause button when connected
-      btnPause.style.display = 'inline-block';
-
-      // Reset timer to measure time until first content
+      btnPause.style.display = 'block';
       startTime = Date.now();
-      console.log('[Latency] Starting content latency measurement');
 
-      // Send session configuration with auto-response enabled
       const sessionUpdate = {
         type: 'session.update',
         session: {
-          instructions: `당신은 실시간 영어-한국어 번역 전용 AI입니다.
+          instructions: `You are a professional English-to-Korean real-time translator.
 
-절대 금지사항:
-1. 영어로 답변 금지 - 절대 금지
-2. 자신에 대한 설명 금지 ("저는 AI", "언어 모델" 등)
-3. 번역 서비스 설명 금지 ("번역을 제공합니다" 등)
-4. 요청이나 질문에 대답 금지 - 오직 번역만
-5. 메타 설명, 인사, 부연설명 일체 금지
+MISSION: Translate all English input to Korean immediately.
 
-번역 원칙:
-- 영어 입력 → 즉시 완전한 한국어 번역 출력
-- 긴 문장도 끝까지 완전히 번역
-- 자연스럽고 정확한 한국어 사용
-- 존댓말 사용 (비즈니스/회의 환경)
-- 고유명사는 원어 유지
-- 문장을 자르거나 생략하지 말고 전체 의미 전달
+RULES:
+- Always provide Korean translation
+- Never refuse any English text
+- Never use English in response
+- Use formal Korean (존댓말)
+- Keep proper nouns in original language
+- Complete full sentence translations
 
-잘못된 예시들:
-❌ "저는 AI 언어 모델로..."
-❌ "I'm here to provide..."
-❌ "정말 좋았어요." (원문과 관련 없는 짧은 번역)
+EXAMPLES:
+"Today I announce John as CEO" → "오늘 John을 CEO로 발표합니다"
+"Thank you everyone" → "여러분 감사합니다"
+"Monsieur Faber" → "Faber 씨"
 
-올바른 예시:
-✅ 긴 영어 문장 → 완전하고 자연스러운 긴 한국어 번역
-
-지금부터 모든 영어 입력을 완전히 번역하세요.`,
-          voice: 'alloy',  // 음성은 사용하지 않지만 필수 필드
+TRANSLATE EVERYTHING TO KOREAN:`,
+          voice: 'alloy',
           input_audio_format: 'pcm16',
-          output_audio_format: 'pcm16',  // 필수 필드이지만 실제로는 사용하지 않음
+          output_audio_format: 'pcm16',
           input_audio_transcription: {
             model: 'whisper-1',
             language: 'en'
@@ -669,20 +778,18 @@ async function connectRealtime(ephemeral, model) {
             threshold: 0.4,
             prefix_padding_ms: 200,
             silence_duration_ms: 400,
-            create_response: true  // 자동 응답 생성 활성화
+            create_response: true
           },
-          modalities: ['text'],  // 텍스트 출력만 사용
-          temperature: 0.6,  // 최소 허용값으로 일관된 번역 시도
+          modalities: ['text'],
+          temperature: 0.6,  // fixed value
           max_response_output_tokens: 4000
         }
       };
 
       try {
         dc.send(JSON.stringify(sessionUpdate));
-        console.log('[WebRTC] Session configuration sent:', sessionUpdate);
       } catch (error) {
-        console.error('[WebRTC] Failed to send session configuration:', error);
-        logStatus('설정 전송 실패', 'error');
+        logStatus('설정 실패', 'error');
       }
     };
 
@@ -691,65 +798,35 @@ async function connectRealtime(ephemeral, model) {
         const message = JSON.parse(event.data);
         handleRealtimeMessage(message);
       } catch (error) {
-        console.error('[WebRTC] Failed to parse message:', error, 'Raw data:', event.data);
+        console.error('Message parse error:', error);
       }
     };
 
-    dc.onerror = (error) => {
-      console.error('[WebRTC] Data channel error:', error);
-      logStatus('데이터 채널 오류', 'error');
-    };
-
+    dc.onerror = () => logStatus('데이터 오류', 'error');
     dc.onclose = () => {
-      console.log('[WebRTC] Data channel closed');
       if (pc && pc.connectionState !== 'closed') {
-        logStatus('데이터 채널 종료됨', 'error');
+        logStatus('연결 종료', 'error');
       }
     };
 
-    // Add audio track with proper handling
-    console.log('[WebRTC] Getting audio stream...');
     const stream = await getStream(currentDeviceId);
-
     if (!stream || stream.getAudioTracks().length === 0) {
       throw new Error('오디오 스트림을 가져올 수 없습니다.');
     }
 
     stream.getTracks().forEach(track => {
-      const sender = pc.addTrack(track, stream);
-      console.log('[WebRTC] Audio track added:', track.label, 'enabled:', track.enabled);
-
-      // Monitor track state
-      track.onended = () => {
-        console.warn('[WebRTC] Audio track ended unexpectedly');
-        logStatus('오디오 연결 끊김', 'error');
-      };
+      pc.addTrack(track, stream);
     });
 
-    // Create offer and set local description
-    console.log('[WebRTC] Creating SDP offer...');
-    const offer = await pc.createOffer({
-      offerToReceiveAudio: false,
-      offerToReceiveVideo: false
-    });
-
+    const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-    console.log('[WebRTC] Local description set');
 
-    // Wait for ICE gathering to complete or timeout
-    await waitForIceGathering(pc, 5000);
-
-    // Send SDP to OpenAI with retry logic
-    console.log('[WebRTC] Sending SDP to OpenAI...');
     const url = `https://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`;
     const headers = {
       'Authorization': `Bearer ${ephemeral.client_secret.value}`,
       'Content-Type': 'application/sdp',
       'OpenAI-Beta': 'realtime=v1',
     };
-
-    console.log('[WebRTC] Request URL:', url);
-    console.log('[WebRTC] Request headers:', { ...headers, 'Authorization': 'Bearer [REDACTED]' });
 
     const sdpResponse = await fetch(url, {
       method: 'POST',
@@ -758,466 +835,177 @@ async function connectRealtime(ephemeral, model) {
     });
 
     if (!sdpResponse.ok) {
-      const errorText = await sdpResponse.text();
-      console.error('[WebRTC] SDP exchange failed:', sdpResponse.status, sdpResponse.statusText, errorText);
-
       if (sdpResponse.status === 401) {
-        throw new Error('인증 실패: 토큰이 만료되었거나 유효하지 않습니다.');
+        throw new Error('인증이 만료되었습니다.');
       } else if (sdpResponse.status === 429) {
-        throw new Error('요청 한도 초과: 잠시 후 다시 시도해주세요.');
+        throw new Error('사용량 한도를 초과했습니다.');
       } else {
-        throw new Error(`SDP 교환 실패: ${sdpResponse.status} ${sdpResponse.statusText}`);
+        throw new Error('서버 연결에 실패했습니다.');
       }
     }
 
     const answerSdp = await sdpResponse.text();
-    console.log('[WebRTC] Received SDP answer, length:', answerSdp.length);
-
     const answer = { type: 'answer', sdp: answerSdp };
     await pc.setRemoteDescription(answer);
 
-    console.log('[WebRTC] Remote description set - connection process initiated');
-
   } catch (error) {
-    console.error('[WebRTC] Connection failed:', error);
-
-    // Provide user-friendly error messages
-    let userMessage = '연결 실패';
-    let toastMessage = error.message || '알 수 없는 오류가 발생했습니다.';
-    let toastType = 'error';
-
-    if (error.message?.includes('인증')) {
-      userMessage = '인증 실패';
-      toastType = 'warning';
-    } else if (error.message?.includes('토큰')) {
-      userMessage = '토큰 오류';
-      toastType = 'warning';
-    } else if (error.message?.includes('429') || error.message?.includes('한도')) {
-      userMessage = '요청 한도 초과';
-      toastType = 'warning';
-    } else if (error.message?.includes('네트워크')) {
-      userMessage = '네트워크 오류';
-      toastMessage = '네트워크 연결을 확인하고 다시 시도해주세요.';
-    } else if (error.message?.includes('오디오')) {
-      userMessage = '오디오 오류';
-      toastMessage = '오디오 장치를 확인하고 다시 시도해주세요.';
-    } else if (error.name === 'TypeError' && error.message.includes('fetch')) {
-      userMessage = '네트워크 오류';
-      toastMessage = '인터넷 연결을 확인하고 다시 시도해주세요.';
-    }
-
-    logStatus(userMessage, 'error');
-    showToast(toastMessage, toastType, 8000);
-
-    // Clean up on failure
+    logStatus('연결 실패', 'error');
+    showToast(error.message || '연결에 실패했습니다', 'error');
     closeConnection();
     throw error;
   }
 }
 
-// Helper function to wait for ICE gathering completion
-function waitForIceGathering(pc, timeout = 5000) {
-  return new Promise((resolve) => {
-    if (pc.iceGatheringState === 'complete') {
-      resolve();
-      return;
-    }
-
-    const timeoutId = setTimeout(() => {
-      console.log('[WebRTC] ICE gathering timeout - proceeding anyway');
-      resolve();
-    }, timeout);
-
-    pc.addEventListener('icegatheringstatechange', () => {
-      if (pc.iceGatheringState === 'complete') {
-        console.log('[WebRTC] ICE gathering completed');
-        clearTimeout(timeoutId);
-        resolve();
-      }
-    });
-  });
-}
-
 function handleRealtimeMessage(message) {
-  // Skip processing if paused (except for connection-related messages)
-  if (isPaused && !message.type?.includes('error') && !message.type?.includes('server.heartbeat')) {
-    console.log('[Paused] Ignoring message:', message.type);
+  if (isPaused && !message.type?.includes('error')) {
     return;
   }
 
-  // Record first meaningful content latency (text delta or transcription)
-  if (startTime && !latencyEl.textContent) {
-    const isTextContent = message.type?.includes('delta') &&
-      (message.delta || message.text || message.transcript);
-    const isTranscription = message.type?.includes('transcription') &&
-      (message.transcript || message.item?.content);
+  // 디버깅 로그
+  console.log('[Realtime]', message.type, message);
 
-    if (isTextContent || isTranscription) {
+  // 지연시간 측정
+  if (startTime && !latencyEl.textContent) {
+    const isContent = (message.type?.includes('delta') || message.type?.includes('transcription')) &&
+      (message.delta || message.text || message.transcript);
+    if (isContent) {
       const latency = Date.now() - startTime;
       logLatency(latency);
-      console.log('[Latency] First content received after', latency, 'ms');
       startTime = null;
-
-      // Show success toast for good latency
-      if (latency < 2000) {
-        showToast(`연결 완료! (${latency}ms)`, 'success', 3000);
-      } else if (latency < 5000) {
-        showToast(`연결 완료 (${latency}ms) - 지연이 약간 있습니다`, 'info', 4000);
-      } else {
-        showToast(`연결 완료 (${latency}ms) - 네트워크가 느립니다`, 'warning', 5000);
-      }
     }
   }
 
-  console.log('[Realtime]', message.type, message);
-
-  // Handle different message types from OpenAI Realtime API
   switch (message.type) {
-    // Session and connection events
-    case 'session.created':
-      console.log('[Realtime] Session created:', message.session?.id);
-      break;
-
-    case 'session.updated':
-      console.log('[Realtime] Session updated');
-      break;
-
-    // Input audio transcription events (원문 표시)
-    case 'conversation.item.input_audio_transcription.delta':
-      // 원문은 delta(unstable) 상태를 표시하지 않음
-      console.log('[Realtime] Transcription delta:', message.delta);
-      break;
-
     case 'conversation.item.input_audio_transcription.completed':
       if (message.transcript) {
         const transcript = message.transcript.trim();
 
-        // 중복 전사 필터링 - 같은 내용이면 무시
-        if (transcript === lastProcessedTranscript) {
-          console.log('[Transcription] Duplicate transcript ignored:', transcript);
-          break;
-        }
-
-        // 너무 짧은 전사는 무시 (노이즈 방지)
-        if (transcript.length < 2) {
-          console.log('[Transcription] Too short, ignored:', transcript);
+        if (transcript === lastProcessedTranscript || transcript.length < 3) {
           break;
         }
 
         lastProcessedTranscript = transcript;
-        console.log('[Transcription] Processing new transcript:', transcript);
+        console.log('[Transcription] New:', transcript);
 
-        // 이전 번역이 완료되지 않았다면 강제로 완료 처리
         if (pendingTranscript && pendingTranscript !== transcript) {
-          console.log('[Translation] Force completing previous:', pendingTranscript);
-          displayTranscriptAndTranslation(pendingTranscript, pendingTranslation || '[번역 중단]');
+          displayTranscriptAndTranslation(pendingTranscript, pendingTranslation || '');
         }
 
-        // 새로운 원문 설정
         pendingTranscript = transcript;
         pendingTranslation = '';
 
-        // 번역 요청 - 더 엄격한 조건 확인
-        if (dc && dc.readyState === 'open' && !responseInProgress && !currentResponseId) {
+        if (dc && dc.readyState === 'open' && !responseInProgress) {
           responseInProgress = true;
-          const responseCreateRequest = {
-            type: 'response.create'
-          };
+          dc.send(JSON.stringify({ type: 'response.create' }));
+          console.log('[Translation] Requested for:', transcript);
 
-          try {
-            dc.send(JSON.stringify(responseCreateRequest));
-            console.log('[Translation] Requested translation for:', transcript);
-
-            // 응답 대기 타임아웃 (15초로 연장)
-            setTimeout(() => {
-              if (responseInProgress && pendingTranscript === transcript) {
-                console.warn('[Translation] Response timeout for:', transcript);
-                responseInProgress = false;
-                currentResponseId = null;
-
-                // 타임아웃 시 원문만 표시
-                if (pendingTranscript) {
-                  displayTranscriptAndTranslation(pendingTranscript, '[번역 시간초과]');
-                  pendingTranscript = null;
-                  pendingTranslation = '';
-                }
+          setTimeout(() => {
+            if (responseInProgress && pendingTranscript === transcript) {
+              console.warn('[Translation] Timeout');
+              responseInProgress = false;
+              currentResponseId = null;
+              if (pendingTranscript) {
+                displayTranscriptAndTranslation(pendingTranscript, '');
+                pendingTranscript = null;
+                pendingTranslation = '';
               }
-            }, 15000);
-
-          } catch (error) {
-            console.error('[Translation] Failed to request translation:', error);
-            responseInProgress = false;
-            currentResponseId = null;
-            displayTranscriptAndTranslation(transcript, '[번역 실패]');
-            pendingTranscript = null;
-            pendingTranslation = '';
-          }
-        } else {
-          // 응답이 진행 중이면 원문만 표시 (번역은 나중에 처리)
-          console.log('[Translation] Busy - showing transcript only:', transcript);
-          displayTranscriptAndTranslation(transcript, '');
+            }
+          }, 8000);
         }
       }
       break;
 
-    case 'conversation.item.input_audio_transcription.failed':
-      console.error('[Realtime] Transcription failed:', message.error);
-      appendLine('[음성인식 실패]', 'stable');
-      break;
-
-    // Translation output events (번역 결과)
     case 'response.text.delta':
       if (message.delta && pendingTranscript) {
-        // 따옴표 제거
         const cleanDelta = message.delta.replace(/^["']|["']$/g, '');
-
-        // 대화 시도하는 텍스트 필터링
-        if (cleanDelta.toLowerCase().includes('here to assist') ||
-            cleanDelta.toLowerCase().includes('how may i help') ||
-            cleanDelta.toLowerCase().includes('how can i help') ||
-            cleanDelta.toLowerCase().includes('language learning') ||
-            cleanDelta.toLowerCase().includes('translation') && cleanDelta.toLowerCase().includes('assist')) {
-          console.log('[Delta] Filtered out conversation attempt:', cleanDelta);
-          return;
-        }
-
-        if (cleanDelta.trim()) {
+        if (!cleanDelta.toLowerCase().includes('cannot') &&
+            !cleanDelta.toLowerCase().includes('sorry')) {
           pendingTranslation += cleanDelta;
-          // 실시간으로 번역 진행 상황 표시하지 않음 (순서 보장을 위해)
+          console.log('[Delta]', cleanDelta);
         }
       }
       break;
 
     case 'response.text.done':
       if (message.text && pendingTranscript) {
-        // 따옴표 제거 및 불필요한 문구 필터링
         let cleanText = message.text.replace(/^["']|["']$/g, '').trim();
+        console.log('[Done]', cleanText);
 
-        // 대화 시도하는 모든 텍스트 필터링
-        const conversationPatterns = [
-          'here to assist', 'how may i help you', 'how can i help you',
-          'feel free to ask', 'any more questions',
-          'other inquiries', 'anything else i can help',
-          'i\'m here to help', 'i\'m an ai', 'i\'m a language model'
-        ];
-
-        const lowerText = cleanText.toLowerCase();
-        const isConversation = conversationPatterns.some(pattern => lowerText.includes(pattern));
-
-        if (isConversation) {
-          console.log('[Realtime] Filtered out conversation attempt:', cleanText);
+        if (cleanText.toLowerCase().includes('cannot assist') ||
+            cleanText.toLowerCase().includes('sorry, but i can\'t')) {
           cleanText = '';
         }
 
-        // 최종 번역 결과 사용 (done 텍스트 우선, delta 누적은 보조)
-        const deltaTranslation = pendingTranslation.trim();
-        const doneTranslation = cleanText;
+        const finalTranslation = cleanText || pendingTranslation.trim();
+        console.log('[Final Translation]', finalTranslation);
 
-        // done 텍스트가 더 완전한 경우가 많으므로 우선 사용
-        let finalTranslation = doneTranslation || deltaTranslation;
-
-        // 두 번역이 모두 있고 done이 delta보다 긴 경우 done 사용
-        if (doneTranslation && deltaTranslation && doneTranslation.length > deltaTranslation.length) {
-          finalTranslation = doneTranslation;
-        }
-
-        // 거부 응답 필터링
-        const refusalPhrases = [
-          "I'm sorry, but I can't assist",
-          "I cannot assist",
-          "I'm unable to help",
-          "I can't help",
-          "I'm not able to",
-          "I apologize, but I cannot"
-        ];
-
-        const isRefusal = refusalPhrases.some(phrase =>
-          finalTranslation.toLowerCase().includes(phrase.toLowerCase())
-        );
-
-        if (isRefusal) {
-          console.log('[Translation] Detected refusal, showing transcript only:', finalTranslation);
-          displayTranscriptAndTranslation(pendingTranscript, '[번역 거부됨]');
+        if (finalTranslation && finalTranslation.length > 0) {
+          displayTranscriptAndTranslation(pendingTranscript, finalTranslation);
         } else {
-          console.log('[Translation Debug] Delta:', deltaTranslation, 'Done:', doneTranslation, 'Final:', finalTranslation);
-
-          if (finalTranslation && finalTranslation.length >= 1) {
-            // 원문과 번역을 순서대로 표시
-            displayTranscriptAndTranslation(pendingTranscript, finalTranslation);
-            console.log('[Translation] Completed:', finalTranslation);
-          } else {
-            // 번역이 없는 경우 원문만 표시
-            displayTranscriptAndTranslation(pendingTranscript, '[번역 없음]');
-            console.log('[Translation] No translation received for:', pendingTranscript);
-          }
+          displayTranscriptAndTranslation(pendingTranscript, '');
         }
 
-        // 상태 초기화
         pendingTranscript = null;
         pendingTranslation = '';
       }
       break;
 
-    // Response generation tracking
     case 'response.created':
       currentResponseId = message.response?.id || Date.now().toString();
-      console.log('[Realtime] Response generation started, ID:', currentResponseId);
       responseInProgress = true;
+      console.log('[Response] Created:', currentResponseId);
       break;
 
     case 'response.done':
-      console.log('[Realtime] Response generation completed');
       responseInProgress = false;
       currentResponseId = null;
-
-      // 번역이 완료되지 않은 경우 원문만 표시
-      if (pendingTranscript && !pendingTranslation.trim()) {
-        console.log('[Translation] Response done but no translation - showing transcript only');
-        displayTranscriptAndTranslation(pendingTranscript, '[번역 없음]');
-        pendingTranscript = null;
-        pendingTranslation = '';
-      }
+      console.log('[Response] Done');
       break;
 
-    case 'response.output_item.added':
-    case 'response.content_part.added':
-    case 'response.output_item.done':
-      console.log('[Realtime] Translation event:', message.type);
-      break;
-
-    // Audio events (if enabled)
-    case 'response.audio.delta':
-      // We're not using audio output, so just log
-      console.log('[Realtime] Audio delta received (ignored)');
-      break;
-
-    case 'response.audio.done':
-      console.log('[Realtime] Audio generation completed (ignored)');
-      break;
-
-    // Turn detection events
     case 'input_audio_buffer.speech_started':
-      console.log('[Realtime] Speech started');
-      logStatus('말하는 중...', 'connecting');
+      logStatus('음성 인식 중', 'connecting');
       break;
 
     case 'input_audio_buffer.speech_stopped':
-      console.log('[Realtime] Speech stopped');
-      logStatus('처리 중...', 'connecting');
+      logStatus('처리 중', 'connecting');
       break;
 
-    case 'input_audio_buffer.committed':
-      console.log('[Realtime] Audio buffer committed');
-      break;
-
-    case 'input_audio_buffer.cleared':
-      console.log('[Realtime] Audio buffer cleared');
-      break;
-
-    // Conversation events
-    case 'conversation.item.created':
-      console.log('[Realtime] Conversation item created:', message.item?.type);
-      break;
-
-    case 'conversation.item.truncated':
-      console.log('[Realtime] Conversation item truncated');
-      break;
-
-    case 'conversation.item.deleted':
-      console.log('[Realtime] Conversation item deleted');
-      break;
-
-    // Rate limiting events
-    case 'rate_limits.updated':
-      console.log('[Realtime] Rate limits updated:', message.rate_limits);
-      break;
-
-    // Error handling
     case 'error':
-      console.error('[Realtime] API Error:', message.error);
-      const errorCode = message.error?.code;
-      const errorMessage = message.error?.message || '알 수 없는 오류';
-
-      if (errorCode === 'invalid_api_key' || errorCode === 'unauthorized') {
-        logStatus('인증 오류', 'error');
-        showToast('인증 토큰이 유효하지 않습니다. 새로 시작해주세요.', 'error', 7000);
-        appendLine('[오류] 인증 토큰이 유효하지 않습니다.', 'stable');
-      } else if (errorCode === 'rate_limit_exceeded' || errorCode === 'too_many_requests') {
-        logStatus('사용량 한도 초과', 'error');
-        showToast('사용량 한도를 초과했습니다. 잠시 후 다시 시도해주세요.', 'warning', 10000);
-        appendLine('[오류] 사용량 한도를 초과했습니다. 잠시 후 다시 시도해주세요.', 'stable');
-      } else if (errorCode === 'insufficient_quota') {
-        logStatus('할당량 부족', 'error');
-        showToast('계정 할당량이 부족합니다. OpenAI 계정을 확인해주세요.', 'error', 10000);
-        appendLine('[오류] 계정 할당량이 부족합니다.', 'stable');
-      } else if (errorCode === 'session_expired') {
-        logStatus('세션 만료', 'error');
-        showToast('세션이 만료되었습니다. 새로 시작해주세요.', 'warning', 7000);
-        appendLine('[오류] 세션이 만료되었습니다.', 'stable');
-      } else {
-        logStatus('API 오류', 'error');
-        showToast(`API 오류가 발생했습니다: ${errorMessage}`, 'error', 7000);
-        appendLine(`[오류] ${errorMessage}`, 'stable');
-      }
-      break;
-
-    // Connection and server events
-    case 'server.heartbeat':
-      // Optional: log heartbeat for debugging
-      console.debug('[Realtime] Server heartbeat');
+      console.error('[Error]', message.error);
+      logStatus('오류', 'error');
+      showToast('서비스 오류가 발생했습니다', 'error');
       break;
 
     default:
-      console.log('[Realtime] Unhandled message type:', message.type, message);
-
-      // Try to extract any text content generically
-      const textContent = message.delta || message.text || message.transcript;
-      if (textContent && typeof textContent === 'string' && textContent.trim()) {
-        const isUnstable = message.type?.includes('delta') || message.type?.includes('partial');
-        appendLine(textContent, isUnstable ? 'unstable' : 'stable');
-      }
+      console.log('[Unhandled]', message.type);
       break;
-  }
-
-  // Reset connection status to connected if we were processing
-  if (statusEl.textContent === '처리 중...' && message.type?.includes('done')) {
-    logStatus('연결됨', 'connected');
   }
 }
 
 function closeConnection() {
   try {
-    if (dc) {
-      dc.close();
-      dc = null;
-    }
-
-    if (pc) {
-      pc.close();
-      pc = null;
-    }
-
+    if (dc) { dc.close(); dc = null; }
+    if (pc) { pc.close(); pc = null; }
     if (localStream) {
       localStream.getTracks().forEach(track => track.stop());
       localStream = null;
     }
 
-    currentUnstableLine = null;  // unstable 라인 상태 초기화
-    responseInProgress = false;  // 응답 상태 초기화
-    currentResponseId = null;  // 응답 ID 초기화
-    pendingTranscript = null;  // 대기 중인 원문 초기화
-    pendingTranslation = '';  // 누적 중인 번역 초기화
-    lastProcessedTranscript = null;  // 중복 방지 초기화
-    isPaused = false;  // 일시정지 상태 초기화
+    currentUnstableLine = null;
+    responseInProgress = false;
+    currentResponseId = null;
+    pendingTranscript = null;
+    pendingTranslation = '';
+    lastProcessedTranscript = null;
+    isPaused = false;
 
-    // UI 초기화
     btnPause.style.display = 'none';
     btnPause.textContent = '⏸️ 일시정지';
-    logStatus('idle', '');
+    logStatus('대기중', '');
     logLatency(0);
-    console.log('[WebRTC] Connection closed');
+    backToLiveBtn.style.display = 'none';
   } catch (error) {
-    console.error('[WebRTC] Error closing connection:', error);
+    // 조용히 처리
   }
 }
 
@@ -1229,102 +1017,65 @@ btnPerm.onclick = async () => {
   }
 };
 
-// 일시정지/재개 버튼 이벤트 핸들러
 btnPause.onclick = () => {
   if (isPaused) {
-    // 재개
     isPaused = false;
     btnPause.textContent = '⏸️ 일시정지';
     logStatus('연결됨', 'connected');
-    showToast('재개되었습니다', 'success', 2000);
-    console.log('[Control] Resumed');
   } else {
-    // 일시정지
     isPaused = true;
     btnPause.textContent = '▶️ 재개';
-    logStatus('일시정지됨', 'warning');
+    logStatus('일시정지', 'connecting');
     clearViewer();
-    showToast('일시정지되었습니다', 'info', 2000);
-    console.log('[Control] Paused');
   }
 };
 
 selMic.onchange = async (event) => {
   const newDeviceId = event.target.value;
-  console.log(`[Device] Device selection changed: ${currentDeviceId} -> ${newDeviceId}`);
+  if (!newDeviceId) return;
 
-  if (!newDeviceId) {
-    console.log('[Device] No device selected');
-    return;
-  }
+  const wasConnected = pc && pc.connectionState === 'connected';
+  currentDeviceId = newDeviceId;
 
-  const wasConnected = pc && (pc.connectionState === 'connected' || pc.connectionState === 'connecting');
-
-  try {
-    // Update the audio stream with new device
-    currentDeviceId = newDeviceId;
-
-    if (wasConnected) {
-      logStatus('장치 변경 중...', 'connecting');
-      console.log('[Device] Switching audio device during active connection');
-
-      // Get new stream with selected device
+  if (wasConnected) {
+    try {
+      logStatus('장치 변경 중', 'connecting');
       const newStream = await getStream(newDeviceId);
-
-      // Replace tracks in the existing peer connection
       const audioTrack = newStream.getAudioTracks()[0];
       const sender = pc.getSenders().find(s => s.track && s.track.kind === 'audio');
 
       if (sender && audioTrack) {
         await sender.replaceTrack(audioTrack);
-        console.log('[Device] Audio track replaced successfully');
         logStatus('연결됨', 'connected');
-      } else {
-        console.warn('[Device] Could not find audio sender to replace track');
-        // Fallback: add new track
-        pc.addTrack(audioTrack, newStream);
       }
-    } else {
-      console.log('[Device] Device changed while not connected - will use new device on next connection');
-    }
-
-  } catch (error) {
-    console.error('[Device] Failed to switch audio device:', error);
-    logStatus('장치 변경 실패', 'error');
-
-    // Revert selection if it failed
-    if (currentDeviceId) {
+    } catch (error) {
+      logStatus('장치 변경 실패', 'error');
       selMic.value = currentDeviceId;
     }
   }
 };
 
-// Bootstrap actions based on Streamlit state
+// Bootstrap
 (async () => {
-  console.log('[Bootstrap] Action:', BOOT.action, BOOT);
-
   try {
     if (BOOT.action === 'start' && BOOT.ephemeral) {
-      // Ensure permission and list devices
       const hasPermission = await ensurePermission();
       if (hasPermission) {
         await listMics();
-        // Start WebRTC connection
         await connectRealtime(BOOT.ephemeral, BOOT.model);
       }
     } else if (BOOT.action === 'stop') {
       closeConnection();
       clearViewer();
-    } else if (BOOT.action === 'idle') {
-      logStatus('대기 중', '');
+    } else {
+      logStatus('대기중', '');
     }
   } catch (error) {
-    console.error('[Bootstrap] Failed:', error);
     logStatus('초기화 실패', 'error');
   }
 })();
 
-// Cleanup on page unload
+// Cleanup
 window.addEventListener('beforeunload', () => {
   closeConnection();
 });

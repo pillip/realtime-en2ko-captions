@@ -11,31 +11,68 @@ load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 REALTIME_MODEL = os.getenv("REALTIME_MODEL", "gpt-4o-realtime-preview")
 
-# 페이지 설정 - 제목 제거하고 깔끔하게
+# 페이지 설정 - 스크롤 방지
 st.set_page_config(
-    page_title="실시간 자막",
-    layout="wide",
-    initial_sidebar_state="collapsed",  # 기본적으로 사이드바 숨김
+    page_title="실시간 자막", layout="wide", initial_sidebar_state="collapsed"
 )
 
-# --- 숨겨진 컨트롤 패널
+# 전체 페이지 스크롤 방지
+st.markdown(
+    """
+<style>
+    /* Streamlit 전체 페이지 스크롤 방지 */
+    .main > div {
+        padding-top: 0rem !important;
+        padding-bottom: 0rem !important;
+    }
+
+    .stApp {
+        overflow: hidden !important;
+        height: 100vh !important;
+    }
+
+    .main {
+        overflow: hidden !important;
+        height: 100vh !important;
+    }
+
+    /* 사이드바도 스크롤 방지 */
+    .css-1d391kg {
+        overflow: hidden !important;
+        max-height: 100vh !important;
+    }
+</style>
+""",
+    unsafe_allow_html=True,
+)
+
+# 컨트롤 패널 (숨김 가능)
 with st.sidebar:
-    st.header("⚙️ 시스템 설정")
+    st.header("🎛️ 시스템 제어")
 
     if not OPENAI_API_KEY:
-        st.error("API Key가 설정되지 않았습니다.")
+        st.error("⚠️ API Key가 설정되지 않았습니다.")
         st.stop()
 
-    # 간단한 상태 표시만
+    # 간단한 시작/정지만
     col1, col2 = st.columns([1, 1])
     with col1:
         start = st.button("🎯 시작", type="primary", use_container_width=True)
     with col2:
         stop = st.button("⏹️ 정지", use_container_width=True)
 
+    # 고급 설정은 expander 안에
+    with st.expander("⚙️ 고급 설정", expanded=False):
+        st.text_input("모델", value=REALTIME_MODEL, disabled=True)
+
+        # 상태 정보
+        status = st.session_state.get("action", "idle")
+        has_token = "✅" if st.session_state.get("ephemeral") else "❌"
+        st.text(f"상태: {status} | 토큰: {has_token}")
+
 
 def create_ephemeral_session(model: str) -> dict:
-    """OpenAI Realtime API 세션 생성"""
+    """OpenAI Realtime API 세션 생성 (조용한 처리)"""
     if not OPENAI_API_KEY or OPENAI_API_KEY.startswith("sk-test-"):
         raise ValueError("유효하지 않은 API 키입니다.")
 
@@ -78,18 +115,18 @@ def create_ephemeral_session(model: str) -> dict:
         raise ValueError(f"API 요청 실패: {str(e)}") from e
 
 
-# --- Session state initialization
+# Session state initialization
 if "action" not in st.session_state:
     st.session_state["action"] = "idle"
 
-# --- Handle button clicks (조용히 처리)
+# Handle button clicks (조용한 처리)
 ephemeral = None
 if start:
     if "error_message" in st.session_state:
         del st.session_state["error_message"]
 
     try:
-        with st.spinner("연결 중..."):
+        with st.spinner("시작 중..."):
             ephemeral = create_ephemeral_session(REALTIME_MODEL)
             st.session_state["ephemeral"] = ephemeral
             st.session_state["action"] = "start"
@@ -99,7 +136,7 @@ if start:
         st.session_state["action"] = "error"
         st.session_state["error_message"] = str(e)
     except Exception as e:
-        st.error("❌ 연결에 실패했습니다.")
+        st.error("❌ 시스템 오류가 발생했습니다.")
         st.session_state["action"] = "error"
         st.session_state["error_message"] = str(e)
 
@@ -110,7 +147,7 @@ elif stop:
 else:
     st.session_state.setdefault("action", "idle")
 
-# --- 메인 캡션 뷰어 (전체 화면)
+# 메인 캡션 뷰어 (전체 화면, 스크롤 방지)
 try:
     with open("components/webrtc.html", encoding="utf-8") as f:
         html_template = f.read()
@@ -123,14 +160,12 @@ try:
 
     html_content = html_template.replace("{{BOOTSTRAP_JSON}}", json.dumps(payload))
 
-    # 전체 높이 사용
-    st.components.v1.html(html_content, height=800, scrolling=False)
+    # 전체 화면 사용, 스크롤 완전 비활성화
+    st.components.v1.html(html_content, height=900, scrolling=False)
 
-except FileNotFoundError:
-    st.error("❌ 시스템 파일을 찾을 수 없습니다.")
-except Exception as e:
-    st.error(f"❌ 시스템 로드 실패: {e}")
+except Exception:
+    st.error("❌ 시스템을 로드할 수 없습니다.")
 
-# 오류가 있을 때만 하단에 간단히 표시
+# 오류만 간단히 표시
 if st.session_state.get("error_message"):
-    st.error(f"❌ {st.session_state['error_message']}")
+    st.error(f"⚠️ {st.session_state['error_message']}")
