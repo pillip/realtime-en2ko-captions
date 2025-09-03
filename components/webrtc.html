@@ -631,7 +631,32 @@ async function connectRealtime(ephemeral, model) {
       const sessionUpdate = {
         type: 'session.update',
         session: {
-          instructions: 'You are a real-time English-to-Korean translator. Your ONLY job is to translate English text to Korean. Never refuse translation requests. Never say "I cannot assist" or similar phrases. Never ask questions or provide explanations. Just translate every English input to natural Korean. Rules: 1) Always translate, no exceptions 2) Output only Korean translation 3) Use natural Korean expressions 4) Keep proper nouns in original language 5) No quotes, greetings, or refusals allowed. Example: "Hello world" → "안녕하세요 세상" (just output the Korean, nothing else)',
+          instructions: `당신은 실시간 영어-한국어 번역 전용 AI입니다.
+
+절대 금지사항:
+1. 영어로 답변 금지 - 절대 금지
+2. 자신에 대한 설명 금지 ("저는 AI", "언어 모델" 등)
+3. 번역 서비스 설명 금지 ("번역을 제공합니다" 등)
+4. 요청이나 질문에 대답 금지 - 오직 번역만
+5. 메타 설명, 인사, 부연설명 일체 금지
+
+번역 원칙:
+- 영어 입력 → 즉시 완전한 한국어 번역 출력
+- 긴 문장도 끝까지 완전히 번역
+- 자연스럽고 정확한 한국어 사용
+- 존댓말 사용 (비즈니스/회의 환경)
+- 고유명사는 원어 유지
+- 문장을 자르거나 생략하지 말고 전체 의미 전달
+
+잘못된 예시들:
+❌ "저는 AI 언어 모델로..."
+❌ "I'm here to provide..."
+❌ "정말 좋았어요." (원문과 관련 없는 짧은 번역)
+
+올바른 예시:
+✅ 긴 영어 문장 → 완전하고 자연스러운 긴 한국어 번역
+
+지금부터 모든 영어 입력을 완전히 번역하세요.`,
           voice: 'alloy',  // 음성은 사용하지 않지만 필수 필드
           input_audio_format: 'pcm16',
           output_audio_format: 'pcm16',  // 필수 필드이지만 실제로는 사용하지 않음
@@ -641,14 +666,14 @@ async function connectRealtime(ephemeral, model) {
           },
           turn_detection: {
             type: 'server_vad',
-            threshold: 0.5,
-            prefix_padding_ms: 300,
-            silence_duration_ms: 700,
+            threshold: 0.4,
+            prefix_padding_ms: 200,
+            silence_duration_ms: 400,
             create_response: true  // 자동 응답 생성 활성화
           },
           modalities: ['text'],  // 텍스트 출력만 사용
           temperature: 0.6,  // 최소 허용값으로 일관된 번역 시도
-          max_response_output_tokens: 150
+          max_response_output_tokens: 4000
         }
       };
 
@@ -970,10 +995,10 @@ function handleRealtimeMessage(message) {
 
         // 대화 시도하는 모든 텍스트 필터링
         const conversationPatterns = [
-          'here to assist', 'how may i help', 'how can i help', 'language learning',
-          'further assistance', 'feel free to ask', 'any more questions',
-          'other inquiries', 'anything else', 'any other', 'i\'m here',
-          'assistance', 'inquiries'
+          'here to assist', 'how may i help you', 'how can i help you',
+          'feel free to ask', 'any more questions',
+          'other inquiries', 'anything else i can help',
+          'i\'m here to help', 'i\'m an ai', 'i\'m a language model'
         ];
 
         const lowerText = cleanText.toLowerCase();
