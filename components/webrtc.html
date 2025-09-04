@@ -600,10 +600,24 @@ try {
     }
   });
 
+  // 🔄 대화 컨텍스트 초기화 함수 추가
+  function resetConversationContext() {
+    if (dc && dc.readyState === 'open') {
+      const resetMessage = {
+        type: 'conversation.item.truncate',
+        conversation_id: 'main',
+        content_index: 0
+      };
+      dc.send(JSON.stringify(resetMessage));
+      console.log('[Context] Reset conversation context');
+    }
+  }
+
   // 자막 지우기
   if (btnClear) {
     btnClear.onclick = () => {
       clearViewer();
+      resetConversationContext(); // 🔄 대화 컨텍스트도 초기화
     };
   }
 
@@ -724,21 +738,29 @@ try {
 
   // 🎯 개선된 스크롤 상태 관리
   function updateScrollState() {
-    const isAtBottom = viewer.scrollTop >= (viewer.scrollHeight - viewer.clientHeight - 50);
+    const scrollTop = viewer.scrollTop;
+    const scrollHeight = viewer.scrollHeight;
+    const clientHeight = viewer.clientHeight;
+    const isAtBottom = scrollTop >= (scrollHeight - clientHeight - 50);
+
+    console.log('📊 스크롤 상태:', { scrollTop, scrollHeight, clientHeight, isAtBottom });
 
     // 맨 아래 근처에 있으면 자동 스크롤 모드
     if (isAtBottom) {
       isUserScrolling = false;
     }
 
-    // 실시간으로 버튼 표시/숨김
+    // 실시간으로 버튼 표시/숨김 (개선된 로직)
     if (backToLiveBtn) {
-      if (!isAtBottom && !isUserScrolling) {
-        // 자동 스크롤로 인해 잠깐 위에 있는 경우는 버튼 숨김
+      const now = Date.now();
+
+      // 🔧 최근 자동 스크롤 직후에는 버튼 표시 안함
+      if (now - lastAutoScrollTime < 1000) {  // 1초간 버튼 숨김
+        backToLiveBtn.style.display = 'none';
         return;
       }
 
-      if (!isAtBottom) {
+      if (!isAtBottom && isUserScrolling) {
         backToLiveBtn.style.display = 'flex';
       } else {
         backToLiveBtn.style.display = 'none';
@@ -751,29 +773,40 @@ try {
   viewer.addEventListener('scroll', (e) => {
     const now = Date.now();
 
-    // 최근 자동 스크롤이 아닌 경우에만 사용자 스크롤로 간주
-    if (now - lastAutoScrollTime > 500) {  // 500ms 후면 사용자 스크롤
+    // 🔧 최근 자동 스크롤이 아닌 경우에만 사용자 스크롤로 간주
+    if (now - lastAutoScrollTime > 800) {  // 800ms로 여유 확대
       isUserScrolling = true;
       console.log('🔄 User scrolling detected - auto scroll disabled');
     }
 
-    // 스크롤 끝난 후 상태 업데이트
+    // 🔧 스크롤 끝난 후 상태 업데이트 (딜레이 증가)
     clearTimeout(scrollTimer);
     scrollTimer = setTimeout(() => {
       updateScrollState();
-    }, 150);
+    }, 250);  // 250ms로 딜레이 증가
   });
 
-  // 🎯 자동 스크롤 함수 (중복 제거)
+  // 🎯 자동 스크롤 함수 (타이밍 개선)
   function autoScrollToBottom() {
     if (!isUserScrolling) {
       lastAutoScrollTime = Date.now();  // 자동 스크롤 시간 기록
+
+      // 🔧 DOM 업데이트 완료 후 스크롤 실행
       requestAnimationFrame(() => {
-        viewer.scrollTo({
-          top: viewer.scrollHeight,
-          behavior: 'smooth'
+        requestAnimationFrame(() => {  // 이중 RAF로 DOM 안정화 대기
+          viewer.scrollTo({
+            top: viewer.scrollHeight,
+            behavior: 'smooth'
+          });
+          console.log('🔽 Auto scroll triggered');
+
+          // 🔧 스크롤 완료 후 상태 업데이트 (딜레이 추가)
+          setTimeout(() => {
+            if (!isUserScrolling) {  // 여전히 자동 모드면
+              updateScrollState();
+            }
+          }, 200);  // 스크롤 애니메이션 완료 대기
         });
-        console.log('🔽 Auto scroll triggered');
       });
     } else {
       console.log('⏸️ Auto scroll skipped - user is scrolling');
@@ -941,11 +974,15 @@ try {
           type: 'session.update',
           session: {
             instructions: `역할
-당신은 전문 컨퍼런스(블록체인/웹3/창업/스타트업) 환경의 동시통역 번역기입니다. 입력은 ASR로부터 온 영어 문장(또는 문장 조각)입니다. 출력은 한국어 번역문만입니다.
+당신은 전문 컨퍼런스(블록체인/웹3/창업/스타트업) 환경의 동시통역 번역기입니다.
+
+⚠️ 중요: 각 입력은 완전히 독립적인 번역 작업입니다. 이전 번역이나 대화 컨텍스트는 무시하세요.
+
+입력은 ASR로부터 온 영어 문장(또는 문장 조각)입니다. 출력은 한국어 번역문만입니다.
 
 핵심 규칙(엄수)
 
-영어 입력일 때만 응답. 영어가 아니거나 영어 비중이 낮으면 아무 것도 출력하지 않습니다(빈 문자열).
+영어 입력일 때만 응답. 영어가 아니거나 영어 비중이 낮으면 완전히 빈 응답("")을 반환합니다.
 
 출력은 번역문 본문만. 번역:, 따옴표, 주석, 요약, 해설, 경고, 이모지, 스피커 라벨, 시간코드, 메타텍스트 모두 금지.
 
@@ -965,7 +1002,7 @@ try {
 
 언어 판별 규칙
 
-입력의 80% 이상이 영어(단어/문자 기준)일 때만 번역합니다. 아니면 빈 출력.
+입력의 80% 이상이 영어(단어/문자 기준)일 때만 번역합니다. 아니면 완전히 빈 응답("").
 
 혼합문에서 고유명사·코드·주소·전문 약어는 영어로 남기고, 나머지 영어 문장만 한국어로 옮깁니다.
 
@@ -1002,23 +1039,20 @@ try {
 
 입력: Bonjour à tous
 출력: (빈 출력)`,
-            voice: 'alloy',
-            input_audio_format: 'pcm16',
-            output_audio_format: 'pcm16',
             input_audio_transcription: {
               model: 'whisper-1',
               language: 'en'
             },
             turn_detection: {
               type: 'server_vad',
-              threshold: 0.4,
+              threshold: 0.5,
               prefix_padding_ms: 200,
               silence_duration_ms: 400,
               create_response: true
             },
             modalities: ['text'],
             temperature: 0.6,
-            max_response_output_tokens: 4000
+            max_response_output_tokens: 1000
           }
         };
 
@@ -1114,7 +1148,9 @@ try {
         if (message.transcript) {
           const transcript = message.transcript.trim();
 
-          if (transcript === lastProcessedTranscript || transcript.length < 3) {
+          // 너무 짧은 전사나 완전 동일한 전사만 skip
+          if (transcript.length < 2 || transcript === lastProcessedTranscript) {
+            console.log('[Skip] Too short or duplicate:', transcript);
             break;
           }
 
@@ -1147,7 +1183,7 @@ try {
 
             setTimeout(() => {
               if (responseInProgress && pendingTranscript === transcript) {
-                console.warn('[Translation] Timeout');
+                console.warn('[Translation] Timeout for:', transcript);
                 responseInProgress = false;
                 currentResponseId = null;
                 if (currentTypingLine) {
@@ -1157,7 +1193,7 @@ try {
                 pendingTranscript = null;
                 pendingTranslation = '';
               }
-            }, 8000);
+            }, 5000);
           }
         }
         break;
@@ -1181,8 +1217,13 @@ try {
           let cleanText = message.text.replace(/^["']|["']$/g, '').trim();
           console.log('[Done]', cleanText);
 
+          // 🚫 거부 메시지들 필터링 강화
           if (cleanText.toLowerCase().includes('cannot assist') ||
-              cleanText.toLowerCase().includes('sorry, but i can\'t')) {
+              cleanText.toLowerCase().includes('sorry, but i can\'t') ||
+              cleanText.toLowerCase().includes('죄송합니다') ||
+              cleanText.toLowerCase().includes('응답할 수 없습니다') ||
+              cleanText.toLowerCase().includes('해당 요청') ||
+              cleanText.length === 0) {
             cleanText = '';
           }
 
