@@ -1,0 +1,11 @@
+[server]
+# ALB/프록시 환경에서 HTTPS 지원
+enableXsrfProtection = true
+enableCORS = true
+
+# WebSocket 연결 설정
+maxUploadSize = 200
+
+[browser]
+# ALB 환경에서 자동 브라우저 실행 비활성화
+gatherUsageStats = false

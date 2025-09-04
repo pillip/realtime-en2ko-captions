@@ -22,6 +22,17 @@ st.set_page_config(
     initial_sidebar_state=st.session_state["sidebar_state"],  # 동적으로 설정
 )
 
+# ALB/프록시 환경에서 HTTPS 지원을 위한 설정
+import streamlit.web.server.server as server
+
+try:
+    # Streamlit이 프록시 뒤에서 실행될 때 올바른 URL 생성
+    server.ENABLE_XSRF_PROTECTION = True
+    # ALB의 X-Forwarded-Proto 헤더 신뢰
+    os.environ.setdefault("STREAMLIT_SERVER_ENABLE_XSRF_PROTECTION", "true")
+except:
+    pass
+
 # 전체 페이지 스크롤 방지 + iframe margin 추가
 st.markdown(
     """
