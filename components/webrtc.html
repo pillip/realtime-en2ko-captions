@@ -18,6 +18,12 @@
       height: 100vh;
     }
 
+    /* 🎨 동적 폰트 크기 CSS 변수 */
+    :root {
+      --translation-font-size: 28px;
+      --original-font-size: 16px;
+    }
+
     /* 플로팅 설정 버튼 */
     .settings-fab {
       position: fixed;
@@ -128,6 +134,40 @@
       font-size: 15px;
     }
 
+    /* 🎨 슬라이더 스타일링 */
+    .slider {
+      width: 100%;
+      height: 6px;
+      border-radius: 3px;
+      background: rgba(255, 255, 255, 0.1);
+      outline: none;
+      margin: 8px 0 12px 0;
+      -webkit-appearance: none;
+    }
+
+    .slider::-webkit-slider-thumb {
+      appearance: none;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: #10b981;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .slider::-webkit-slider-thumb:hover {
+      background: #059669;
+      transform: scale(1.2);
+    }
+
+    .control-group span {
+      display: inline-block;
+      min-width: 60px;
+      color: #10b981;
+      font-weight: 500;
+      font-size: 13px;
+    }
+
     /* 상태 표시 */
     .status-overlay {
       position: fixed;
@@ -169,11 +209,11 @@
       color: #ef4444;
     }
 
-    /* 실시간으로 버튼 - 상태바와 같은 높이 */
+    /* 실시간으로 버튼 */
     .back-to-live {
       position: fixed;
-      bottom: 32px;  /* 상태바와 같은 높이 */
-      right: 32px;   /* 오른쪽에 배치 */
+      bottom: 32px;
+      right: 32px;
       background: #10b981;
       color: white;
       border: none;
@@ -202,17 +242,38 @@
       50% { transform: translateY(-4px); }
     }
 
-    /* 메인 캡션 뷰어 */
+    @keyframes breathe {
+      0%, 100% { opacity: 0.8; transform: scale(1); }
+      50% { opacity: 1; transform: scale(1.02); }
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.7; }
+    }
+
+    /* 🎯 메인 캡션 뷰어 - 완전한 가운데 정렬 */
     #viewer {
       height: 100vh;
       width: 100%;
-      padding: 120px 40px 120px;
+      padding: 0;
       overflow-y: auto;
-      display: flex;
-      flex-direction: column;
-      justify-content: flex-start;
       background: transparent;
       scroll-behavior: smooth;
+      display: flex;
+      align-items: center;      /* 📍 수직 가운데 정렬 */
+      justify-content: center;  /* 📍 수평 가운데 정렬 */
+    }
+
+    /* 자막 컨테이너 */
+    .caption-container {
+      width: 100%;
+      max-width: 1200px;
+      padding: 40px;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;  /* 자막들은 좌측 정렬 */
+      gap: 0;
     }
 
     .caption-line {
@@ -232,7 +293,7 @@
 
     /* 원문 스타일 */
     .caption-line.original {
-      font-size: 16px;
+      font-size: var(--original-font-size);
       color: rgba(255, 255, 255, 0.6);
       font-style: italic;
       background: rgba(255, 255, 255, 0.03);
@@ -245,7 +306,7 @@
 
     /* 번역된 자막 스타일 */
     .caption-line.stable {
-      font-size: 28px;
+      font-size: var(--translation-font-size);
       color: #ffffff;
       font-weight: 500;
       background: rgba(255, 255, 255, 0.08);
@@ -259,7 +320,7 @@
 
     /* 실시간 입력 중 */
     .caption-line.unstable {
-      font-size: 26px;
+      font-size: calc(var(--translation-font-size) - 2px);
       color: #fbbf24;
       font-style: italic;
       font-weight: 400;
@@ -270,25 +331,13 @@
       max-width: 88%;
     }
 
-    @keyframes breathe {
-      0%, 100% { opacity: 0.8; transform: scale(1); }
-      50% { opacity: 1; transform: scale(1.02); }
-    }
-
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.7; }
-    }
-
-    /* 빈 상태 */
+    /* 빈 상태 - 가운데 정렬 */
     .welcome-state {
-      position: absolute;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
       text-align: center;
       color: rgba(255, 255, 255, 0.7);
       max-width: 600px;
+      margin: 0 auto;
+      padding: 60px 20px;
     }
 
     .welcome-state .icon {
@@ -321,44 +370,6 @@
       gap: 8px;
     }
 
-    /* 반응형 디자인 */
-    @media (max-width: 768px) {
-      .settings-panel {
-        width: 100%;
-      }
-
-      .caption-line.stable {
-        font-size: 22px;
-        padding: 16px 20px;
-        max-width: 95%;
-      }
-
-      .caption-line.original {
-        font-size: 14px;
-        padding: 12px 16px;
-      }
-
-      #viewer {
-        padding: 100px 20px 100px;
-      }
-
-      .welcome-state h1 {
-        font-size: 24px;
-      }
-
-      .welcome-state p {
-        font-size: 16px;
-      }
-
-      /* 모바일에서 버튼 위치 조정 */
-      .back-to-live {
-        bottom: 100px;
-        right: 20px;
-        padding: 10px 16px;
-        font-size: 13px;
-      }
-    }
-
     /* 스크롤바 스타일링 */
     #viewer::-webkit-scrollbar {
       width: 8px;
@@ -377,8 +388,46 @@
     #viewer::-webkit-scrollbar-thumb:hover {
       background: rgba(255, 255, 255, 0.5);
     }
+
+    /* 반응형 디자인 */
+    @media (max-width: 768px) {
+      .settings-panel {
+        width: 100%;
+      }
+
+      .caption-container {
+        padding: 20px;
+      }
+
+      .caption-line.stable {
+        font-size: calc(var(--translation-font-size) * 0.8);
+        padding: 16px 20px;
+        max-width: 95%;
+      }
+
+      .caption-line.original {
+        font-size: calc(var(--original-font-size) * 0.9);
+        padding: 12px 16px;
+      }
+
+      .welcome-state h1 {
+        font-size: 24px;
+      }
+
+      .welcome-state p {
+        font-size: 16px;
+      }
+
+      .back-to-live {
+        bottom: 100px;
+        right: 20px;
+        padding: 10px 16px;
+        font-size: 13px;
+      }
+    }
   </style>
 </head>
+
 <body>
   <!-- 플로팅 설정 버튼 -->
   <button class="settings-fab" id="settingsFab">⚙️</button>
@@ -397,6 +446,19 @@
       <select id="selMic" disabled>
         <option value="">마이크를 선택하세요</option>
       </select>
+    </div>
+
+    <!-- 🎨 폰트 크기 조절 추가 -->
+    <div class="control-group">
+      <label>📝 번역 글자 크기</label>
+      <input type="range" id="fontSizeSlider" min="18" max="48" value="28" step="2" class="slider">
+      <span id="fontSizeValue">28px</span>
+    </div>
+
+    <div class="control-group">
+      <label>📄 원문 글자 크기</label>
+      <input type="range" id="originalSizeSlider" min="12" max="24" value="16" step="1" class="slider">
+      <span id="originalSizeValue">16px</span>
     </div>
 
     <div class="control-group">
@@ -420,13 +482,15 @@
 
   <!-- 메인 캡션 뷰어 -->
   <div id="viewer">
-    <div class="welcome-state">
-      <div class="icon">🎙️</div>
-      <h1>실시간 영어-한국어 자막</h1>
-      <p>영어로 말하면 한국어 자막이<br>실시간으로 나타납니다</p>
-      <div class="hint">
-        <span>⚙️</span>
-        <span>우상단 설정에서 마이크를 활성화하세요</span>
+    <div class="caption-container" id="captionContainer">
+      <div class="welcome-state">
+        <div class="icon">🎙️</div>
+        <h1>실시간 영어-한국어 자막</h1>
+        <p>영어로 말하면 한국어 자막이<br>실시간으로 나타납니다</p>
+        <div class="hint">
+          <span>⚙️</span>
+          <span>우상단 설정에서 마이크를 활성화하세요</span>
+        </div>
       </div>
     </div>
   </div>
@@ -434,10 +498,6 @@
 <script>
 // Bootstrap data
 const BOOT = {{BOOTSTRAP_JSON}};
-
-// 프로덕션 모드 - 로그 최소화
-const PRODUCTION = false; // 임시로 디버깅 활성화
-function log(...args) { if (!PRODUCTION) console.log(...args); }
 
 // Global state
 let pc = null;
@@ -455,6 +515,7 @@ let isPaused = false;
 
 // DOM elements
 const viewer = document.getElementById('viewer');
+const captionContainer = document.getElementById('captionContainer');
 const selMic = document.getElementById('selMic');
 const statusEl = document.getElementById('status');
 const latencyEl = document.getElementById('latency');
@@ -464,6 +525,25 @@ const btnClear = document.getElementById('btnClear');
 const settingsFab = document.getElementById('settingsFab');
 const settingsPanel = document.getElementById('settingsPanel');
 const backToLiveBtn = document.getElementById('backToLive');
+
+// 🎨 폰트 조절 슬라이더 요소
+const fontSizeSlider = document.getElementById('fontSizeSlider');
+const fontSizeValue = document.getElementById('fontSizeValue');
+const originalSizeSlider = document.getElementById('originalSizeSlider');
+const originalSizeValue = document.getElementById('originalSizeValue');
+
+// 🎨 폰트 크기 조절 이벤트 핸들러
+fontSizeSlider.oninput = (e) => {
+  const size = e.target.value;
+  document.documentElement.style.setProperty('--translation-font-size', `${size}px`);
+  fontSizeValue.textContent = `${size}px`;
+};
+
+originalSizeSlider.oninput = (e) => {
+  const size = e.target.value;
+  document.documentElement.style.setProperty('--original-font-size', `${size}px`);
+  originalSizeValue.textContent = `${size}px`;
+};
 
 // 설정 패널 토글
 settingsFab.onclick = () => {
@@ -617,16 +697,15 @@ async function getStream(deviceId) {
   }
 }
 
-// Caption display functions
+// 🔧 완전 수정된 자막 추가 함수
 function appendLine(text, className = 'stable') {
   if (!text || !text.trim()) return;
 
-  const welcomeState = viewer.querySelector('.welcome-state');
+  const welcomeState = captionContainer.querySelector('.welcome-state');
   if (welcomeState) {
     welcomeState.remove();
   }
 
-  // 사용자가 수동으로 스크롤 중인지 감지
   const isUserScrolling = viewer.scrollTop < (viewer.scrollHeight - viewer.clientHeight - 100);
 
   if (className === 'unstable') {
@@ -634,7 +713,7 @@ function appendLine(text, className = 'stable') {
       currentUnstableLine = document.createElement('div');
       currentUnstableLine.className = `caption-line ${className}`;
       currentUnstableLine.textContent = '';
-      viewer.appendChild(currentUnstableLine);
+      captionContainer.appendChild(currentUnstableLine);  // 📍 captionContainer 사용
     }
     const needsSpace = currentUnstableLine.textContent.length > 0 && !text.startsWith(' ');
     currentUnstableLine.textContent += (needsSpace ? ' ' : '') + text.trim();
@@ -647,11 +726,11 @@ function appendLine(text, className = 'stable') {
       const div = document.createElement('div');
       div.className = `caption-line ${className}`;
       div.textContent = text.trim();
-      viewer.appendChild(div);
+      captionContainer.appendChild(div);  // 📍 captionContainer 사용
     }
   }
 
-  // 자동 스크롤 (사용자가 스크롤하고 있지 않을 때만)
+  // 자동 스크롤
   if (!isUserScrolling) {
     requestAnimationFrame(() => {
       viewer.scrollTo({
@@ -661,26 +740,27 @@ function appendLine(text, className = 'stable') {
     });
   }
 
-  // 자막 히스토리 관리 (최대 100개)
-  const captionLines = viewer.querySelectorAll('.caption-line');
+  // 자막 히스토리 관리
+  const captionLines = captionContainer.querySelectorAll('.caption-line');
   if (captionLines.length > 100) {
     captionLines[0].remove();
   }
 }
 
-// 스크롤 이벤트 핸들링 (과거 자막 표시 제거, 실시간으로 버튼만)
+// 스크롤 이벤트 핸들링
 viewer.addEventListener('scroll', () => {
   const isAtBottom = viewer.scrollTop >= (viewer.scrollHeight - viewer.clientHeight - 100);
 
   if (!isAtBottom) {
-    backToLiveBtn.style.display = 'flex';  // flex로 변경하여 아이콘과 텍스트 정렬
+    backToLiveBtn.style.display = 'flex';
   } else {
     backToLiveBtn.style.display = 'none';
   }
 });
 
+// 🔧 수정된 clearViewer 함수
 function clearViewer() {
-  viewer.innerHTML = `
+  captionContainer.innerHTML = `
     <div class="welcome-state">
       <div class="icon">🎙️</div>
       <h1>실시간 영어-한국어 자막</h1>
@@ -1079,6 +1159,82 @@ selMic.onchange = async (event) => {
 window.addEventListener('beforeunload', () => {
   closeConnection();
 });
+
+// 스크롤 상태 추적 개선
+let scrollTimer = null;
+let isAutoScrolling = false;
+
+// 개선된 자동 스크롤 함수
+function autoScrollToBottom() {
+  if (!isUserScrolling()) {
+    isAutoScrolling = true;
+    viewer.scrollTo({
+      top: viewer.scrollHeight,
+      behavior: 'smooth'
+    });
+
+    // 스크롤 완료 후 플래그 해제
+    setTimeout(() => {
+      isAutoScrolling = false;
+    }, 500);
+  }
+}
+
+// 사용자 스크롤 감지 개선
+function isUserScrolling() {
+  const threshold = 100;
+  return viewer.scrollTop < (viewer.scrollHeight - viewer.clientHeight - threshold);
+}
+
+// 개선된 스크롤 이벤트 핸들링
+viewer.addEventListener('scroll', () => {
+  // 자동 스크롤 중에는 버튼 표시 안 함
+  if (isAutoScrolling) {
+    return;
+  }
+
+  const isAtBottom = viewer.scrollTop >= (viewer.scrollHeight - viewer.clientHeight - 50);
+
+  // 스크롤 타이머로 디바운스 처리
+  clearTimeout(scrollTimer);
+  scrollTimer = setTimeout(() => {
+    if (!isAtBottom) {
+      backToLiveBtn.style.display = 'flex';
+    } else {
+      backToLiveBtn.style.display = 'none';
+    }
+  }, 100);
+});
+
+// 실시간으로 버튼 개선
+backToLiveBtn.onclick = () => {
+  isAutoScrolling = true;
+  viewer.scrollTo({
+    top: viewer.scrollHeight,
+    behavior: 'smooth'
+  });
+
+  setTimeout(() => {
+    isAutoScrolling = false;
+    backToLiveBtn.classList.remove('show');
+  }, 500);
+};
+
+function clearViewer() {
+  captionContainer.innerHTML = `
+    <div class="welcome-state">
+      <div class="icon">🎙️</div>
+      <h1>실시간 영어-한국어 자막</h1>
+      <p>영어로 말하면 한국어 자막이<br>실시간으로 나타납니다</p>
+      <div class="hint">
+        <span>⚙️</span>
+        <span>우상단 설정에서 마이크를 활성화하세요</span>
+      </div>
+    </div>
+  `;
+  currentUnstableLine = null;
+  backToLiveBtn.classList.remove('show');
+}
 
 </script>
 </body>
