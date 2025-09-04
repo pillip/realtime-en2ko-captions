@@ -541,6 +541,8 @@ try {
   let pendingTranslation = '';
   let lastProcessedTranscript = null;
   let isPaused = false;
+  let isUserScrolling = false;    // 🎯 사용자 스크롤 상태
+  let lastAutoScrollTime = 0;     // 🎯 마지막 자동 스크롤 시간
 
   // DOM elements with null checks
   const viewer = document.getElementById('viewer');
@@ -608,10 +610,9 @@ try {
   // 실시간으로 버튼
   if (backToLiveBtn) {
     backToLiveBtn.onclick = () => {
-      viewer.scrollTo({
-        top: viewer.scrollHeight,
-        behavior: 'smooth'
-      });
+      console.log('🎯 Back to live clicked - enabling auto scroll');
+      isUserScrolling = false;
+      autoScrollToBottom();
     };
   }
 
@@ -668,13 +669,8 @@ try {
     currentTypingLine.textContent = '';
     captionContainer.appendChild(currentTypingLine);
 
-    // 자동 스크롤
-    requestAnimationFrame(() => {
-      viewer.scrollTo({
-        top: viewer.scrollHeight,
-        behavior: 'smooth'
-      });
-    });
+    // 🎯 사용자 스크롤 상태 확인 후 자동 스크롤
+    autoScrollToBottom();
   }
 
   function updateTypingTranslation(text) {
@@ -700,8 +696,6 @@ try {
       welcomeState.remove();
     }
 
-    const isUserScrolling = viewer.scrollTop < (viewer.scrollHeight - viewer.clientHeight - 100);
-
     if (className === 'unstable') {
       if (!currentUnstableLine) {
         currentUnstableLine = document.createElement('div');
@@ -718,15 +712,8 @@ try {
       captionContainer.appendChild(div);
     }
 
-    // 자동 스크롤
-    if (!isUserScrolling) {
-      requestAnimationFrame(() => {
-        viewer.scrollTo({
-          top: viewer.scrollHeight,
-          behavior: 'smooth'
-        });
-      });
-    }
+    // 🎯 사용자가 스크롤 중이 아닐 때만 자동 스크롤
+    autoScrollToBottom();
 
     // 자막 히스토리 관리
     const captionLines = captionContainer.querySelectorAll('.caption-line');
@@ -735,18 +722,63 @@ try {
     }
   }
 
-  // 스크롤 이벤트 핸들링
-  viewer.addEventListener('scroll', () => {
-    const isAtBottom = viewer.scrollTop >= (viewer.scrollHeight - viewer.clientHeight - 100);
+  // 🎯 개선된 스크롤 상태 관리
+  function updateScrollState() {
+    const isAtBottom = viewer.scrollTop >= (viewer.scrollHeight - viewer.clientHeight - 50);
 
+    // 맨 아래 근처에 있으면 자동 스크롤 모드
+    if (isAtBottom) {
+      isUserScrolling = false;
+    }
+
+    // 실시간으로 버튼 표시/숨김
     if (backToLiveBtn) {
+      if (!isAtBottom && !isUserScrolling) {
+        // 자동 스크롤로 인해 잠깐 위에 있는 경우는 버튼 숨김
+        return;
+      }
+
       if (!isAtBottom) {
         backToLiveBtn.style.display = 'flex';
       } else {
         backToLiveBtn.style.display = 'none';
       }
     }
+  }
+
+  // 🎯 사용자 스크롤 감지 (터치/마우스 이벤트)
+  let scrollTimer = null;
+  viewer.addEventListener('scroll', (e) => {
+    const now = Date.now();
+
+    // 최근 자동 스크롤이 아닌 경우에만 사용자 스크롤로 간주
+    if (now - lastAutoScrollTime > 500) {  // 500ms 후면 사용자 스크롤
+      isUserScrolling = true;
+      console.log('🔄 User scrolling detected - auto scroll disabled');
+    }
+
+    // 스크롤 끝난 후 상태 업데이트
+    clearTimeout(scrollTimer);
+    scrollTimer = setTimeout(() => {
+      updateScrollState();
+    }, 150);
   });
+
+  // 🎯 자동 스크롤 함수 (중복 제거)
+  function autoScrollToBottom() {
+    if (!isUserScrolling) {
+      lastAutoScrollTime = Date.now();  // 자동 스크롤 시간 기록
+      requestAnimationFrame(() => {
+        viewer.scrollTo({
+          top: viewer.scrollHeight,
+          behavior: 'smooth'
+        });
+        console.log('🔽 Auto scroll triggered');
+      });
+    } else {
+      console.log('⏸️ Auto scroll skipped - user is scrolling');
+    }
+  }
 
   function clearViewer() {
     captionContainer.innerHTML = `
@@ -908,24 +940,68 @@ try {
         const sessionUpdate = {
           type: 'session.update',
           session: {
-            instructions: `You are a professional English-to-Korean real-time translator.
+            instructions: `역할
+당신은 전문 컨퍼런스(블록체인/웹3/창업/스타트업) 환경의 동시통역 번역기입니다. 입력은 ASR로부터 온 영어 문장(또는 문장 조각)입니다. 출력은 한국어 번역문만입니다.
 
-MISSION: Translate all English input to Korean immediately.
+핵심 규칙(엄수)
 
-RULES:
-- Always provide Korean translation
-- Never refuse any English text
-- Never use English in response
-- Use formal Korean (존댓말)
-- Keep proper nouns in original language
-- Complete full sentence translations
+영어 입력일 때만 응답. 영어가 아니거나 영어 비중이 낮으면 아무 것도 출력하지 않습니다(빈 문자열).
 
-EXAMPLES:
-"Today I announce John as CEO" → "오늘 John을 CEO로 발표합니다"
-"Thank you everyone" → "여러분 감사합니다"
-"Monsieur Faber" → "Faber 씨"
+출력은 번역문 본문만. 번역:, 따옴표, 주석, 요약, 해설, 경고, 이모지, 스피커 라벨, 시간코드, 메타텍스트 모두 금지.
 
-TRANSLATE EVERYTHING TO KOREAN:`,
+사전 지식/추론 금지. 배경지식으로 의미를 보태거나 빼지 마세요. 모호해도 원문의 정보만 반영합니다. 오탈자·팩트 수정·해석·요약·재구성·의견 추가 금지.
+
+자연스러운 공식 발표체. 의미·사실·어조를 유지하되 과도한 의역은 금지하고, 최소한의 문장 다듬기만 허용합니다(~합니다/습니다).
+
+잡음 제거. “um/uh”, 반복·말꼬리 등 비의미적 군더더기는 삭제합니다. [laughter], [music] 등 비언어 표기는 무시합니다.
+
+분절/길이. 입력 덩어리마다 정보 순서를 유지해 1–2개 문장(또는 불릿)으로 간결히 냅니다. 입력이 목록이면 줄바꿈으로 대응합니다.
+
+보존 대상(그대로 두기). 코드, CLI 명령, 함수/메서드명, 파일/패키지명, 지갑 주소, 트랜잭션 해시, 키/시크릿, 에러코드, 버전/프로토콜명, 링크·URL, 토큰 심볼은 원문 그대로.
+
+숫자/단위/기호. 수치·%·통화·시간·버전은 정확히 보존합니다. "$5 million"→500만 달러, 30%는 그대로 유지.
+
+정책 준수. 안전 정책상 불가한 입력은 번역을 중단할 수 있으나, 그 외에는 번역 외 결과물 생성 금지(요약/정리/하이라이트/제목/Q&A/테이블 등 일절 금지).
+
+언어 판별 규칙
+
+입력의 80% 이상이 영어(단어/문자 기준)일 때만 번역합니다. 아니면 빈 출력.
+
+혼합문에서 고유명사·코드·주소·전문 약어는 영어로 남기고, 나머지 영어 문장만 한국어로 옮깁니다.
+
+도메인 용어 정책
+
+공통(영문 유지 권장): 체인/토큰/기업·제품명, 토큰 심볼, API/SDK, EVM/L1/L2, zk‑SNARK/zk‑STARK, MEV, IPFS, WASM, TEE, 알고리즘·함수명, 라이브러리/패키지명, SAFE/KISS, KPI/OKR, ARR/MRR, CAC/LTV, TAM/SAM/SOM, DAU/MAU, A/B test, GTM, churn, runway, burn rate, dilution, cap table, pro rata, vesting/cliff, pre/post‑money, term sheet, liquidation preference 등은 약어·형태를 보존합니다. (원문에 풀어쓴 경우에만 그 부분은 번역)
+
+권장 한글화(관용 표기):
+
+블록체인: blockchain→블록체인, smart contract→스마트 컨트랙트, rollup→롤업, mainnet/testnet→메인넷/테스트넷, gas fee→가스비, tokenomics→토크노믹스, governance→거버넌스, staking/slashing→스테이킹/슬래싱, proof of stake/work→지분증명/작업증명, validator→검증인.
+
+스타트업: product‑market fit→제품‑시장 적합성, cohort→코호트, retention→리텐션, funnel→퍼널, conversion rate→전환율, unit economics→유닛 이코노믹스, board→이사회, pivot→피벗.
+
+의미 변경 금지. 고유명사는 번역하지 않고 음역도 지양(필요 시 원문 병기 없이 그대로 둠).
+
+형식 규칙
+
+출력은 한국어 문장만. 문장부호는 자연스러운 범위에서만 사용.
+
+불릿/번호가 원문에 있으면 동일한 구조로 재현(추가/삭제 금지).
+
+줄바꿈은 의미 단위에 한해 최소화.
+
+예시(지시 강화용)
+
+입력: We'll launch our zk-rollup on Ethereum mainnet next quarter. Gas fees should drop by around 30%.
+출력: 다음 분기에 이더리움 메인넷에서 zk-롤업을 출시할 예정입니다. 가스비는 약 30% 감소할 것입니다.
+
+입력: We're raising a $5M seed round on a SAFE with a $20M cap.
+출력: 우리는 2,000만 달러 밸류에이션 캡의 SAFE로 500만 달러 시드 라운드를 진행하고 있습니다.
+
+입력: Achieving PMF is more important than growth at all costs.
+출력: PMF 달성이 무조건적인 성장보다 더 중요합니다.
+
+입력: Bonjour à tous
+출력: (빈 출력)`,
             voice: 'alloy',
             input_audio_format: 'pcm16',
             output_audio_format: 'pcm16',
@@ -1176,6 +1252,8 @@ TRANSLATE EVERYTHING TO KOREAN:`,
       pendingTranslation = '';
       lastProcessedTranscript = null;
       isPaused = false;
+      isUserScrolling = false; // 연결 종료 시 스크롤 상태 초기화
+      lastAutoScrollTime = 0;
 
       if (btnPause) {
         btnPause.style.display = 'none';
