@@ -11,9 +11,15 @@ load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 REALTIME_MODEL = os.getenv("REALTIME_MODEL", "gpt-4o-realtime-preview")
 
-# 페이지 설정
+# 사이드바 상태 관리
+if "sidebar_state" not in st.session_state:
+    st.session_state["sidebar_state"] = "expanded"  # 기본값을 expanded로
+
+# 페이지 설정 - 사이드바 상태를 동적으로 설정
 st.set_page_config(
-    page_title="실시간 자막", layout="wide", initial_sidebar_state="collapsed"
+    page_title="실시간 자막",
+    layout="wide",
+    initial_sidebar_state=st.session_state["sidebar_state"],  # 동적으로 설정
 )
 
 # 전체 페이지 스크롤 방지 + iframe margin 추가
@@ -58,28 +64,21 @@ with st.sidebar:
         st.info("💡 .env 파일에 OPENAI_API_KEY를 설정하세요")
         st.stop()
 
-    # 계정 정보
-    st.subheader("👤 계정 정보")
-    st.success("✅ OpenAI API 연결됨")
-
-    with st.expander("🔍 API 정보", expanded=False):
-        st.text(f"모델: {REALTIME_MODEL}")
-        api_preview = (
-            OPENAI_API_KEY[:12] + "..." + OPENAI_API_KEY[-4:]
-            if len(OPENAI_API_KEY) > 16
-            else "***"
-        )
-        st.text(f"API Key: {api_preview}")
-
-    st.markdown("---")
-
     # 시스템 제어
     st.subheader("🎛️ 시스템 제어")
     col1, col2 = st.columns([1, 1])
+
+    current_status = st.session_state.get("action", "idle")
+
     with col1:
-        start = st.button("🎯 시작", type="primary", use_container_width=True)
+        start_disabled = current_status in ["start", "starting"]
+        start = st.button(
+            "🎯 시작", type="primary", use_container_width=True, disabled=start_disabled
+        )
+
     with col2:
-        stop = st.button("⏹️ 정지", use_container_width=True)
+        stop_disabled = current_status in ["idle", "stop", "error"]
+        stop = st.button("⏹️ 정지", use_container_width=True, disabled=stop_disabled)
 
     # 시스템 상태
     st.markdown("---")
@@ -92,15 +91,6 @@ with st.sidebar:
         st.error("🔴 오류 발생")
     else:
         st.info("🟡 대기 중")
-
-    # 추후 확장 영역
-    st.markdown("---")
-    st.subheader("🚀 향후 기능")
-    st.info("🚧 개발 예정")
-    st.text("- 💳 사용량 모니터링")
-    st.text("- 👥 계정 관리")
-    st.text("- ⚡ 성능 최적화")
-    st.text("- 🌐 다국어 지원")
 
 
 def create_ephemeral_session(model: str) -> dict:
@@ -142,17 +132,26 @@ if "action" not in st.session_state:
 ephemeral = None
 if start:
     try:
+        # 사이드바 상태 유지
+        st.session_state["sidebar_state"] = "expanded"
+
         with st.spinner("시작 중..."):
             ephemeral = create_ephemeral_session(REALTIME_MODEL)
             st.session_state["ephemeral"] = ephemeral
             st.session_state["action"] = "start"
+            st.rerun()
     except ValueError as e:
         st.error(f"❌ {str(e)}")
         st.session_state["action"] = "error"
+        st.session_state["sidebar_state"] = "expanded"  # 에러 시에도 유지
+        st.rerun()
 
 elif stop:
+    # 사이드바 상태 유지
+    st.session_state["sidebar_state"] = "expanded"
     st.session_state["action"] = "stop"
     st.session_state.pop("ephemeral", None)
+    st.rerun()
 
 # 메인 캡션 뷰어
 try:
