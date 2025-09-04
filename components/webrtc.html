@@ -48,7 +48,6 @@
     .settings-fab:hover {
       background: rgba(255, 255, 255, 0.2);
       transform: scale(1.1);
-      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
     }
 
     .settings-fab.active {
@@ -234,25 +233,9 @@
     .back-to-live:hover {
       background: #059669;
       transform: translateY(-2px);
-      box-shadow: 0 8px 30px rgba(16, 185, 129, 0.4);
     }
 
-    @keyframes bounce-gentle {
-      0%, 100% { transform: translateY(0px); }
-      50% { transform: translateY(-4px); }
-    }
-
-    @keyframes breathe {
-      0%, 100% { opacity: 0.8; transform: scale(1); }
-      50% { opacity: 1; transform: scale(1.02); }
-    }
-
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.7; }
-    }
-
-    /* 🎯 메인 캡션 뷰어 - 완전한 가운데 정렬 */
+    /* 🎯 메인 캡션 뷰어 - 스크롤바 완전 숨김 */
     #viewer {
       height: 100vh;
       width: 100%;
@@ -261,8 +244,14 @@
       background: transparent;
       scroll-behavior: smooth;
       display: flex;
-      align-items: center;      /* 📍 수직 가운데 정렬 */
-      justify-content: center;  /* 📍 수평 가운데 정렬 */
+      align-items: center;
+      justify-content: center;
+      scrollbar-width: none;        /* Firefox */
+      -ms-overflow-style: none;     /* IE and Edge */
+    }
+
+    #viewer::-webkit-scrollbar {
+      display: none;                /* Chrome, Safari */
     }
 
     /* 자막 컨테이너 */
@@ -272,8 +261,9 @@
       padding: 40px;
       display: flex;
       flex-direction: column;
-      align-items: flex-start;  /* 자막들은 좌측 정렬 */
+      align-items: flex-start;
       gap: 0;
+      padding-bottom: 100px;
     }
 
     .caption-line {
@@ -318,6 +308,45 @@
       max-width: 90%;
     }
 
+    /* 🎨 타이핑 중인 번역 말풍선 */
+    .caption-line.typing {
+      font-size: var(--translation-font-size);
+      color: #ffffff;
+      font-weight: 500;
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-left: 4px solid #fbbf24;
+      box-shadow:
+        0 8px 32px rgba(0, 0, 0, 0.3),
+        inset 0 1px 0 rgba(255, 255, 255, 0.1);
+      max-width: 90%;
+      animation: typing-breathe 1.5s ease-in-out infinite;
+      position: relative;
+    }
+
+    /* 타이핑 커서 효과 */
+    .caption-line.typing::after {
+      content: '|';
+      color: #fbbf24;
+      animation: cursor-blink 1s ease-in-out infinite;
+      margin-left: 2px;
+    }
+
+    @keyframes typing-breathe {
+      0%, 100% {
+        border-left-color: #fbbf24;
+      }
+      50% {
+        border-left-color: #f59e0b;
+        box-shadow: 0 8px 32px rgba(251, 191, 36, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+      }
+    }
+
+    @keyframes cursor-blink {
+      0%, 50% { opacity: 1; }
+      51%, 100% { opacity: 0; }
+    }
+
     /* 실시간 입력 중 */
     .caption-line.unstable {
       font-size: calc(var(--translation-font-size) - 2px);
@@ -331,7 +360,38 @@
       max-width: 88%;
     }
 
-    /* 빈 상태 - 가운데 정렬 */
+    @keyframes breathe {
+      0%, 100% { opacity: 0.8; transform: scale(1); }
+      50% { opacity: 1; transform: scale(1.02); }
+    }
+
+    /* 🎨 말풍선 등장 애니메이션 */
+    .caption-line.fade-in {
+      animation: fadeInUp 0.4s ease-out forwards;
+    }
+
+    @keyframes fadeInUp {
+      from {
+        opacity: 0;
+        transform: translateY(20px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    @keyframes bounce-gentle {
+      0%, 100% { transform: translateY(0px); }
+      50% { transform: translateY(-4px); }
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.7; }
+    }
+
+    /* 빈 상태 */
     .welcome-state {
       text-align: center;
       color: rgba(255, 255, 255, 0.7);
@@ -370,25 +430,6 @@
       gap: 8px;
     }
 
-    /* 스크롤바 스타일링 */
-    #viewer::-webkit-scrollbar {
-      width: 8px;
-    }
-
-    #viewer::-webkit-scrollbar-track {
-      background: rgba(255, 255, 255, 0.1);
-      border-radius: 4px;
-    }
-
-    #viewer::-webkit-scrollbar-thumb {
-      background: rgba(255, 255, 255, 0.3);
-      border-radius: 4px;
-    }
-
-    #viewer::-webkit-scrollbar-thumb:hover {
-      background: rgba(255, 255, 255, 0.5);
-    }
-
     /* 반응형 디자인 */
     @media (max-width: 768px) {
       .settings-panel {
@@ -399,7 +440,7 @@
         padding: 20px;
       }
 
-      .caption-line.stable {
+      .caption-line.stable, .caption-line.typing {
         font-size: calc(var(--translation-font-size) * 0.8);
         padding: 16px 20px;
         max-width: 95%;
@@ -408,21 +449,6 @@
       .caption-line.original {
         font-size: calc(var(--original-font-size) * 0.9);
         padding: 12px 16px;
-      }
-
-      .welcome-state h1 {
-        font-size: 24px;
-      }
-
-      .welcome-state p {
-        font-size: 16px;
-      }
-
-      .back-to-live {
-        bottom: 100px;
-        right: 20px;
-        padding: 10px 16px;
-        font-size: 13px;
       }
     }
   </style>
@@ -448,7 +474,7 @@
       </select>
     </div>
 
-    <!-- 🎨 폰트 크기 조절 추가 -->
+    <!-- 🎨 폰트 크기 조절 -->
     <div class="control-group">
       <label>📝 번역 글자 크기</label>
       <input type="range" id="fontSizeSlider" min="18" max="48" value="28" step="2" class="slider">
@@ -496,242 +522,153 @@
   </div>
 
 <script>
-// Bootstrap data
-const BOOT = {{BOOTSTRAP_JSON}};
+try {
+  // Bootstrap data
+  const BOOT = {{BOOTSTRAP_JSON}};
+  console.log('BOOT data:', BOOT);
 
-// Global state
-let pc = null;
-let dc = null;
-let localStream = null;
-let currentDeviceId = null;
-let startTime = null;
-let currentUnstableLine = null;
-let responseInProgress = false;
-let currentResponseId = null;
-let pendingTranscript = null;
-let pendingTranslation = '';
-let lastProcessedTranscript = null;
-let isPaused = false;
+  // Global state
+  let pc = null;
+  let dc = null;
+  let localStream = null;
+  let currentDeviceId = null;
+  let startTime = null;
+  let currentUnstableLine = null;
+  let currentTypingLine = null;  // 🎨 타이핑 라인
+  let responseInProgress = false;
+  let currentResponseId = null;
+  let pendingTranscript = null;
+  let pendingTranslation = '';
+  let lastProcessedTranscript = null;
+  let isPaused = false;
 
-// DOM elements
-const viewer = document.getElementById('viewer');
-const captionContainer = document.getElementById('captionContainer');
-const selMic = document.getElementById('selMic');
-const statusEl = document.getElementById('status');
-const latencyEl = document.getElementById('latency');
-const btnPerm = document.getElementById('btnPerm');
-const btnPause = document.getElementById('btnPause');
-const btnClear = document.getElementById('btnClear');
-const settingsFab = document.getElementById('settingsFab');
-const settingsPanel = document.getElementById('settingsPanel');
-const backToLiveBtn = document.getElementById('backToLive');
+  // DOM elements with null checks
+  const viewer = document.getElementById('viewer');
+  const captionContainer = document.getElementById('captionContainer');
+  const selMic = document.getElementById('selMic');
+  const statusEl = document.getElementById('status');
+  const latencyEl = document.getElementById('latency');
+  const btnPerm = document.getElementById('btnPerm');
+  const btnPause = document.getElementById('btnPause');
+  const btnClear = document.getElementById('btnClear');
+  const settingsFab = document.getElementById('settingsFab');
+  const settingsPanel = document.getElementById('settingsPanel');
+  const backToLiveBtn = document.getElementById('backToLive');
+  const fontSizeSlider = document.getElementById('fontSizeSlider');
+  const fontSizeValue = document.getElementById('fontSizeValue');
+  const originalSizeSlider = document.getElementById('originalSizeSlider');
+  const originalSizeValue = document.getElementById('originalSizeValue');
 
-// 🎨 폰트 조절 슬라이더 요소
-const fontSizeSlider = document.getElementById('fontSizeSlider');
-const fontSizeValue = document.getElementById('fontSizeValue');
-const originalSizeSlider = document.getElementById('originalSizeSlider');
-const originalSizeValue = document.getElementById('originalSizeValue');
-
-// 🎨 폰트 크기 조절 이벤트 핸들러
-fontSizeSlider.oninput = (e) => {
-  const size = e.target.value;
-  document.documentElement.style.setProperty('--translation-font-size', `${size}px`);
-  fontSizeValue.textContent = `${size}px`;
-};
-
-originalSizeSlider.oninput = (e) => {
-  const size = e.target.value;
-  document.documentElement.style.setProperty('--original-font-size', `${size}px`);
-  originalSizeValue.textContent = `${size}px`;
-};
-
-// 설정 패널 토글
-settingsFab.onclick = () => {
-  settingsPanel.classList.toggle('open');
-  settingsFab.classList.toggle('active');
-};
-
-// 설정 패널 외부 클릭시 닫기
-document.addEventListener('click', (e) => {
-  if (!settingsPanel.contains(e.target) && !settingsFab.contains(e.target)) {
-    settingsPanel.classList.remove('open');
-    settingsFab.classList.remove('active');
+  // Null check for critical elements
+  if (!viewer || !captionContainer || !statusEl) {
+    throw new Error('필수 DOM 요소를 찾을 수 없습니다.');
   }
-});
 
-// 자막 지우기
-btnClear.onclick = () => {
-  clearViewer();
-};
-
-// 실시간으로 버튼
-backToLiveBtn.onclick = () => {
-  viewer.scrollTo({
-    top: viewer.scrollHeight,
-    behavior: 'smooth'
-  });
-};
-
-// Utility functions
-function logStatus(status, className = '') {
-  statusEl.textContent = status;
-  statusEl.className = `status-chip ${className}`;
-}
-
-function logLatency(ms) {
-  if (ms > 0) {
-    latencyEl.style.display = 'block';
-    latencyEl.textContent = `${Math.round(ms)}ms`;
-  } else {
-    latencyEl.style.display = 'none';
-  }
-}
-
-// 토스트 메시지 (간소화)
-function showToast(message, type = 'info') {
-  if (type === 'error' || type === 'warning') {
-    const toast = document.createElement('div');
-    toast.style.cssText = `
-      position: fixed; top: 24px; left: 50%;
-      transform: translateX(-50%);
-      background: ${type === 'error' ? '#ef4444' : '#f59e0b'};
-      color: white; padding: 16px 24px; border-radius: 12px;
-      box-shadow: 0 8px 32px rgba(0,0,0,0.3);
-      z-index: 1002; font-size: 14px; font-weight: 500;
-      opacity: 0; transition: opacity 0.3s ease;
-    `;
-    toast.textContent = message;
-    document.body.appendChild(toast);
-
-    setTimeout(() => toast.style.opacity = '1', 10);
-    setTimeout(() => {
-      toast.style.opacity = '0';
-      setTimeout(() => document.body.removeChild(toast), 300);
-    }, 3000);
-  }
-}
-
-// Permission and device handling
-async function ensurePermission() {
-  try {
-    logStatus('권한 요청 중', 'connecting');
-
-    const permissionStatus = await navigator.permissions.query({name: 'microphone'});
-    if (permissionStatus.state === 'denied') {
-      throw new Error('마이크 권한이 차단되었습니다.');
-    }
-
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: false,
-        noiseSuppression: false,
-        autoGainControl: false,
-        sampleRate: 24000
-      }
-    });
-
-    stream.getTracks().forEach(track => track.stop());
-    logStatus('권한 허용됨', 'connected');
-    return true;
-  } catch (error) {
-    logStatus('권한 필요', 'error');
-    showToast('마이크 권한이 필요합니다', 'warning');
-    return false;
-  }
-}
-
-async function listMics() {
-  try {
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    const audioInputs = devices.filter(d => d.kind === 'audioinput');
-
-    selMic.innerHTML = '<option value="">마이크를 선택하세요</option>';
-
-    if (audioInputs.length === 0) {
-      selMic.innerHTML = '<option value="">마이크를 찾을 수 없습니다</option>';
-      return;
-    }
-
-    audioInputs.forEach((device, index) => {
-      const option = document.createElement('option');
-      option.value = device.deviceId;
-      option.textContent = device.label || `마이크 ${index + 1}`;
-      selMic.appendChild(option);
-    });
-
-    if (!currentDeviceId && audioInputs.length > 0) {
-      const defaultDevice = audioInputs.find(d => d.deviceId === 'default') || audioInputs[0];
-      currentDeviceId = defaultDevice.deviceId;
-      selMic.value = currentDeviceId;
-    }
-
-    selMic.disabled = false;
-  } catch (error) {
-    showToast('장치 목록을 가져올 수 없습니다', 'error');
-  }
-}
-
-async function getStream(deviceId) {
-  try {
-    if (localStream) {
-      localStream.getTracks().forEach(track => track.stop());
-      localStream = null;
-    }
-
-    const constraints = {
-      audio: {
-        deviceId: deviceId ? { exact: deviceId } : undefined,
-        echoCancellation: false,
-        noiseSuppression: false,
-        autoGainControl: false,
-        sampleRate: 24000,
-        channelCount: 1
-      }
+  // 🎨 폰트 크기 조절 이벤트 핸들러 (null check 포함)
+  if (fontSizeSlider && fontSizeValue) {
+    fontSizeSlider.oninput = (e) => {
+      const size = e.target.value;
+      document.documentElement.style.setProperty('--translation-font-size', `${size}px`);
+      fontSizeValue.textContent = `${size}px`;
     };
-
-    localStream = await navigator.mediaDevices.getUserMedia(constraints);
-    currentDeviceId = deviceId;
-    return localStream;
-  } catch (error) {
-    throw new Error('오디오 스트림을 가져올 수 없습니다.');
-  }
-}
-
-// 🔧 완전 수정된 자막 추가 함수
-function appendLine(text, className = 'stable') {
-  if (!text || !text.trim()) return;
-
-  const welcomeState = captionContainer.querySelector('.welcome-state');
-  if (welcomeState) {
-    welcomeState.remove();
   }
 
-  const isUserScrolling = viewer.scrollTop < (viewer.scrollHeight - viewer.clientHeight - 100);
+  if (originalSizeSlider && originalSizeValue) {
+    originalSizeSlider.oninput = (e) => {
+      const size = e.target.value;
+      document.documentElement.style.setProperty('--original-font-size', `${size}px`);
+      originalSizeValue.textContent = `${size}px`;
+    };
+  }
 
-  if (className === 'unstable') {
-    if (!currentUnstableLine) {
-      currentUnstableLine = document.createElement('div');
-      currentUnstableLine.className = `caption-line ${className}`;
-      currentUnstableLine.textContent = '';
-      captionContainer.appendChild(currentUnstableLine);  // 📍 captionContainer 사용
+  // 설정 패널 토글
+  if (settingsFab && settingsPanel) {
+    settingsFab.onclick = () => {
+      settingsPanel.classList.toggle('open');
+      settingsFab.classList.toggle('active');
+    };
+  }
+
+  // 설정 패널 외부 클릭시 닫기
+  document.addEventListener('click', (e) => {
+    if (settingsPanel && settingsFab &&
+        !settingsPanel.contains(e.target) && !settingsFab.contains(e.target)) {
+      settingsPanel.classList.remove('open');
+      settingsFab.classList.remove('active');
     }
-    const needsSpace = currentUnstableLine.textContent.length > 0 && !text.startsWith(' ');
-    currentUnstableLine.textContent += (needsSpace ? ' ' : '') + text.trim();
-  } else {
-    if (currentUnstableLine) {
-      currentUnstableLine.className = `caption-line ${className}`;
-      currentUnstableLine.textContent = text.trim();
-      currentUnstableLine = null;
-    } else {
-      const div = document.createElement('div');
-      div.className = `caption-line ${className}`;
-      div.textContent = text.trim();
-      captionContainer.appendChild(div);  // 📍 captionContainer 사용
+  });
+
+  // 자막 지우기
+  if (btnClear) {
+    btnClear.onclick = () => {
+      clearViewer();
+    };
+  }
+
+  // 실시간으로 버튼
+  if (backToLiveBtn) {
+    backToLiveBtn.onclick = () => {
+      viewer.scrollTo({
+        top: viewer.scrollHeight,
+        behavior: 'smooth'
+      });
+    };
+  }
+
+  // Utility functions
+  function logStatus(status, className = '') {
+    if (statusEl) {
+      statusEl.textContent = status;
+      statusEl.className = `status-chip ${className}`;
     }
   }
 
-  // 자동 스크롤
-  if (!isUserScrolling) {
+  function logLatency(ms) {
+    if (latencyEl) {
+      if (ms > 0) {
+        latencyEl.style.display = 'block';
+        latencyEl.textContent = `${Math.round(ms)}ms`;
+      } else {
+        latencyEl.style.display = 'none';
+      }
+    }
+  }
+
+  // 토스트 메시지
+  function showToast(message, type = 'info') {
+    if (type === 'error' || type === 'warning') {
+      const toast = document.createElement('div');
+      toast.style.cssText = `
+        position: fixed; top: 24px; left: 50%;
+        transform: translateX(-50%);
+        background: ${type === 'error' ? '#ef4444' : '#f59e0b'};
+        color: white; padding: 16px 24px; border-radius: 12px;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+        z-index: 1002; font-size: 14px; font-weight: 500;
+        opacity: 0; transition: opacity 0.3s ease;
+      `;
+      toast.textContent = message;
+      document.body.appendChild(toast);
+
+      setTimeout(() => toast.style.opacity = '1', 10);
+      setTimeout(() => {
+        toast.style.opacity = '0';
+        setTimeout(() => document.body.removeChild(toast), 300);
+      }, 3000);
+    }
+  }
+
+  // 🎨 타이핑 번역 함수들
+  function startTypingTranslation() {
+    if (currentTypingLine) {
+      currentTypingLine.remove();
+    }
+    currentTypingLine = document.createElement('div');
+    currentTypingLine.className = 'caption-line typing fade-in';
+    currentTypingLine.textContent = '';
+    captionContainer.appendChild(currentTypingLine);
+
+    // 자동 스크롤
     requestAnimationFrame(() => {
       viewer.scrollTo({
         top: viewer.scrollHeight,
@@ -740,95 +677,238 @@ function appendLine(text, className = 'stable') {
     });
   }
 
-  // 자막 히스토리 관리
-  const captionLines = captionContainer.querySelectorAll('.caption-line');
-  if (captionLines.length > 100) {
-    captionLines[0].remove();
+  function updateTypingTranslation(text) {
+    if (currentTypingLine) {
+      currentTypingLine.textContent = text;
+    }
   }
-}
 
-// 스크롤 이벤트 핸들링
-viewer.addEventListener('scroll', () => {
-  const isAtBottom = viewer.scrollTop >= (viewer.scrollHeight - viewer.clientHeight - 100);
-
-  if (!isAtBottom) {
-    backToLiveBtn.style.display = 'flex';
-  } else {
-    backToLiveBtn.style.display = 'none';
+  function completeTypingTranslation(text) {
+    if (currentTypingLine) {
+      currentTypingLine.className = 'caption-line stable fade-in';
+      currentTypingLine.textContent = text;
+      currentTypingLine = null;
+    }
   }
-});
 
-// 🔧 수정된 clearViewer 함수
-function clearViewer() {
-  captionContainer.innerHTML = `
-    <div class="welcome-state">
-      <div class="icon">🎙️</div>
-      <h1>실시간 영어-한국어 자막</h1>
-      <p>영어로 말하면 한국어 자막이<br>실시간으로 나타납니다</p>
-      <div class="hint">
-        <span>⚙️</span>
-        <span>우상단 설정에서 마이크를 활성화하세요</span>
-      </div>
-    </div>
-  `;
-  currentUnstableLine = null;
-  backToLiveBtn.style.display = 'none';
-}
+  // 자막 추가 함수
+  function appendLine(text, className = 'stable') {
+    if (!text || !text.trim()) return;
 
-function displayTranscriptAndTranslation(transcript, translation) {
-  // 원문 표시
-  appendLine(transcript, 'original');
-
-  // 번역 표시
-  if (translation &&
-      !translation.includes('[번역') &&
-      !translation.includes('[오류') &&
-      translation.trim().length > 0) {
-    appendLine(translation, 'stable');
-  }
-}
-
-// WebRTC connection
-async function connectRealtime(ephemeral, model) {
-  try {
-    logStatus('연결 중', 'connecting');
-    startTime = Date.now();
-
-    if (!ephemeral?.client_secret?.value) {
-      throw new Error('인증 토큰이 필요합니다.');
+    const welcomeState = captionContainer.querySelector('.welcome-state');
+    if (welcomeState) {
+      welcomeState.remove();
     }
 
-    pc = new RTCPeerConnection({
-      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-    });
+    const isUserScrolling = viewer.scrollTop < (viewer.scrollHeight - viewer.clientHeight - 100);
 
-    pc.onconnectionstatechange = () => {
-      const state = pc.connectionState;
-      switch (state) {
-        case 'connected':
-          if (dc && dc.readyState === 'open') {
-            logStatus('연결됨', 'connected');
-          }
-          break;
-        case 'disconnected':
-        case 'failed':
-          logStatus('연결 끊김', 'error');
-          closeConnection();
-          break;
+    if (className === 'unstable') {
+      if (!currentUnstableLine) {
+        currentUnstableLine = document.createElement('div');
+        currentUnstableLine.className = `caption-line ${className}`;
+        currentUnstableLine.textContent = '';
+        captionContainer.appendChild(currentUnstableLine);
       }
-    };
+      const needsSpace = currentUnstableLine.textContent.length > 0 && !text.startsWith(' ');
+      currentUnstableLine.textContent += (needsSpace ? ' ' : '') + text.trim();
+    } else {
+      const div = document.createElement('div');
+      div.className = `caption-line ${className} fade-in`;
+      div.textContent = text.trim();
+      captionContainer.appendChild(div);
+    }
 
-    dc = pc.createDataChannel('oai-events', { ordered: true });
+    // 자동 스크롤
+    if (!isUserScrolling) {
+      requestAnimationFrame(() => {
+        viewer.scrollTo({
+          top: viewer.scrollHeight,
+          behavior: 'smooth'
+        });
+      });
+    }
 
-    dc.onopen = () => {
-      logStatus('연결됨', 'connected');
-      btnPause.style.display = 'block';
+    // 자막 히스토리 관리
+    const captionLines = captionContainer.querySelectorAll('.caption-line');
+    if (captionLines.length > 100) {
+      captionLines[0].remove();
+    }
+  }
+
+  // 스크롤 이벤트 핸들링
+  viewer.addEventListener('scroll', () => {
+    const isAtBottom = viewer.scrollTop >= (viewer.scrollHeight - viewer.clientHeight - 100);
+
+    if (backToLiveBtn) {
+      if (!isAtBottom) {
+        backToLiveBtn.style.display = 'flex';
+      } else {
+        backToLiveBtn.style.display = 'none';
+      }
+    }
+  });
+
+  function clearViewer() {
+    captionContainer.innerHTML = `
+      <div class="welcome-state">
+        <div class="icon">🎙️</div>
+        <h1>실시간 영어-한국어 자막</h1>
+        <p>영어로 말하면 한국어 자막이<br>실시간으로 나타납니다</p>
+        <div class="hint">
+          <span>⚙️</span>
+          <span>우상단 설정에서 마이크를 활성화하세요</span>
+        </div>
+      </div>
+    `;
+    currentUnstableLine = null;
+    currentTypingLine = null;
+    if (backToLiveBtn) {
+      backToLiveBtn.style.display = 'none';
+    }
+  }
+
+  function displayTranscriptAndTranslation(transcript, translation) {
+    // 원문 표시
+    appendLine(transcript, 'original');
+
+    // 번역 표시 (완성된 경우만)
+    if (translation &&
+        !translation.includes('[번역') &&
+        !translation.includes('[오류') &&
+        translation.trim().length > 0) {
+      completeTypingTranslation(translation);
+    }
+  }
+
+  // Permission and device handling
+  async function ensurePermission() {
+    try {
+      logStatus('권한 요청 중', 'connecting');
+
+      const permissionStatus = await navigator.permissions.query({name: 'microphone'});
+      if (permissionStatus.state === 'denied') {
+        throw new Error('마이크 권한이 차단되었습니다.');
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+          sampleRate: 24000
+        }
+      });
+
+      stream.getTracks().forEach(track => track.stop());
+      logStatus('권한 허용됨', 'connected');
+      return true;
+    } catch (error) {
+      logStatus('권한 필요', 'error');
+      showToast('마이크 권한이 필요합니다', 'warning');
+      return false;
+    }
+  }
+
+  async function listMics() {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const audioInputs = devices.filter(d => d.kind === 'audioinput');
+
+      if (selMic) {
+        selMic.innerHTML = '<option value="">마이크를 선택하세요</option>';
+
+        if (audioInputs.length === 0) {
+          selMic.innerHTML = '<option value="">마이크를 찾을 수 없습니다</option>';
+          return;
+        }
+
+        audioInputs.forEach((device, index) => {
+          const option = document.createElement('option');
+          option.value = device.deviceId;
+          option.textContent = device.label || `마이크 ${index + 1}`;
+          selMic.appendChild(option);
+        });
+
+        if (!currentDeviceId && audioInputs.length > 0) {
+          const defaultDevice = audioInputs.find(d => d.deviceId === 'default') || audioInputs[0];
+          currentDeviceId = defaultDevice.deviceId;
+          selMic.value = currentDeviceId;
+        }
+
+        selMic.disabled = false;
+      }
+    } catch (error) {
+      showToast('장치 목록을 가져올 수 없습니다', 'error');
+    }
+  }
+
+  async function getStream(deviceId) {
+    try {
+      if (localStream) {
+        localStream.getTracks().forEach(track => track.stop());
+        localStream = null;
+      }
+
+      const constraints = {
+        audio: {
+          deviceId: deviceId ? { exact: deviceId } : undefined,
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+          sampleRate: 24000,
+          channelCount: 1
+        }
+      };
+
+      localStream = await navigator.mediaDevices.getUserMedia(constraints);
+      currentDeviceId = deviceId;
+      return localStream;
+    } catch (error) {
+      throw new Error('오디오 스트림을 가져올 수 없습니다.');
+    }
+  }
+
+  // WebRTC connection
+  async function connectRealtime(ephemeral, model) {
+    try {
+      logStatus('연결 중', 'connecting');
       startTime = Date.now();
 
-      const sessionUpdate = {
-        type: 'session.update',
-        session: {
-          instructions: `You are a professional English-to-Korean real-time translator.
+      if (!ephemeral?.client_secret?.value) {
+        throw new Error('인증 토큰이 필요합니다.');
+      }
+
+      pc = new RTCPeerConnection({
+        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+      });
+
+      pc.onconnectionstatechange = () => {
+        const state = pc.connectionState;
+        switch (state) {
+          case 'connected':
+            if (dc && dc.readyState === 'open') {
+              logStatus('연결됨', 'connected');
+            }
+            break;
+          case 'disconnected':
+          case 'failed':
+            logStatus('연결 끊김', 'error');
+            closeConnection();
+            break;
+        }
+      };
+
+      dc = pc.createDataChannel('oai-events', { ordered: true });
+
+      dc.onopen = () => {
+        logStatus('연결됨', 'connected');
+        if (btnPause) btnPause.style.display = 'block';
+        startTime = Date.now();
+
+        const sessionUpdate = {
+          type: 'session.update',
+          session: {
+            instructions: `You are a professional English-to-Korean real-time translator.
 
 MISSION: Translate all English input to Korean immediately.
 
@@ -846,396 +926,359 @@ EXAMPLES:
 "Monsieur Faber" → "Faber 씨"
 
 TRANSLATE EVERYTHING TO KOREAN:`,
-          voice: 'alloy',
-          input_audio_format: 'pcm16',
-          output_audio_format: 'pcm16',
-          input_audio_transcription: {
-            model: 'whisper-1',
-            language: 'en'
-          },
-          turn_detection: {
-            type: 'server_vad',
-            threshold: 0.4,
-            prefix_padding_ms: 200,
-            silence_duration_ms: 400,
-            create_response: true
-          },
-          modalities: ['text'],
-          temperature: 0.6,  // fixed value
-          max_response_output_tokens: 4000
+            voice: 'alloy',
+            input_audio_format: 'pcm16',
+            output_audio_format: 'pcm16',
+            input_audio_transcription: {
+              model: 'whisper-1',
+              language: 'en'
+            },
+            turn_detection: {
+              type: 'server_vad',
+              threshold: 0.4,
+              prefix_padding_ms: 200,
+              silence_duration_ms: 400,
+              create_response: true
+            },
+            modalities: ['text'],
+            temperature: 0.6,
+            max_response_output_tokens: 4000
+          }
+        };
+
+        try {
+          dc.send(JSON.stringify(sessionUpdate));
+        } catch (error) {
+          logStatus('설정 실패', 'error');
         }
       };
 
-      try {
-        dc.send(JSON.stringify(sessionUpdate));
-      } catch (error) {
-        logStatus('설정 실패', 'error');
-      }
-    };
-
-    dc.onmessage = (event) => {
-      try {
-        const message = JSON.parse(event.data);
-        handleRealtimeMessage(message);
-      } catch (error) {
-        console.error('Message parse error:', error);
-      }
-    };
-
-    dc.onerror = () => logStatus('데이터 오류', 'error');
-    dc.onclose = () => {
-      if (pc && pc.connectionState !== 'closed') {
-        logStatus('연결 종료', 'error');
-      }
-    };
-
-    const stream = await getStream(currentDeviceId);
-    if (!stream || stream.getAudioTracks().length === 0) {
-      throw new Error('오디오 스트림을 가져올 수 없습니다.');
-    }
-
-    stream.getTracks().forEach(track => {
-      pc.addTrack(track, stream);
-    });
-
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-
-    const url = `https://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`;
-    const headers = {
-      'Authorization': `Bearer ${ephemeral.client_secret.value}`,
-      'Content-Type': 'application/sdp',
-      'OpenAI-Beta': 'realtime=v1',
-    };
-
-    const sdpResponse = await fetch(url, {
-      method: 'POST',
-      body: offer.sdp,
-      headers: headers
-    });
-
-    if (!sdpResponse.ok) {
-      if (sdpResponse.status === 401) {
-        throw new Error('인증이 만료되었습니다.');
-      } else if (sdpResponse.status === 429) {
-        throw new Error('사용량 한도를 초과했습니다.');
-      } else {
-        throw new Error('서버 연결에 실패했습니다.');
-      }
-    }
-
-    const answerSdp = await sdpResponse.text();
-    const answer = { type: 'answer', sdp: answerSdp };
-    await pc.setRemoteDescription(answer);
-
-  } catch (error) {
-    logStatus('연결 실패', 'error');
-    showToast(error.message || '연결에 실패했습니다', 'error');
-    closeConnection();
-    throw error;
-  }
-}
-
-function handleRealtimeMessage(message) {
-  if (isPaused && !message.type?.includes('error')) {
-    return;
-  }
-
-  // 디버깅 로그
-  console.log('[Realtime]', message.type, message);
-
-  // 지연시간 측정
-  if (startTime && !latencyEl.textContent) {
-    const isContent = (message.type?.includes('delta') || message.type?.includes('transcription')) &&
-      (message.delta || message.text || message.transcript);
-    if (isContent) {
-      const latency = Date.now() - startTime;
-      logLatency(latency);
-      startTime = null;
-    }
-  }
-
-  switch (message.type) {
-    case 'conversation.item.input_audio_transcription.completed':
-      if (message.transcript) {
-        const transcript = message.transcript.trim();
-
-        if (transcript === lastProcessedTranscript || transcript.length < 3) {
-          break;
+      dc.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data);
+          handleRealtimeMessage(message);
+        } catch (error) {
+          console.error('Message parse error:', error);
         }
+      };
 
-        lastProcessedTranscript = transcript;
-        console.log('[Transcription] New:', transcript);
-
-        if (pendingTranscript && pendingTranscript !== transcript) {
-          displayTranscriptAndTranslation(pendingTranscript, pendingTranslation || '');
+      dc.onerror = () => logStatus('데이터 오류', 'error');
+      dc.onclose = () => {
+        if (pc && pc.connectionState !== 'closed') {
+          logStatus('연결 종료', 'error');
         }
+      };
 
-        pendingTranscript = transcript;
-        pendingTranslation = '';
+      const stream = await getStream(currentDeviceId);
+      if (!stream || stream.getAudioTracks().length === 0) {
+        throw new Error('오디오 스트림을 가져올 수 없습니다.');
+      }
 
-        if (dc && dc.readyState === 'open' && !responseInProgress) {
-          responseInProgress = true;
-          dc.send(JSON.stringify({ type: 'response.create' }));
-          console.log('[Translation] Requested for:', transcript);
+      stream.getTracks().forEach(track => {
+        pc.addTrack(track, stream);
+      });
 
-          setTimeout(() => {
-            if (responseInProgress && pendingTranscript === transcript) {
-              console.warn('[Translation] Timeout');
-              responseInProgress = false;
-              currentResponseId = null;
-              if (pendingTranscript) {
-                displayTranscriptAndTranslation(pendingTranscript, '');
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      const url = `https://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`;
+      const headers = {
+        'Authorization': `Bearer ${ephemeral.client_secret.value}`,
+        'Content-Type': 'application/sdp',
+        'OpenAI-Beta': 'realtime=v1',
+      };
+
+      const sdpResponse = await fetch(url, {
+        method: 'POST',
+        body: offer.sdp,
+        headers: headers
+      });
+
+      if (!sdpResponse.ok) {
+        if (sdpResponse.status === 401) {
+          throw new Error('인증이 만료되었습니다.');
+        } else if (sdpResponse.status === 429) {
+          throw new Error('사용량 한도를 초과했습니다.');
+        } else {
+          throw new Error('서버 연결에 실패했습니다.');
+        }
+      }
+
+      const answerSdp = await sdpResponse.text();
+      const answer = { type: 'answer', sdp: answerSdp };
+      await pc.setRemoteDescription(answer);
+
+    } catch (error) {
+      logStatus('연결 실패', 'error');
+      showToast(error.message || '연결에 실패했습니다', 'error');
+      closeConnection();
+      throw error;
+    }
+  }
+
+  function handleRealtimeMessage(message) {
+    if (isPaused && !message.type?.includes('error')) {
+      return;
+    }
+
+
+    // 지연시간 측정
+    if (startTime && latencyEl && !latencyEl.textContent) {
+      const isContent = (message.type?.includes('delta') || message.type?.includes('transcription')) &&
+        (message.delta || message.text || message.transcript);
+      if (isContent) {
+        const latency = Date.now() - startTime;
+        logLatency(latency);
+        startTime = null;
+      }
+    }
+
+    switch (message.type) {
+      case 'conversation.item.input_audio_transcription.completed':
+        if (message.transcript) {
+          const transcript = message.transcript.trim();
+
+          if (transcript === lastProcessedTranscript || transcript.length < 3) {
+            break;
+          }
+
+          lastProcessedTranscript = transcript;
+          console.log('[Transcription] New:', transcript);
+
+          // 이전 pending 완료
+          if (pendingTranscript && pendingTranscript !== transcript) {
+            if (pendingTranslation) {
+              completeTypingTranslation(pendingTranslation);
+            } else if (currentTypingLine) {
+              currentTypingLine.remove();
+              currentTypingLine = null;
+            }
+          }
+
+          // 🎨 원문 즉시 표시
+          appendLine(transcript, 'original');
+
+          // 🎨 빈 타이핑 말풍선 생성
+          startTypingTranslation();
+
+          pendingTranscript = transcript;
+          pendingTranslation = '';
+
+          if (dc && dc.readyState === 'open' && !responseInProgress) {
+            responseInProgress = true;
+            dc.send(JSON.stringify({ type: 'response.create' }));
+            console.log('[Translation] Requested for:', transcript);
+
+            setTimeout(() => {
+              if (responseInProgress && pendingTranscript === transcript) {
+                console.warn('[Translation] Timeout');
+                responseInProgress = false;
+                currentResponseId = null;
+                if (currentTypingLine) {
+                  currentTypingLine.remove();
+                  currentTypingLine = null;
+                }
                 pendingTranscript = null;
                 pendingTranslation = '';
               }
-            }
-          }, 8000);
+            }, 8000);
+          }
         }
+        break;
+
+      case 'response.text.delta':
+        if (message.delta && pendingTranscript) {
+          const cleanDelta = message.delta.replace(/^["']|["']$/g, '');
+          if (!cleanDelta.toLowerCase().includes('cannot') &&
+              !cleanDelta.toLowerCase().includes('sorry')) {
+            pendingTranslation += cleanDelta;
+
+            // 🎨 실시간 타이핑 업데이트
+            updateTypingTranslation(pendingTranslation);
+            console.log('[Delta]', cleanDelta);
+          }
+        }
+        break;
+
+      case 'response.text.done':
+        if (message.text && pendingTranscript) {
+          let cleanText = message.text.replace(/^["']|["']$/g, '').trim();
+          console.log('[Done]', cleanText);
+
+          if (cleanText.toLowerCase().includes('cannot assist') ||
+              cleanText.toLowerCase().includes('sorry, but i can\'t')) {
+            cleanText = '';
+          }
+
+          const finalTranslation = cleanText || pendingTranslation.trim();
+          console.log('[Final Translation]', finalTranslation);
+
+          if (finalTranslation && finalTranslation.length > 0) {
+            // 🎨 타이핑 완료 - 초록색 테두리로 변경
+            completeTypingTranslation(finalTranslation);
+          } else if (currentTypingLine) {
+            // 번역 실패 시 타이핑 라인 제거
+            currentTypingLine.remove();
+            currentTypingLine = null;
+          }
+
+          pendingTranscript = null;
+          pendingTranslation = '';
+        }
+        break;
+
+      case 'response.created':
+        currentResponseId = message.response?.id || Date.now().toString();
+        responseInProgress = true;
+        console.log('[Response] Created:', currentResponseId);
+        break;
+
+      case 'response.done':
+        responseInProgress = false;
+        currentResponseId = null;
+        console.log('[Response] Done');
+        break;
+
+      case 'input_audio_buffer.speech_started':
+        logStatus('음성 인식 중', 'connecting');
+        break;
+
+      case 'input_audio_buffer.speech_stopped':
+        logStatus('처리 중', 'connecting');
+        break;
+
+      case 'error':
+        console.error('[Error]', message.error);
+        logStatus('오류', 'error');
+        showToast('서비스 오류가 발생했습니다', 'error');
+        break;
+
+      default:
+        console.log('[Unhandled]', message.type);
+        break;
+    }
+  }
+
+  function closeConnection() {
+    try {
+      if (dc) { dc.close(); dc = null; }
+      if (pc) { pc.close(); pc = null; }
+      if (localStream) {
+        localStream.getTracks().forEach(track => track.stop());
+        localStream = null;
       }
-      break;
 
-    case 'response.text.delta':
-      if (message.delta && pendingTranscript) {
-        const cleanDelta = message.delta.replace(/^["']|["']$/g, '');
-        if (!cleanDelta.toLowerCase().includes('cannot') &&
-            !cleanDelta.toLowerCase().includes('sorry')) {
-          pendingTranslation += cleanDelta;
-          console.log('[Delta]', cleanDelta);
-        }
-      }
-      break;
-
-    case 'response.text.done':
-      if (message.text && pendingTranscript) {
-        let cleanText = message.text.replace(/^["']|["']$/g, '').trim();
-        console.log('[Done]', cleanText);
-
-        if (cleanText.toLowerCase().includes('cannot assist') ||
-            cleanText.toLowerCase().includes('sorry, but i can\'t')) {
-          cleanText = '';
-        }
-
-        const finalTranslation = cleanText || pendingTranslation.trim();
-        console.log('[Final Translation]', finalTranslation);
-
-        if (finalTranslation && finalTranslation.length > 0) {
-          displayTranscriptAndTranslation(pendingTranscript, finalTranslation);
-        } else {
-          displayTranscriptAndTranslation(pendingTranscript, '');
-        }
-
-        pendingTranscript = null;
-        pendingTranslation = '';
-      }
-      break;
-
-    case 'response.created':
-      currentResponseId = message.response?.id || Date.now().toString();
-      responseInProgress = true;
-      console.log('[Response] Created:', currentResponseId);
-      break;
-
-    case 'response.done':
+      currentUnstableLine = null;
+      currentTypingLine = null;
       responseInProgress = false;
       currentResponseId = null;
-      console.log('[Response] Done');
-      break;
+      pendingTranscript = null;
+      pendingTranslation = '';
+      lastProcessedTranscript = null;
+      isPaused = false;
 
-    case 'input_audio_buffer.speech_started':
-      logStatus('음성 인식 중', 'connecting');
-      break;
-
-    case 'input_audio_buffer.speech_stopped':
-      logStatus('처리 중', 'connecting');
-      break;
-
-    case 'error':
-      console.error('[Error]', message.error);
-      logStatus('오류', 'error');
-      showToast('서비스 오류가 발생했습니다', 'error');
-      break;
-
-    default:
-      console.log('[Unhandled]', message.type);
-      break;
-  }
-}
-
-function closeConnection() {
-  try {
-    if (dc) { dc.close(); dc = null; }
-    if (pc) { pc.close(); pc = null; }
-    if (localStream) {
-      localStream.getTracks().forEach(track => track.stop());
-      localStream = null;
-    }
-
-    currentUnstableLine = null;
-    responseInProgress = false;
-    currentResponseId = null;
-    pendingTranscript = null;
-    pendingTranslation = '';
-    lastProcessedTranscript = null;
-    isPaused = false;
-
-    btnPause.style.display = 'none';
-    btnPause.textContent = '⏸️ 일시정지';
-    logStatus('대기중', '');
-    logLatency(0);
-    backToLiveBtn.style.display = 'none';
-  } catch (error) {
-    // 조용히 처리
-  }
-}
-
-// Event handlers
-btnPerm.onclick = async () => {
-  const success = await ensurePermission();
-  if (success) {
-    await listMics();
-  }
-};
-
-btnPause.onclick = () => {
-  if (isPaused) {
-    isPaused = false;
-    btnPause.textContent = '⏸️ 일시정지';
-    logStatus('연결됨', 'connected');
-  } else {
-    isPaused = true;
-    btnPause.textContent = '▶️ 재개';
-    logStatus('일시정지', 'connecting');
-    clearViewer();
-  }
-};
-
-selMic.onchange = async (event) => {
-  const newDeviceId = event.target.value;
-  if (!newDeviceId) return;
-
-  const wasConnected = pc && pc.connectionState === 'connected';
-  currentDeviceId = newDeviceId;
-
-  if (wasConnected) {
-    try {
-      logStatus('장치 변경 중', 'connecting');
-      const newStream = await getStream(newDeviceId);
-      const audioTrack = newStream.getAudioTracks()[0];
-      const sender = pc.getSenders().find(s => s.track && s.track.kind === 'audio');
-
-      if (sender && audioTrack) {
-        await sender.replaceTrack(audioTrack);
-        logStatus('연결됨', 'connected');
+      if (btnPause) {
+        btnPause.style.display = 'none';
+        btnPause.textContent = '⏸️ 일시정지';
+      }
+      logStatus('대기중', '');
+      logLatency(0);
+      if (backToLiveBtn) {
+        backToLiveBtn.style.display = 'none';
       }
     } catch (error) {
-      logStatus('장치 변경 실패', 'error');
-      selMic.value = currentDeviceId;
+      console.error('Close connection error:', error);
     }
   }
-};
 
-// Bootstrap
-(async () => {
-  try {
-    if (BOOT.action === 'start' && BOOT.ephemeral) {
-      const hasPermission = await ensurePermission();
-      if (hasPermission) {
+  // Event handlers
+  if (btnPerm) {
+    btnPerm.onclick = async () => {
+      const success = await ensurePermission();
+      if (success) {
         await listMics();
-        await connectRealtime(BOOT.ephemeral, BOOT.model);
       }
-    } else if (BOOT.action === 'stop') {
-      closeConnection();
-      clearViewer();
-    } else {
-      logStatus('대기중', '');
+    };
+  }
+
+  if (btnPause) {
+    btnPause.onclick = () => {
+      if (isPaused) {
+        isPaused = false;
+        btnPause.textContent = '⏸️ 일시정지';
+        logStatus('연결됨', 'connected');
+      } else {
+        isPaused = true;
+        btnPause.textContent = '▶️ 재개';
+        logStatus('일시정지', 'connecting');
+        clearViewer();
+      }
+    };
+  }
+
+  if (selMic) {
+    selMic.onchange = async (event) => {
+      const newDeviceId = event.target.value;
+      if (!newDeviceId) return;
+
+      const wasConnected = pc && pc.connectionState === 'connected';
+      currentDeviceId = newDeviceId;
+
+      if (wasConnected) {
+        try {
+          logStatus('장치 변경 중', 'connecting');
+          const newStream = await getStream(newDeviceId);
+          const audioTrack = newStream.getAudioTracks()[0];
+          const sender = pc.getSenders().find(s => s.track && s.track.kind === 'audio');
+
+          if (sender && audioTrack) {
+            await sender.replaceTrack(audioTrack);
+            logStatus('연결됨', 'connected');
+          }
+        } catch (error) {
+          logStatus('장치 변경 실패', 'error');
+          selMic.value = currentDeviceId;
+        }
+      }
+    };
+  }
+
+  // Bootstrap - 안전한 초기화
+  (async () => {
+    try {
+      console.log('Bootstrap starting...', BOOT);
+
+      if (BOOT.action === 'start' && BOOT.ephemeral) {
+        const hasPermission = await ensurePermission();
+        if (hasPermission) {
+          await listMics();
+          await connectRealtime(BOOT.ephemeral, BOOT.model);
+        }
+      } else if (BOOT.action === 'stop') {
+        closeConnection();
+        clearViewer();
+      } else {
+        logStatus('대기중', '');
+      }
+
+      console.log('Bootstrap completed successfully');
+    } catch (error) {
+      console.error('Bootstrap error:', error);
+      logStatus('초기화 실패', 'error');
+      showToast(`초기화 오류: ${error.message}`, 'error');
     }
-  } catch (error) {
-    logStatus('초기화 실패', 'error');
-  }
-})();
+  })();
 
-// Cleanup
-window.addEventListener('beforeunload', () => {
-  closeConnection();
-});
-
-// 스크롤 상태 추적 개선
-let scrollTimer = null;
-let isAutoScrolling = false;
-
-// 개선된 자동 스크롤 함수
-function autoScrollToBottom() {
-  if (!isUserScrolling()) {
-    isAutoScrolling = true;
-    viewer.scrollTo({
-      top: viewer.scrollHeight,
-      behavior: 'smooth'
-    });
-
-    // 스크롤 완료 후 플래그 해제
-    setTimeout(() => {
-      isAutoScrolling = false;
-    }, 500);
-  }
-}
-
-// 사용자 스크롤 감지 개선
-function isUserScrolling() {
-  const threshold = 100;
-  return viewer.scrollTop < (viewer.scrollHeight - viewer.clientHeight - threshold);
-}
-
-// 개선된 스크롤 이벤트 핸들링
-viewer.addEventListener('scroll', () => {
-  // 자동 스크롤 중에는 버튼 표시 안 함
-  if (isAutoScrolling) {
-    return;
-  }
-
-  const isAtBottom = viewer.scrollTop >= (viewer.scrollHeight - viewer.clientHeight - 50);
-
-  // 스크롤 타이머로 디바운스 처리
-  clearTimeout(scrollTimer);
-  scrollTimer = setTimeout(() => {
-    if (!isAtBottom) {
-      backToLiveBtn.style.display = 'flex';
-    } else {
-      backToLiveBtn.style.display = 'none';
-    }
-  }, 100);
-});
-
-// 실시간으로 버튼 개선
-backToLiveBtn.onclick = () => {
-  isAutoScrolling = true;
-  viewer.scrollTo({
-    top: viewer.scrollHeight,
-    behavior: 'smooth'
+  // Cleanup
+  window.addEventListener('beforeunload', () => {
+    closeConnection();
   });
 
-  setTimeout(() => {
-    isAutoScrolling = false;
-    backToLiveBtn.classList.remove('show');
-  }, 500);
-};
-
-function clearViewer() {
-  captionContainer.innerHTML = `
-    <div class="welcome-state">
-      <div class="icon">🎙️</div>
-      <h1>실시간 영어-한국어 자막</h1>
-      <p>영어로 말하면 한국어 자막이<br>실시간으로 나타납니다</p>
-      <div class="hint">
-        <span>⚙️</span>
-        <span>우상단 설정에서 마이크를 활성화하세요</span>
-      </div>
-    </div>
-  `;
-  currentUnstableLine = null;
-  backToLiveBtn.classList.remove('show');
+} catch (globalError) {
+  console.error('Global script error:', globalError);
+  document.getElementById('status').textContent = '스크립트 오류';
+  document.getElementById('status').className = 'status-chip error';
 }
-
 </script>
 </body>
 </html>
