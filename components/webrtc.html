@@ -556,6 +556,8 @@ try {
   let pendingTranscript = null;
   let pendingTranslation = '';
   let lastProcessedTranscript = null;
+  let lastTranslationRequest = null;
+  let translationRequestTime = 0;
   let isPaused = false;
   let isUserScrolling = false;    // 🎯 사용자 스크롤 상태
   let lastAutoScrollTime = 0;     // 🎯 마지막 자동 스크롤 시간
@@ -1141,7 +1143,7 @@ try {
           startTypingTranslation();
           setTimeout(() => {
             completeTypingTranslation(`${data.translated_text}`);
-          }, 300);
+          }, 100);
         }
         break;
 
@@ -1151,7 +1153,7 @@ try {
           startTypingTranslation();
           setTimeout(() => {
             completeTypingTranslation(data.translated_text);
-          }, 300);
+          }, 100);
         }
         break;
 
@@ -1379,6 +1381,38 @@ try {
     }
   }
 
+  // 번역 요청 스마트 필터링 함수
+  function shouldRequestTranslation(transcript) {
+    const now = Date.now();
+
+    // 1. 이미 번역 진행 중이면 스킵
+    if (responseInProgress) {
+      console.log('[Skip Translation] Already in progress');
+      return false;
+    }
+
+    // 2. 같은 내용 또는 매우 유사한 내용이면 스킵
+    if (lastTranslationRequest === transcript) {
+      console.log('[Skip Translation] Duplicate request');
+      return false;
+    }
+
+    // 3. 이전 요청이 부분 문자열인경우 스킵 (확장된 내용)
+    if (lastTranslationRequest && transcript.startsWith(lastTranslationRequest) &&
+        transcript.length - lastTranslationRequest.length < 10) {
+      console.log('[Skip Translation] Minor extension of previous request');
+      return false;
+    }
+
+    // 4. 너무 빠른 연속 요청 방지 (디바운싱)
+    if (now - translationRequestTime < 1000) { // 1초 간격
+      console.log('[Skip Translation] Too frequent requests');
+      return false;
+    }
+
+    return true;
+  }
+
   // 영어 문장 완성도 체크 함수 추가
   function isTranscriptComplete(transcript) {
     // 최소 길이 체크 (영어는 3글자 이상)
@@ -1467,14 +1501,18 @@ try {
           pendingTranscript = transcript;
           pendingTranslation = '';
 
-          if (dc && dc.readyState === 'open' && !responseInProgress) {
+          // 🚀 스마트 필터링으로 불필요한 번역 요청 방지
+          if (dc && dc.readyState === 'open' && shouldRequestTranslation(transcript)) {
             responseInProgress = true;
+            lastTranslationRequest = transcript;
+            translationRequestTime = Date.now();
+
             dc.send(JSON.stringify({ type: 'response.create' }));
-            console.log('[Translation] Requested for:', transcript);
+            console.log('[Translation] ✅ Requested for:', transcript);
 
             setTimeout(() => {
               if (responseInProgress && pendingTranscript === transcript) {
-                console.warn('[Translation] Timeout for:', transcript);
+                console.warn('[Translation] ⏱️ Timeout for:', transcript);
                 responseInProgress = false;
                 currentResponseId = null;
                 if (currentTypingLine) {
@@ -1484,7 +1522,12 @@ try {
                 pendingTranscript = null;
                 pendingTranslation = '';
               }
-            }, 5000);
+            }, 2500);
+          } else if (dc && dc.readyState === 'open') {
+            // 번역 요청을 스킵했지만 원문은 표시했으므로 상태 정리
+            console.log('[Translation] 🚫 Skipped request for:', transcript);
+            pendingTranscript = null;
+            pendingTranslation = '';
           }
         }
         break;
@@ -1592,6 +1635,8 @@ try {
       pendingTranscript = null;
       pendingTranslation = '';
       lastProcessedTranscript = null;
+      lastTranslationRequest = null;
+      translationRequestTime = 0;
       isPaused = false;
       isUserScrolling = false;
       lastAutoScrollTime = 0;
