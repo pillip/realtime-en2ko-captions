@@ -6,9 +6,7 @@
 import glob
 import json
 import os
-import time
 import wave
-from datetime import datetime
 
 import boto3
 from dotenv import load_dotenv
@@ -23,7 +21,7 @@ def translate_with_llm(bedrock_client, text, source_lang, target_lang):
         # 컨텍스트에 맞는 번역 프롬프트 구성
         if target_lang == "ko":
             # 영어 → 한국어
-            prompt = f"""다음 영어 텍스트를 자연스러운 한국어로 번역해주세요. 
+            prompt = f"""다음 영어 텍스트를 자연스러운 한국어로 번역해주세요.
 기술 프레젠테이션이나 비즈니스 맥락에서 사용될 실시간 자막입니다.
 
 원문: "{text}"
@@ -35,7 +33,7 @@ def translate_with_llm(bedrock_client, text, source_lang, target_lang):
 - 문화적 뉘앙스 반영
 
 번역 결과만 답변해주세요:"""
-        
+
         else:
             # 한국어 → 영어
             prompt = f"""다음 한국어 텍스트를 자연스러운 영어로 번역해주세요.
@@ -51,38 +49,32 @@ def translate_with_llm(bedrock_client, text, source_lang, target_lang):
 번역 결과만 답변해주세요:"""
 
         # Claude 모델 사용 (Bedrock 표준 포맷 - 2025 업데이트)
-        body = json.dumps({
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 200,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": prompt
-                        }
-                    ]
-                }
-            ],
-            "temperature": 0.3,
-            "top_p": 0.9
-        })
+        body = json.dumps(
+            {
+                "anthropic_version": "bedrock-2023-05-31",
+                "max_tokens": 200,
+                "messages": [
+                    {"role": "user", "content": [{"type": "text", "text": prompt}]}
+                ],
+                "temperature": 0.3,
+                "top_p": 0.9,
+            }
+        )
 
         # 여러 모델 ID 시도 (안정성 우선)
         model_ids = [
             "anthropic.claude-3-5-sonnet-20240620-v1:0",  # 안정 버전
-            "anthropic.claude-3-haiku-20240307-v1:0",     # 빠른 처리
-            "anthropic.claude-3-sonnet-20240229-v1:0"     # 백업 버전
+            "anthropic.claude-3-haiku-20240307-v1:0",  # 빠른 처리
+            "anthropic.claude-3-sonnet-20240229-v1:0",  # 백업 버전
         ]
-        
+
         for model_id in model_ids:
             try:
                 response = bedrock_client.invoke_model(
                     modelId=model_id,
                     body=body,
                     contentType="application/json",
-                    accept="application/json"
+                    accept="application/json",
                 )
                 break  # 성공하면 루프 종료
             except Exception as model_error:
@@ -90,19 +82,17 @@ def translate_with_llm(bedrock_client, text, source_lang, target_lang):
                 if model_id == model_ids[-1]:  # 마지막 모델도 실패하면
                     raise model_error
 
-        response_body = json.loads(response['body'].read())
-        translated_text = response_body['content'][0]['text'].strip()
-        
+        response_body = json.loads(response["body"].read())
+        translated_text = response_body["content"][0]["text"].strip()
+
         # 결과 정리 (따옴표나 불필요한 문자 제거)
-        translated_text = translated_text.strip('"\'')
-        
+        translated_text = translated_text.strip("\"'")
+
         return translated_text
-        
+
     except Exception as e:
         print(f"    ❌ LLM 번역 실패: {e}")
         return None
-
-
 
 
 def analyze_wav_file(wav_path):
@@ -119,7 +109,7 @@ def analyze_wav_file(wav_path):
 
         print(f"\n🔍 파일 분석: {os.path.basename(wav_path)}")
         print(
-            f"  📊 채널: {channels}, 비트: {sample_width*8}, 샘플레이트: {frame_rate}Hz"
+            f"  📊 채널: {channels}, 비트: {sample_width * 8}, 샘플레이트: {frame_rate}Hz"
         )
         print(f"  ⏱️ 길이: {duration:.2f}초, 크기: {file_size} bytes")
 
@@ -139,7 +129,7 @@ def analyze_wav_file(wav_path):
 def test_aws_transcribe_multilang(wav_path, info):
     """다중 언어 감지 및 번역 테스트"""
     try:
-        print(f"\n🔄 AWS Transcribe 다중 언어 테스트:")
+        print("\n🔄 AWS Transcribe 다중 언어 테스트:")
         print(f"  📂 파일: {os.path.basename(wav_path)}")
 
         # AWS 클라이언트 초기화
@@ -152,17 +142,17 @@ def test_aws_transcribe_multilang(wav_path, info):
             aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
             region_name=region_name,
         )
-        
+
         # Bedrock Runtime 클라이언트 초기화 (LLM 통합용)
         try:
             bedrock_client = boto3.client(
                 "bedrock-runtime",
                 aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
                 aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
-                region_name=region_name
+                region_name=region_name,
             )
             bedrock_available = True
-            print(f"  🤖 Bedrock LLM 통합 준비 완료")
+            print("  🤖 Bedrock LLM 통합 준비 완료")
         except Exception as bedrock_error:
             bedrock_client = None
             bedrock_available = False
@@ -264,7 +254,7 @@ def test_aws_transcribe_multilang(wav_path, info):
 
                     return handler.transcript_text, handler.confidence_score
 
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     print(f"    ⏰ {lang_name} 타임아웃")
                     return None, 0
                 except Exception as e:
@@ -284,7 +274,7 @@ def test_aws_transcribe_multilang(wav_path, info):
 
                     # 영어에서 성공하고 신뢰도가 높으면 다른 언어 시도 안함 (비용 절약)
                     if lang_code == "en-US" and confidence > 0.7:
-                        print(f"    🚀 영어 인식 신뢰도가 높아서 다른 언어 시도 생략")
+                        print("    🚀 영어 인식 신뢰도가 높아서 다른 언어 시도 생략")
                         break
 
                 elif result:
@@ -300,7 +290,7 @@ def test_aws_transcribe_multilang(wav_path, info):
 
         # 최고 결과 출력 및 번역 처리
         if best_result:
-            print(f"\n  🏆 최종 인식 결과:")
+            print("\n  🏆 최종 인식 결과:")
             print(f"    📝 텍스트: '{best_result}'")
             print(f"    🌐 감지 언어: {detected_language}")
             print(f"    📊 신뢰도: {best_confidence:.2f}")
@@ -309,22 +299,24 @@ def test_aws_transcribe_multilang(wav_path, info):
             try:
                 if detected_language == "ko-KR":
                     # 한국어 → 영어 번역 (LLM 우선, 실패시 기본 Translate)
-                    print(f"\n  🔄 한국어 → 영어 번역 중...")
-                    
+                    print("\n  🔄 한국어 → 영어 번역 중...")
+
                     translated_text = None
                     if bedrock_available:
-                        print(f"    🤖 LLM 고품질 번역 시도 중...")
-                        translated_text = translate_with_llm(bedrock_client, best_result, "ko", "en")
-                        
+                        print("    🤖 LLM 고품질 번역 시도 중...")
+                        translated_text = translate_with_llm(
+                            bedrock_client, best_result, "ko", "en"
+                        )
+
                     if not translated_text:
-                        print(f"    🔄 기본 AWS Translate 사용...")
+                        print("    🔄 기본 AWS Translate 사용...")
                         translate_response = translate_client.translate_text(
                             Text=best_result,
                             SourceLanguageCode="ko",
-                            TargetLanguageCode="en"
+                            TargetLanguageCode="en",
                         )
                         translated_text = translate_response["TranslatedText"]
-                    
+
                     print(f"  ✅ 번역 완료: '{translated_text}'")
 
                     return {
@@ -341,17 +333,19 @@ def test_aws_transcribe_multilang(wav_path, info):
 
                     translated_text = None
                     if bedrock_available:
-                        print(f"    🤖 LLM 고품질 번역 시도 중...")
+                        print("    🤖 LLM 고품질 번역 시도 중...")
                         source_lang_mapping = {
                             "en-US": "en",
-                            "ja-JP": "ja", 
-                            "zh-CN": "zh"
+                            "ja-JP": "ja",
+                            "zh-CN": "zh",
                         }
                         source_lang = source_lang_mapping.get(detected_language, "en")
-                        translated_text = translate_with_llm(bedrock_client, best_result, source_lang, "ko")
-                        
+                        translated_text = translate_with_llm(
+                            bedrock_client, best_result, source_lang, "ko"
+                        )
+
                     if not translated_text:
-                        print(f"    🔄 기본 AWS Translate 사용...")
+                        print("    🔄 기본 AWS Translate 사용...")
                         # 언어별 소스 언어 코드 명시적 설정
                         source_lang_mapping = {
                             "en-US": "en",
@@ -397,7 +391,7 @@ def test_aws_transcribe_multilang(wav_path, info):
 
     except Exception as e:
         print(f"  💥 AWS Transcribe 오류: {e}")
-        print(f"  💡 확인사항:")
+        print("  💡 확인사항:")
         print(f"    - AWS_REGION: {os.getenv('AWS_REGION', '설정안됨')}")
         print(
             f"    - AWS_ACCESS_KEY_ID: {'설정됨' if os.getenv('AWS_ACCESS_KEY_ID') else '설정안됨'}"
@@ -410,12 +404,12 @@ def test_aws_transcribe_multilang(wav_path, info):
 
 def test_simple_transcribe_streaming():
     """간단한 AWS Transcribe Streaming 테스트 (app_new.py와 동일한 방식)"""
-    print(f"\n🌊 AWS Transcribe Streaming 테스트:")
+    print("\n🌊 AWS Transcribe Streaming 테스트:")
 
     # app_new.py에서 사용하는 동일한 로직으로 테스트
     # 실제로는 WebSocket 연결을 통해 실시간 스트리밍
-    print(f"  ℹ️ 실제 스트리밍 테스트는 app_new.py 실행 상태에서 확인 가능")
-    print(f"  ℹ️ 현재는 저장된 WAV 파일의 배치 처리만 테스트")
+    print("  ℹ️ 실제 스트리밍 테스트는 app_new.py 실행 상태에서 확인 가능")
+    print("  ℹ️ 현재는 저장된 WAV 파일의 배치 처리만 테스트")
     return None
 
 
@@ -487,7 +481,9 @@ def main():
     success_count = sum(1 for r in results if r["result"])
     total = len(results)
 
-    print(f"\n🎯 전체 성공률: {success_count}/{total} ({success_count/total*100:.1f}%)")
+    print(
+        f"\n🎯 전체 성공률: {success_count}/{total} ({success_count / total * 100:.1f}%)"
+    )
 
     if success_count == 0:
         print("\n💡 모든 테스트가 실패했습니다. 확인사항:")

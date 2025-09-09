@@ -1379,6 +1379,39 @@ try {
     }
   }
 
+  // 영어 문장 완성도 체크 함수 추가
+  function isTranscriptComplete(transcript) {
+    // 최소 길이 체크 (영어는 3글자 이상)
+    if (transcript.length < 3) {
+      return false;
+    }
+
+    // 문장 부호로 끝나면 완성된 것으로 간주
+    if (/[.!?]$/.test(transcript)) {
+      return true;
+    }
+
+    // 단어가 완전히 끝났는지 체크 (공백이나 구두점 뒤 완전한 단어)
+    const words = transcript.split(/\s+/);
+    const lastWord = words[words.length - 1];
+
+    // 마지막 단어가 너무 짧으면 불완전할 가능성
+    if (lastWord.length < 2) {
+      return false;
+    }
+
+    // 일반적인 불완전 단어 패턴들
+    const incompletePatterns = [
+      /ing$/,  // -ing로 끝나는 경우는 대부분 완성
+      /ed$/,   // -ed로 끝나는 경우도 완성
+      /[aeiou]$/,  // 모음으로 끝나면 보통 완성
+      /[bcdfghjklmnpqrstvwxyz]{2,}$/  // 자음 2개 이상으로 끝나면 보통 완성
+    ];
+
+    // 패턴 매칭으로 완성도 판단
+    return incompletePatterns.some(pattern => pattern.test(lastWord.toLowerCase()));
+  }
+
   function handleRealtimeMessage(message) {
     if (isPaused && !message.type?.includes('error')) {
       return;
@@ -1401,9 +1434,14 @@ try {
         if (message.transcript) {
           const transcript = message.transcript.trim();
 
-          // 너무 짧은 전사나 완전 동일한 전사만 skip
-          if (transcript.length < 2 || transcript === lastProcessedTranscript) {
-            console.log('[Skip] Too short or duplicate:', transcript);
+          // 영어 문장 완성도 체크 개선
+          const isComplete = isTranscriptComplete(transcript);
+          const isDuplicate = transcript === lastProcessedTranscript ||
+                            (lastProcessedTranscript && transcript.length > 5 &&
+                             lastProcessedTranscript.includes(transcript.slice(0, -2)));
+
+          if (!isComplete || isDuplicate) {
+            console.log('[Skip] Incomplete or duplicate:', transcript, { isComplete, isDuplicate });
             break;
           }
 
