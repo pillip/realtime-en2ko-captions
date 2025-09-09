@@ -959,7 +959,7 @@ try {
           echoCancellation: false,
           noiseSuppression: false,
           autoGainControl: false,
-          sampleRate: 24000
+          sampleRate: 16000  // ⚡ AudioContext와 일치시켜 리샘플링 오버헤드 제거
         }
       });
 
@@ -1019,7 +1019,7 @@ try {
           echoCancellation: false,
           noiseSuppression: false,
           autoGainControl: false,
-          sampleRate: 24000,
+          sampleRate: 16000,  // ⚡ AudioContext와 일치
           channelCount: 1
         }
       };
@@ -1141,9 +1141,8 @@ try {
         if (data.translated_text && data.translated_text !== data.original_text) {
           const targetLanguageName = getLanguageName(data.target_language);
           startTypingTranslation();
-          setTimeout(() => {
-            completeTypingTranslation(`${data.translated_text}`);
-          }, 100);
+          // ⚡ 애니메이션 딜레이 제거 - 즉시 표시
+          completeTypingTranslation(`${data.translated_text}`);
         }
         break;
 
@@ -1151,9 +1150,8 @@ try {
         // 직접 번역 요청 결과 (기존 호환성 유지)
         if (data.translated_text) {
           startTypingTranslation();
-          setTimeout(() => {
-            completeTypingTranslation(data.translated_text);
-          }, 100);
+          // ⚡ 애니메이션 딜레이 제거 - 즉시 표시
+          completeTypingTranslation(data.translated_text);
         }
         break;
 
@@ -1218,7 +1216,7 @@ try {
         class AudioProcessor extends AudioWorkletProcessor {
           constructor() {
             super();
-            this.bufferSize = 2048;  // 작은 버퍼로 더 자주 체크
+            this.bufferSize = 1024;  // ⚡ 더 작은 버퍼로 지연시간 단축 (64ms)
             this.buffer = new Float32Array(this.bufferSize);
             this.bufferIndex = 0;
             this.chunkCount = 0;
@@ -1318,8 +1316,15 @@ try {
           // AWS로 데이터 전송
           if (awsWebSocket && awsWebSocket.readyState === WebSocket.OPEN && isTranscriptionActive) {
             try {
+              // ⚡ 더 효율적인 Base64 인코딩 방식
               const uint8Array = new Uint8Array(audioBuffer);
-              const base64Audio = btoa(String.fromCharCode.apply(null, uint8Array));
+              let binary = '';
+              const chunkSize = 8192; // 8KB 청크로 처리하여 스택 오버플로우 방지
+              for (let i = 0; i < uint8Array.length; i += chunkSize) {
+                const chunk = uint8Array.subarray(i, i + chunkSize);
+                binary += String.fromCharCode.apply(null, chunk);
+              }
+              const base64Audio = btoa(binary);
 
               const message = {
                 type: 'audio_chunk',
