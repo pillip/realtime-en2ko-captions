@@ -596,6 +596,97 @@ async def handle_transcribe_websocket(websocket):
                         speech_state = "silent"
                         print(f"[Stream] 🔇 {SILENCE_DURATION}초 침묵 → 세션 종료")
 
+                        # 긴 침묵 시 남은 미완성 텍스트도 강제 번역
+                        if pending_sentences or accumulated_text:
+                            print("[Stream] 🏁 세션 종료 - 남은 텍스트 강제 번역")
+                            if accumulated_text:
+                                pending_sentences.append(accumulated_text)
+                                accumulated_text = ""
+
+                            if pending_sentences:
+                                # 즉시 번역 실행
+                                text_to_translate = " ".join(pending_sentences)
+                                print(
+                                    f"[Translate] 🏁 세션 종료 번역: {text_to_translate}"
+                                )
+
+                                try:
+                                    # 언어 감지 (마지막 detected_language 사용)
+                                    last_lang = (
+                                        last_detected_language
+                                        if "last_detected_language" in locals()
+                                        else "en-US"
+                                    )
+
+                                    if last_lang == "ko-KR":
+                                        # 한국어 → 영어
+                                        if bedrock_available:
+                                            translated_text = translate_with_llm(
+                                                bedrock_client,
+                                                text_to_translate,
+                                                "ko",
+                                                "en",
+                                            )
+                                        if not translated_text:
+                                            translate_response = (
+                                                translate_client.translate_text(
+                                                    Text=text_to_translate,
+                                                    SourceLanguageCode="ko",
+                                                    TargetLanguageCode="en",
+                                                )
+                                            )
+                                            translated_text = translate_response[
+                                                "TranslatedText"
+                                            ]
+                                        target_language = "en"
+                                    else:
+                                        # 영어 → 한국어
+                                        if bedrock_available:
+                                            translated_text = translate_with_llm(
+                                                bedrock_client,
+                                                text_to_translate,
+                                                "en",
+                                                "ko",
+                                            )
+                                        if not translated_text:
+                                            translate_response = (
+                                                translate_client.translate_text(
+                                                    Text=text_to_translate,
+                                                    SourceLanguageCode="en",
+                                                    TargetLanguageCode="ko",
+                                                )
+                                            )
+                                            translated_text = translate_response[
+                                                "TranslatedText"
+                                            ]
+                                        target_language = "ko"
+
+                                    # 결과 전송
+                                    await websocket.send(
+                                        json.dumps(
+                                            {
+                                                "type": "transcription_result",
+                                                "original_text": text_to_translate,
+                                                "translated_text": translated_text,
+                                                "source_language": last_lang,
+                                                "target_language": target_language,
+                                                "used_llm": bedrock_available,
+                                                "timestamp": current_time,
+                                                "sentence_count": len(
+                                                    pending_sentences
+                                                ),
+                                                "session_end": True,
+                                            }
+                                        )
+                                    )
+
+                                    # 초기화
+                                    pending_sentences = []
+                                    last_translation_time = current_time
+
+                                except Exception as e:
+                                    print(f"[Translate] ❌ 세션 종료 번역 실패: {e}")
+
                     # 🚀 음성 인식 처리 실행 (원래 로직으로 복원)
                     if should_process:
                         try:
@@ -1293,20 +1384,54 @@ async def handle_transcribe_websocket(websocket):
                                             should_translate = False
 
                                             if pending_sentences:
-                                                # 2초 이상 지났거나 3개 이상의 문장이 쌓이면 번역
+                                                # 영어: 더 긴 문맥을 위해 2초 대기하거나 2개 이상 문장 대기
+                                                # 한국어: 빠른 응답을 위해 0.5초 대기
+                                                wait_time = (
+                                                    0.5
+                                                    if detected_language == "ko-KR"
+                                                    else 1.5
+                                                )
+                                                min_sentences = (
+                                                    1
+                                                    if detected_language == "ko-KR"
+                                                    else 2
+                                                )
+
                                                 if (
-                                                    current_time - last_translation_time
-                                                    > 2.0
+                                                    len(pending_sentences)
+                                                    >= min_sentences
+                                                    and (
+                                                        current_time
+                                                        - last_translation_time
+                                                        > wait_time
+                                                    )
                                                 ) or len(pending_sentences) >= 3:
                                                     should_translate = True
 
+                                                    # 미완성 텍스트가 있으면 함께 번역
+                                                    if accumulated_text.strip():
+                                                        pending_sentences.append(
+                                                            accumulated_text.strip()
+                                                        )
+                                                        accumulated_text = ""
+                                                        print(
+                                                            "[Sentences] ✅ 미완성 텍스트 추가하여 번역"
+                                                        )
+
                                             # 오랜 시간 침묵 후 누적된 텍스트가 있으면 강제 번역
+                                            # 영어는 더 오래 기다림 (문장이 길어서)
+                                            force_wait_time = (
+                                                3.0
+                                                if detected_language == "ko-KR"
+                                                else 8.0
+                                            )
+
                                             if (
                                                 not should_translate
                                                 and accumulated_text
                                                 and (
                                                     current_time - last_translation_time
-                                                    > 5.0
+                                                    > force_wait_time
                                                 )
                                             ):
                                                 # 미완성 문장도 번역
@@ -1315,6 +1440,9 @@ async def handle_transcribe_websocket(websocket):
                                                 )
                                                 accumulated_text = ""
                                                 should_translate = True
+                                                print(
+                                                    f"[Translate] ⏰ 강제 번역 ({force_wait_time}초 경과)"
+                                                )
 
                                             if should_translate and pending_sentences:
                                                 # 번역할 텍스트 준비
