@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1">
+
   <style>
     * {
       box-sizing: border-box;
@@ -10,12 +11,13 @@
 
     body {
       margin: 0;
-      padding: 0;
+      padding: 20px 20px 0 20px;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       background: linear-gradient(135deg, #0f0f23 0%, #1a1a2e 50%, #16213e 100%);
       color: #ffffff;
       overflow: hidden;
       height: 100vh;
+      box-sizing: border-box;
     }
 
     /* 🎨 동적 폰트 크기 CSS 변수 */
@@ -263,7 +265,7 @@
       flex-direction: column;
       align-items: flex-start;
       gap: 0;
-      padding-bottom: 100px;
+      padding-bottom: 140px;
     }
 
     .caption-line {
@@ -487,11 +489,7 @@
       <span id="originalSizeValue">16px</span>
     </div>
 
-    <div class="control-group">
-      <label>제어</label>
-      <button id="btnPause" style="display: none;">⏸️ 일시정지</button>
-      <button id="btnClear">🗑️ 자막 지우기</button>
-    </div>
+    <!-- 🚫 제어 섹션 완전 제거 (일시정지, 자막 지우기 버튼 삭제) -->
   </div>
 
   <!-- 상태 표시 -->
@@ -511,25 +509,43 @@
     <div class="caption-container" id="captionContainer">
       <div class="welcome-state">
         <div class="icon">🎙️</div>
-        <h1>실시간 영어-한국어 자막</h1>
-        <p>영어로 말하면 한국어 자막이<br>실시간으로 나타납니다</p>
+        <h1>실시간 다중언어 자막</h1>
+        <p>영어, 한국어, 중국어, 일본어로 말하면<br>실시간 자막과 번역이 나타납니다</p>
         <div class="hint">
           <span>⚙️</span>
           <span>우상단 설정에서 마이크를 활성화하세요</span>
+        </div>
+        <div style="margin-top: 16px; font-size: 14px; color: rgba(255, 255, 255, 0.5);">
+          <div>🔄 번역 규칙:</div>
+          <div>• 한국어 → 영어</div>
+          <div>• 영어/중국어/일본어 → 한국어</div>
         </div>
       </div>
     </div>
   </div>
 
 <script>
+  // Web Speech API + AWS WebSocket 연결 사용
+
 try {
   // Bootstrap data
   const BOOT = {{BOOTSTRAP_JSON}};
   console.log('BOOT data:', BOOT);
 
+  // AWS Configuration
+  let awsConfig = null;
+  if (BOOT.aws_session) {
+    awsConfig = {
+      region: BOOT.aws_session.region,
+      credentials: {
+        accessKeyId: BOOT.aws_session.access_key_id,
+        secretAccessKey: BOOT.aws_session.secret_access_key,
+      }
+    };
+  }
+
   // Global state
-  let pc = null;
-  let dc = null;
+  let awsWebSocket = null;
   let localStream = null;
   let currentDeviceId = null;
   let startTime = null;
@@ -551,8 +567,6 @@ try {
   const statusEl = document.getElementById('status');
   const latencyEl = document.getElementById('latency');
   const btnPerm = document.getElementById('btnPerm');
-  const btnPause = document.getElementById('btnPause');
-  const btnClear = document.getElementById('btnClear');
   const settingsFab = document.getElementById('settingsFab');
   const settingsPanel = document.getElementById('settingsPanel');
   const backToLiveBtn = document.getElementById('backToLive');
@@ -601,51 +615,8 @@ try {
   });
 
   // 🔄 대화 컨텍스트 초기화 함수 추가
-  function resetConversationContext() {
-    if (dc && dc.readyState === 'open') {
-      // 🚫 conversation.item.truncate 대신 세션 재설정으로 컨텍스트 클리어
-      const sessionUpdate = {
-        type: 'session.update',
-        session: {
-          instructions: getTranslationInstructions(),
-          input_audio_transcription: {
-            model: 'whisper-1',
-            language: 'en'
-          },
-          turn_detection: {
-            type: 'server_vad',
-            threshold: 0.5,
-            prefix_padding_ms: 200,
-            silence_duration_ms: 400,
-            create_response: false
-          },
-          modalities: ['text'],
-          temperature: 0.6,
-          max_response_output_tokens: 500
-        }
-      };
-
-      dc.send(JSON.stringify({
-        type: 'conversation.item.truncate',
-        conversation_id: 'main',
-        content_index: 0
-      }));
-
-      console.log('[Context] 세션 재설정으로 컨텍스트 초기화 완료');
-
-      // 🔄 추가적으로 새로운 대화 시작을 위한 더미 메시지 (선택적)
-      // 이것은 AI가 완전히 새로운 대화로 인식하게 도와줍니다
-      setTimeout(() => {
-        if (dc && dc.readyState === 'open') {
-          // 빈 응답으로 대화 상태 리셋
-          dc.send(JSON.stringify({
-            type: 'input_audio_buffer.clear'
-          }));
-          console.log('[Context] 오디오 버퍼 클리어 완료');
-        }
-      }, 100);
-    }
-  }
+  // 🚫 컨텍스트 리셋 함수 완전 제거 (에러 원인 제거)
+  // function resetConversationContext() { ... } ← 삭제
 
   // 🎯 더 강력한 번역 전용 instruction 함수
   function getTranslationInstructions() {
@@ -739,21 +710,8 @@ try {
   }
 
   // 자막 지우기
-  if (btnClear) {
-    btnClear.onclick = () => {
-      clearViewer();
-      resetConversationContext(); // 🔄 컨텍스트 리셋
-
-      // 🔄 상태 초기화
-      pendingTranscript = null;
-      pendingTranslation = '';
-      lastProcessedTranscript = null;
-      responseInProgress = false;
-      currentResponseId = null;
-
-      console.log('[Clear] 모든 상태 및 컨텍스트 초기화 완료');
-    };
-  }
+  // 🚫 자막 지우기 버튼 이벤트 리스너 제거
+  // if (btnClear) { ... } ← 삭제
 
   // 실시간으로 버튼
   if (backToLiveBtn) {
@@ -951,11 +909,16 @@ try {
     captionContainer.innerHTML = `
       <div class="welcome-state">
         <div class="icon">🎙️</div>
-        <h1>실시간 영어-한국어 자막</h1>
-        <p>영어로 말하면 한국어 자막이<br>실시간으로 나타납니다</p>
+        <h1>실시간 다중언어 자막</h1>
+        <p>영어, 한국어, 중국어, 일본어로 말하면<br>실시간 자막과 번역이 나타납니다</p>
         <div class="hint">
           <span>⚙️</span>
           <span>우상단 설정에서 마이크를 활성화하세요</span>
+        </div>
+        <div style="margin-top: 16px; font-size: 14px; color: rgba(255, 255, 255, 0.5);">
+          <div>🔄 번역 규칙:</div>
+          <div>• 한국어 → 영어</div>
+          <div>• 영어/중국어/일본어 → 한국어</div>
         </div>
       </div>
     `;
@@ -1067,133 +1030,352 @@ try {
     }
   }
 
-  // WebRTC connection
-  async function connectRealtime(ephemeral, model) {
+  // WebSocket 연결 초기화
+
+  // AWS 서버 연결
+  function initializeAWSConnection() {
+
+    if (!BOOT.aws_session) {
+      const error = 'BOOT.aws_session이 없습니다.';
+      console.error('❌', error);
+      throw new Error(error);
+    }
+
+    let wsUrl = BOOT.aws_session.websocket_url;
+
+    if (!wsUrl) {
+      const region = BOOT.aws_session.region || 'us-east-1';
+      wsUrl = `wss://transcribestreaming.${region}.amazonaws.com:8443/stream-transcription-websocket`;
+      console.log('⚠️ websocket_url이 없어서 기본 URL 생성:', wsUrl);
+    }
+
+    return new Promise((resolve, reject) => {
+      console.log('🔗 WebSocket 연결 시도:', wsUrl);
+
+      try {
+        awsWebSocket = new WebSocket(wsUrl);
+
+        // 🔍 연결 상태 상세 모니터링
+        let messageCount = 0;
+        let lastHeartbeat = Date.now();
+
+        const connectionTimeout = setTimeout(() => {
+          if (awsWebSocket.readyState === WebSocket.CONNECTING) {
+            console.error('❌ WebSocket 연결 타임아웃');
+            awsWebSocket.close();
+            reject(new Error('WebSocket 연결 타임아웃'));
+          }
+        }, 10000);
+
+        awsWebSocket.onopen = () => {
+          clearTimeout(connectionTimeout);
+          console.log('✅ [AWS WebSocket] 연결 성공');
+
+
+          resolve(true);
+        };
+
+        awsWebSocket.onmessage = (event) => {
+          messageCount++;
+          lastHeartbeat = Date.now();
+
+          try {
+            const data = JSON.parse(event.data);
+            handleAWSMessage(data);
+          } catch (error) {
+            console.error('❌ [AWS WebSocket] JSON 파싱 오류:', error);
+          }
+        };
+
+        awsWebSocket.onerror = (error) => {
+          clearTimeout(connectionTimeout);
+          console.error('❌ [AWS WebSocket] 오류:', error);
+          reject(error);
+        };
+
+        awsWebSocket.onclose = (event) => {
+          clearTimeout(connectionTimeout);
+          console.log('🔌 [AWS WebSocket] 연결 종료');
+          awsWebSocket = null;
+        };
+
+      } catch (error) {
+        console.error('❌ WebSocket 생성 오류:', error);
+        reject(error);
+      }
+    });
+  }
+
+  // AWS 메시지 처리
+  function handleAWSMessage(data) {
+    console.log('[AWS] 메시지 수신:', data);
+
+    switch (data.type) {
+      case 'connection':
+        logStatus('AWS 연결됨 (다중언어+LLM)', 'connected');
+        break;
+
+      case 'transcription_partial':
+        // 실시간 transcription (부분)
+        if (!currentUnstableLine) {
+          appendLine(`[인식중] ${data.transcript}`, 'unstable');
+        } else {
+          currentUnstableLine.textContent = `[인식중] ${data.transcript}`;
+        }
+        break;
+
+      case 'transcription_result':
+        // 새로운 다중언어 + 번역 결과 처리
+        if (currentUnstableLine) {
+          currentUnstableLine.remove();
+          currentUnstableLine = null;
+        }
+
+        // 원본 텍스트 표시 (언어 정보 포함)
+        const sourceLanguageName = getLanguageName(data.source_language);
+        appendLine(`${data.original_text} (${sourceLanguageName})`, 'original');
+
+        // 번역된 텍스트가 있다면 타이핑 애니메이션으로 표시
+        if (data.translated_text && data.translated_text !== data.original_text) {
+          const targetLanguageName = getLanguageName(data.target_language);
+          startTypingTranslation();
+          setTimeout(() => {
+            completeTypingTranslation(`${data.translated_text}`);
+          }, 300);
+        }
+        break;
+
+      case 'translation_result':
+        // 직접 번역 요청 결과 (기존 호환성 유지)
+        if (data.translated_text) {
+          startTypingTranslation();
+          setTimeout(() => {
+            completeTypingTranslation(data.translated_text);
+          }, 300);
+        }
+        break;
+
+      case 'error':
+        console.error('[AWS] 오류:', data.message);
+        showToast(`AWS 오류: ${data.message}`, 'error');
+        appendLine(`❌ 오류: ${data.message}`, 'original');
+        break;
+    }
+  }
+
+  // 언어 코드를 한국어 이름으로 변환
+  function getLanguageName(languageCode) {
+    const languageNames = {
+      'en-US': '영어',
+      'en': '영어',
+      'ko-KR': '한국어',
+      'ko': '한국어',
+      'zh-CN': '중국어',
+      'zh': '중국어',
+      'ja-JP': '일본어',
+      'ja': '일본어',
+      'es': '스페인어',
+      'fr': '프랑스어',
+      'de': '독일어'
+    };
+    return languageNames[languageCode] || languageCode;
+  }
+
+
+  // AWS Transcribe 직접 연결 (오디오 스트리밍)
+  let audioContext = null;
+  let audioWorklet = null;
+  let mediaStream = null;
+  let isTranscriptionActive = false;
+
+
+  async function connectAWSTranscribe() {
     try {
       logStatus('연결 중', 'connecting');
       startTime = Date.now();
 
-      if (!ephemeral?.client_secret?.value) {
-        throw new Error('인증 토큰이 필요합니다.');
+      await initializeAWSConnection();
+      if (!audioContext) {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)({
+          sampleRate: 16000
+        });
       }
 
-      pc = new RTCPeerConnection({
-        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-      });
+      if (audioContext.state === 'suspended') {
+        await audioContext.resume();
+      }
 
-      pc.onconnectionstatechange = () => {
-        const state = pc.connectionState;
-        switch (state) {
-          case 'connected':
-            if (dc && dc.readyState === 'open') {
-              logStatus('연결됨', 'connected');
-            }
-            break;
-          case 'disconnected':
-          case 'failed':
-            logStatus('연결 끊김', 'error');
-            closeConnection();
-            break;
-        }
-      };
+      if (!mediaStream && currentDeviceId) {
+        mediaStream = await getStream(currentDeviceId);
+      } else if (!mediaStream) {
+        throw new Error('마이크가 선택되지 않았습니다.');
+      }
 
-      dc = pc.createDataChannel('oai-events', { ordered: true });
-
-      dc.onopen = () => {
-        logStatus('연결됨', 'connected');
-        if (btnPause) btnPause.style.display = 'block';
-        startTime = Date.now();
-
-        // 🔄 초기 세션 설정
-        const sessionUpdate = {
-          type: 'session.update',
-          session: {
-            instructions: getTranslationInstructions(),
-            input_audio_transcription: {
-              model: 'whisper-1',
-              language: 'en'
-            },
-            turn_detection: {
-              type: 'server_vad',
-              threshold: 0.5,
-              prefix_padding_ms: 200,
-              silence_duration_ms: 400,
-              create_response: false
-            },
-            modalities: ['text'],
-            temperature: 0.6,
-            max_response_output_tokens: 500
+      // 🔍 디버깅이 강화된 AudioWorkletProcessor
+      const audioWorkletCode = `
+        class AudioProcessor extends AudioWorkletProcessor {
+          constructor() {
+            super();
+            this.bufferSize = 2048;  // 작은 버퍼로 더 자주 체크
+            this.buffer = new Float32Array(this.bufferSize);
+            this.bufferIndex = 0;
+            this.chunkCount = 0;
+            this.lastLogTime = 0;
+            this.totalSamples = 0;
+            this.maxVolume = 0;
           }
-        };
 
-        try {
-          dc.send(JSON.stringify(sessionUpdate));
-          console.log('[Session] 초기 세션 설정 완료');
-        } catch (error) {
-          logStatus('설정 실패', 'error');
+          process(inputs) {
+            const input = inputs[0];
+            if (input.length > 0 && input[0]) {
+              const audioData = input[0];
+              this.totalSamples += audioData.length;
+
+              // 볼륨 체크
+              let chunkMax = 0;
+              for (let i = 0; i < audioData.length; i++) {
+                const sample = Math.abs(audioData[i]);
+                if (sample > chunkMax) chunkMax = sample;
+                if (sample > this.maxVolume) this.maxVolume = sample;
+
+                this.buffer[this.bufferIndex] = audioData[i];
+                this.bufferIndex++;
+
+                if (this.bufferIndex >= this.bufferSize) {
+                  this.chunkCount++;
+
+                  // PCM 변환
+                  const pcmBuffer = new ArrayBuffer(this.bufferSize * 2);
+                  const pcmView = new DataView(pcmBuffer);
+
+                  for (let j = 0; j < this.bufferSize; j++) {
+                    const sample = Math.max(-1, Math.min(1, this.buffer[j]));
+                    const pcmSample = Math.round(sample * 32767);
+                    pcmView.setInt16(j * 2, pcmSample, true);
+                  }
+
+                  this.port.postMessage({
+                    type: 'audio',
+                    data: pcmBuffer,
+                    chunkId: this.chunkCount,
+                    maxVolume: chunkMax,
+                    sampleRate: 16000,
+                    channels: 1
+                  });
+
+                  this.bufferIndex = 0;
+                }
+              }
+
+            }
+            return true;
+          }
+        }
+        registerProcessor('audio-processor', AudioProcessor);
+      `;
+
+      const blob = new Blob([audioWorkletCode], { type: 'application/javascript' });
+      const workletUrl = URL.createObjectURL(blob);
+      await audioContext.audioWorklet.addModule(workletUrl);
+
+      audioWorklet = new AudioWorkletNode(audioContext, 'audio-processor');
+
+      audioWorklet.port.onmessage = (event) => {
+        if (event.data.type === 'audio') {
+          const now = Date.now();
+          const { data: audioBuffer, chunkId, maxVolume } = event.data;
+          const dataSize = audioBuffer.byteLength;
+
+          // 음성 감지 (기존 로직 유지)
+          const isSpeech = maxVolume > 0.05;
+
+          if (!window.speechState) {
+            window.speechState = {
+              isDetected: false,
+              lastDetectionTime: 0,
+              consecutiveSpeech: 0,
+              lastDisplayTime: 0
+            };
+          }
+
+          if (isSpeech) {
+            window.speechState.consecutiveSpeech++;
+
+            if (!window.speechState.isDetected) {
+              window.speechState.isDetected = true;
+            }
+
+            window.speechState.lastDetectionTime = now;
+          } else {
+            if (window.speechState.isDetected && (now - window.speechState.lastDetectionTime > 3000)) {
+              window.speechState.isDetected = false;
+              window.speechState.consecutiveSpeech = 0;
+            }
+          }
+
+          // AWS로 데이터 전송
+          if (awsWebSocket && awsWebSocket.readyState === WebSocket.OPEN && isTranscriptionActive) {
+            try {
+              const uint8Array = new Uint8Array(audioBuffer);
+              const base64Audio = btoa(String.fromCharCode.apply(null, uint8Array));
+
+              const message = {
+                type: 'audio_chunk',
+                audio: base64Audio,
+                format: 'pcm',
+                sample_rate: 16000,
+                channels: 1,
+                bytes_per_sample: 2,
+                timestamp: now,
+                chunk_id: chunkId,
+                data_size: dataSize,
+                max_volume: maxVolume
+              };
+
+              awsWebSocket.send(JSON.stringify(message));
+
+            } catch (error) {
+              console.error('❌ [WebSocket] 전송 오류:', error);
+            }
+        }
         }
       };
 
-      dc.onmessage = (event) => {
-        try {
-          const message = JSON.parse(event.data);
-          handleRealtimeMessage(message);
-        } catch (error) {
-          console.error('Message parse error:', error);
-        }
-      };
+      const source = audioContext.createMediaStreamSource(mediaStream);
+      source.connect(audioWorklet);
 
-      dc.onerror = () => logStatus('데이터 오류', 'error');
-      dc.onclose = () => {
-        if (pc && pc.connectionState !== 'closed') {
-          logStatus('연결 종료', 'error');
-        }
-      };
-
-      const stream = await getStream(currentDeviceId);
-      if (!stream || stream.getAudioTracks().length === 0) {
-        throw new Error('오디오 스트림을 가져올 수 없습니다.');
-      }
-
-      stream.getTracks().forEach(track => {
-        pc.addTrack(track, stream);
-      });
-
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-
-      const url = `https://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`;
-      const headers = {
-        'Authorization': `Bearer ${ephemeral.client_secret.value}`,
-        'Content-Type': 'application/sdp',
-        'OpenAI-Beta': 'realtime=v1',
-      };
-
-      const sdpResponse = await fetch(url, {
-        method: 'POST',
-        body: offer.sdp,
-        headers: headers
-      });
-
-      if (!sdpResponse.ok) {
-        if (sdpResponse.status === 401) {
-          throw new Error('인증이 만료되었습니다.');
-        } else if (sdpResponse.status === 429) {
-          throw new Error('사용량 한도를 초과했습니다.');
-        } else {
-          throw new Error('서버 연결에 실패했습니다.');
-        }
-      }
-
-      const answerSdp = await sdpResponse.text();
-      const answer = { type: 'answer', sdp: answerSdp };
-      await pc.setRemoteDescription(answer);
+      isTranscriptionActive = true;
+      logStatus('🎤 음성 인식 중', 'connected');
 
     } catch (error) {
+      console.error('❌ 연결 실패:', error);
       logStatus('연결 실패', 'error');
       showToast(error.message || '연결에 실패했습니다', 'error');
       closeConnection();
       throw error;
+    }
+  }
+
+  // 테스트용 transcription 핸들러
+  function handleTestTranscription(transcript) {
+    console.log('[Test] Transcript:', transcript);
+    appendLine(transcript, 'original');
+
+    // AWS 번역 요청
+    if (awsWebSocket && awsWebSocket.readyState === WebSocket.OPEN) {
+      awsWebSocket.send(JSON.stringify({
+        type: 'translate_text',
+        text: transcript
+      }));
+    }
+  }
+
+  // 음성 인식 종료 처리
+  function stopSpeechRecognition() {
+    if (recognition && isRecognitionActive) {
+      isRecognitionActive = false;
+      recognition.stop();
+      console.log('[Speech] Recognition stopped');
     }
   }
 
@@ -1349,13 +1531,22 @@ try {
 
   function closeConnection() {
     try {
-      if (dc) { dc.close(); dc = null; }
-      if (pc) { pc.close(); pc = null; }
+      // AWS WebSocket 연결 해제
+      if (awsWebSocket) {
+        awsWebSocket.close();
+        awsWebSocket = null;
+      }
+
+      // 음성 인식 중단
+      stopSpeechRecognition();
+
+      // 오디오 스트림 정리
       if (localStream) {
         localStream.getTracks().forEach(track => track.stop());
         localStream = null;
       }
 
+      // 상태 초기화
       currentUnstableLine = null;
       currentTypingLine = null;
       responseInProgress = false;
@@ -1364,18 +1555,16 @@ try {
       pendingTranslation = '';
       lastProcessedTranscript = null;
       isPaused = false;
-      isUserScrolling = false; // 연결 종료 시 스크롤 상태 초기화
+      isUserScrolling = false;
       lastAutoScrollTime = 0;
 
-      if (btnPause) {
-        btnPause.style.display = 'none';
-        btnPause.textContent = '⏸️ 일시정지';
-      }
       logStatus('대기중', '');
       logLatency(0);
       if (backToLiveBtn) {
         backToLiveBtn.style.display = 'none';
       }
+
+      console.log('[AWS] Connection closed and resources cleaned up');
     } catch (error) {
       console.error('Close connection error:', error);
     }
@@ -1391,40 +1580,36 @@ try {
     };
   }
 
-  if (btnPause) {
-    btnPause.onclick = () => {
-      if (isPaused) {
-        isPaused = false;
-        btnPause.textContent = '⏸️ 일시정지';
-        logStatus('연결됨', 'connected');
-      } else {
-        isPaused = true;
-        btnPause.textContent = '▶️ 재개';
-        logStatus('일시정지', 'connecting');
-        clearViewer();
-      }
-    };
-  }
+  // 🚫 일시정지 버튼 이벤트 리스너 제거
+  // if (btnPause) { ... } ← 삭제
 
   if (selMic) {
     selMic.onchange = async (event) => {
       const newDeviceId = event.target.value;
       if (!newDeviceId) return;
 
-      const wasConnected = pc && pc.connectionState === 'connected';
+      const wasConnected = recognition && isRecognitionActive;
       currentDeviceId = newDeviceId;
 
       if (wasConnected) {
         try {
           logStatus('장치 변경 중', 'connecting');
-          const newStream = await getStream(newDeviceId);
-          const audioTrack = newStream.getAudioTracks()[0];
-          const sender = pc.getSenders().find(s => s.track && s.track.kind === 'audio');
+          stopSpeechRecognition();
 
-          if (sender && audioTrack) {
-            await sender.replaceTrack(audioTrack);
+          // 새 오디오 스트림 준비
+          const newStream = await getStream(newDeviceId);
+
+          // 음성 인식 재시작
+          setTimeout(async () => {
+            try {
+              await connectAWSTranscribe();
             logStatus('연결됨', 'connected');
+            } catch (error) {
+              logStatus('장치 변경 실패', 'error');
+              selMic.value = currentDeviceId;
           }
+          }, 1000);
+
         } catch (error) {
           logStatus('장치 변경 실패', 'error');
           selMic.value = currentDeviceId;
@@ -1433,24 +1618,16 @@ try {
     };
   }
 
-  // Bootstrap - 안전한 초기화
+
   (async () => {
     try {
       console.log('Bootstrap starting...', BOOT);
 
-      if (BOOT.action === 'start' && BOOT.ephemeral) {
+      if (BOOT.action === 'start' && BOOT.aws_session) {
         const hasPermission = await ensurePermission();
         if (hasPermission) {
           await listMics();
-          await connectRealtime(BOOT.ephemeral, BOOT.model);
-
-          // 🔄 연결 완료 후 컨텍스트 확실히 초기화
-          setTimeout(() => {
-            if (dc && dc.readyState === 'open') {
-              console.log('[Bootstrap] 추가 컨텍스트 초기화');
-              resetConversationContext();
-            }
-          }, 1000);
+          await connectAWSTranscribe();
         }
       } else if (BOOT.action === 'stop') {
         closeConnection();

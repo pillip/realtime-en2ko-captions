@@ -4,16 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Real-time English-to-Korean caption system for conference scenarios. Browser connects directly to OpenAI Realtime API via WebRTC, with Streamlit server handling ephemeral token generation for security.
+Real-time multilingual caption system for conference scenarios. Browser connects to AWS Transcribe Streaming for speech recognition and Amazon Translate for translation, with Streamlit server handling AWS credential management for security.
 
-**Critical Architecture Decision**: Direct browser-to-OpenAI WebRTC connection (not server-proxied) for minimal latency, following OpenAI's recommended ephemeral token pattern.
+**Critical Architecture Decision**: Direct browser-to-AWS services connection using temporary credentials for minimal latency. Speech recognition via AWS Transcribe Streaming with automatic language detection, followed by contextual translation (Korean ↔ English, Others → Korean).
 
 ## Development Commands
 
 ```bash
 # Project setup
 uv init --python 3.11
-uv add streamlit requests python-dotenv
+uv add streamlit boto3 python-dotenv
 
 # Development workflow
 uv sync                           # Install dependencies
@@ -35,18 +35,19 @@ docker run --rm -p 8501:8501 -e OPENAI_API_KEY=sk-... realtime-caption
 
 ## Essential Environment Variables
 
-- `OPENAI_API_KEY`: Required for ephemeral token generation (server-side only)
-- `REALTIME_MODEL`: Optional, defaults to `gpt-4o-mini-realtime-preview`
+- `AWS_ACCESS_KEY_ID`: Required for AWS service authentication (server-side only)
+- `AWS_SECRET_ACCESS_KEY`: Required for AWS service authentication (server-side only)
+- `AWS_REGION`: Optional, defaults to `us-east-1`
 
 ## Core Architecture
 
 **Two-Component System**:
-1. **Streamlit Server**: Generates ephemeral tokens, serves embedded JS component via `st.components.v1.html`
-2. **Browser Component**: Handles device selection, WebRTC connection, real-time caption rendering
+1. **Streamlit Server**: Manages AWS credentials, serves embedded JS component via `st.components.v1.html`
+2. **Browser Component**: Handles device selection, AWS SDK integration, real-time caption rendering
 
-**Key Security Pattern**: Long-term API key never reaches browser. Server issues short-lived ephemeral tokens for each session.
+**Key Security Pattern**: Long-term AWS keys never reach browser. Server passes temporary credentials for each session.
 
-**Data Flow**: Audio (USB/mic) → WebRTC → OpenAI Realtime → DataChannel events → Korean captions → Credit-roll UI
+**Data Flow**: Audio (USB/mic) → AudioWorklet → AWS Transcribe Streaming → Text transcription → Amazon Translate → Multilingual captions → Credit-roll UI
 
 ## Critical Implementation Details
 
