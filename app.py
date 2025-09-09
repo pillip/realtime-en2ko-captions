@@ -1173,12 +1173,15 @@ async def handle_transcribe_websocket(websocket):
                                                     results,
                                                     key=lambda x: x["confidence"],
                                                 )
-                                            # 4. 영어가 충분한 신뢰도(0.6+)면 영어 선택
-                                            elif en_result["confidence"] > 0.6:
-                                                best_result = en_result
-                                            # 5. 한국어가 충분한 신뢰도(0.6+)면 한국어 선택
-                                            elif ko_result["confidence"] > 0.6:
-                                                best_result = ko_result
+                                            # 4. 둘 중 하나라도 신뢰도가 충분하면 더 높은 것 선택
+                                            elif (
+                                                en_result["confidence"] > 0.6
+                                                or ko_result["confidence"] > 0.6
+                                            ):
+                                                best_result = max(
+                                                    [en_result, ko_result],
+                                                    key=lambda x: x["confidence"],
+                                                )
                                             # 6. 둘 다 낮은 신뢰도면 영어 기본값
                                             else:
                                                 best_result = en_result
