@@ -1171,9 +1171,21 @@ try {
 
       // WebSocket 연결 (app.py의 OpenAI handler와 통신용)
       const wsPort = BOOT.websocket_port || 8765;
-      // 배포 환경 호환: 동적 호스트 설정
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = `${protocol}//${window.location.hostname}:${wsPort}`;
+      // 배포 환경 호환: 동적 호스트 설정 (Streamlit iframe 환경 고려)
+      let hostname = window.location.hostname;
+
+      // about:srcdoc 환경에서는 부모 창의 hostname 사용
+      if (!hostname || hostname === '' || window.location.href.startsWith('about:')) {
+        try {
+          hostname = window.parent.location.hostname;
+        } catch (e) {
+          // Cross-origin 제한시 기본값 사용
+          hostname = 'localhost';
+        }
+      }
+
+      const protocol = (window.parent?.location?.protocol === 'https:' || window.location.protocol === 'https:') ? 'wss:' : 'ws:';
+      const wsUrl = `${protocol}//${hostname}:${wsPort}`;
 
       openaiWebSocket = new WebSocket(wsUrl);
 
