@@ -185,21 +185,33 @@ English translation:"""
         import re
 
         # "This translation:" 이후 설명 제거
-        translated_text = re.sub(r'This translation:.*$', '', translated_text, flags=re.DOTALL | re.IGNORECASE)
+        translated_text = re.sub(
+            r"This translation:.*$",
+            "",
+            translated_text,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
 
         # "Here's a natural..." 패턴 제거
-        translated_text = re.sub(r'Here\'s a natural.*?:', '', translated_text, flags=re.DOTALL | re.IGNORECASE)
+        translated_text = re.sub(
+            r"Here\'s a natural.*?:",
+            "",
+            translated_text,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
 
         # "This [설명]:" 패턴 제거
-        translated_text = re.sub(r'This.*?:', '', translated_text, flags=re.DOTALL | re.IGNORECASE)
+        translated_text = re.sub(
+            r"This.*?:", "", translated_text, flags=re.DOTALL | re.IGNORECASE
+        )
 
         # 첫 번째 문장만 추출 (줄바꿈 이전)
-        lines = translated_text.split('\n')
+        lines = translated_text.split("\n")
         if lines:
             translated_text = lines[0].strip()
 
         # 따옴표로 둘러싸인 경우 제거
-        translated_text = re.sub(r'^["\'](.+)["\']$', r'\1', translated_text)
+        translated_text = re.sub(r'^["\'](.+)["\']$', r"\1", translated_text)
 
         # 최종 정리
         translated_text = translated_text.strip()

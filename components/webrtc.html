@@ -1210,7 +1210,7 @@ try {
     switch (message.type) {
       case 'session.created':
         console.log('✅ OpenAI 세션 생성됨');
-        logStatus('🎤 음성 인식 중 (OpenAI)', 'connected');
+        logStatus('🎤 음성 인식 중', 'connected');
         break;
 
       case 'conversation.item.input_audio_transcription.completed':
@@ -1337,7 +1337,7 @@ try {
       await peerConnection.setRemoteDescription(answer);
       console.log('✅ OpenAI WebRTC 연결 완료');
 
-      logStatus('🎤 음성 인식 중 (OpenAI)', 'connected');
+      logStatus('🎤 음성 인식 중', 'connected');
 
     } catch (error) {
       console.error('❌ OpenAI 연결 실패:', error);
