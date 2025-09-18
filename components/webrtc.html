@@ -294,6 +294,17 @@
       margin-bottom: 12px;
       font-weight: 300;
       max-width: 85%;
+      transition: all 0.3s ease;
+    }
+
+    /* 원문 숨김 상태 */
+    .hide-original .caption-line.original {
+      opacity: 0;
+      height: 0;
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      pointer-events: none;
     }
 
     /* 번역된 자막 스타일 */
@@ -489,6 +500,14 @@
       <span id="originalSizeValue">16px</span>
     </div>
 
+    <!-- 원문 표시 토글 -->
+    <div class="control-group">
+      <label style="display: flex; align-items: center; cursor: pointer;">
+        <input type="checkbox" id="showOriginalToggle" style="margin-right: 8px; width: 16px; height: 16px;">
+        <span>🔤 원문 표시</span>
+      </label>
+    </div>
+
     <!-- 🚫 제어 섹션 완전 제거 (일시정지, 자막 지우기 버튼 삭제) -->
   </div>
 
@@ -576,11 +595,44 @@ try {
   const fontSizeValue = document.getElementById('fontSizeValue');
   const originalSizeSlider = document.getElementById('originalSizeSlider');
   const originalSizeValue = document.getElementById('originalSizeValue');
+  const showOriginalToggle = document.getElementById('showOriginalToggle');
 
   // Null check for critical elements
   if (!viewer || !captionContainer || !statusEl) {
     throw new Error('필수 DOM 요소를 찾을 수 없습니다.');
   }
+
+  // localStorage에서 설정 불러오기
+  const loadSettings = () => {
+    // 원문 표시 설정 (기본값: false = 숨김)
+    const showOriginal = localStorage.getItem('showOriginal') === 'true';
+    if (showOriginalToggle) {
+      showOriginalToggle.checked = showOriginal;
+    }
+    // 초기 상태 적용
+    if (!showOriginal) {
+      captionContainer.classList.add('hide-original');
+    }
+
+    // 폰트 크기 설정
+    const translationSize = localStorage.getItem('translationFontSize') || '28';
+    const originalSize = localStorage.getItem('originalFontSize') || '16';
+
+    if (fontSizeSlider && fontSizeValue) {
+      fontSizeSlider.value = translationSize;
+      fontSizeValue.textContent = `${translationSize}px`;
+      document.documentElement.style.setProperty('--translation-font-size', `${translationSize}px`);
+    }
+
+    if (originalSizeSlider && originalSizeValue) {
+      originalSizeSlider.value = originalSize;
+      originalSizeValue.textContent = `${originalSize}px`;
+      document.documentElement.style.setProperty('--original-font-size', `${originalSize}px`);
+    }
+  };
+
+  // 설정 초기화
+  loadSettings();
 
   // 🎨 폰트 크기 조절 이벤트 핸들러 (null check 포함)
   if (fontSizeSlider && fontSizeValue) {
@@ -588,6 +640,7 @@ try {
       const size = e.target.value;
       document.documentElement.style.setProperty('--translation-font-size', `${size}px`);
       fontSizeValue.textContent = `${size}px`;
+      localStorage.setItem('translationFontSize', size);
     };
   }
 
@@ -596,6 +649,21 @@ try {
       const size = e.target.value;
       document.documentElement.style.setProperty('--original-font-size', `${size}px`);
       originalSizeValue.textContent = `${size}px`;
+      localStorage.setItem('originalFontSize', size);
+    };
+  }
+
+  // 원문 표시 토글 이벤트 핸들러
+  if (showOriginalToggle) {
+    showOriginalToggle.onchange = (e) => {
+      const showOriginal = e.target.checked;
+      if (showOriginal) {
+        captionContainer.classList.remove('hide-original');
+      } else {
+        captionContainer.classList.add('hide-original');
+      }
+      localStorage.setItem('showOriginal', showOriginal);
+      console.log('원문 표시:', showOriginal ? '활성화' : '비활성화');
     };
   }
 
