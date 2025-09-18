@@ -5,8 +5,10 @@ import os
 import socket
 import threading
 import time
+from datetime import datetime, timedelta
 
 import boto3
+import httpx
 import streamlit as st
 import websockets
 from botocore.exceptions import ClientError
@@ -172,6 +174,9 @@ AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 
+# OpenAI 설정
+OPENAI_API_KEY = os.getenv("OPENAI_KEY")
+
 # 사이드바 상태 관리
 if "sidebar_state" not in st.session_state:
     st.session_state["sidebar_state"] = "expanded"
@@ -307,6 +312,63 @@ with st.sidebar:
             st.warning("🟡 WebSocket 서버 대기 중")
 
 
+async def create_openai_session() -> dict:
+    """OpenAI Realtime API ephemeral token 생성"""
+    if not OPENAI_API_KEY:
+        raise ValueError("OpenAI API 키가 설정되지 않았습니다.")
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "https://api.openai.com/v1/realtime/sessions",
+                headers={
+                    "Authorization": f"Bearer {OPENAI_API_KEY}",
+                    "Content-Type": "application/json",
+                    "OpenAI-Beta": "realtime=v1",
+                },
+                json={
+                    "model": "gpt-4o-realtime-preview-2024-12-17",
+                    "voice": "alloy",
+                    "instructions": "You are a helpful assistant that transcribes audio. Focus on accurate transcription of mixed Korean and English speech, technical terms, and code-switching scenarios.",
+                    "input_audio_transcription": {"model": "whisper-1"},
+                    "turn_detection": {
+                        "type": "server_vad",
+                        "threshold": 0.5,
+                        "prefix_padding_ms": 300,
+                        "silence_duration_ms": 500,
+                    },
+                    "modalities": ["audio", "text"],
+                    "temperature": 0.8,
+                },
+            )
+
+            if response.status_code != 200:
+                error_text = response.text
+                print(f"[OpenAI] API 오류: {response.status_code} - {error_text}")
+                raise Exception(f"OpenAI API 오류: {response.status_code}")
+
+            session_data = response.json()
+
+            # 세션 정보 추출 및 만료 시간 계산
+            expires_at = datetime.now() + timedelta(minutes=1)  # 1분 유효
+
+            return {
+                "id": session_data.get("id"),
+                "client_secret": session_data.get("client_secret", {}).get("value"),
+                "expires_at": expires_at.isoformat(),
+                "model": session_data.get(
+                    "model", "gpt-4o-realtime-preview-2024-12-17"
+                ),
+            }
+
+    except httpx.HTTPError as e:
+        print(f"[OpenAI] HTTP 오류: {e}")
+        raise Exception(f"OpenAI 세션 생성 실패: {e}")
+    except Exception as e:
+        print(f"[OpenAI] 예상치 못한 오류: {e}")
+        raise Exception(f"OpenAI 세션 생성 실패: {e}")
+
+
 def create_aws_session() -> dict:
     """AWS 임시 credentials 생성"""
     if not AWS_ACCESS_KEY_ID or not AWS_SECRET_ACCESS_KEY:
@@ -335,6 +397,7 @@ def create_aws_session() -> dict:
             "region": AWS_REGION,
             "account_id": caller_identity.get("Account"),
             "websocket_url": f"ws://localhost:{websocket_port}",
+            "openai_available": bool(OPENAI_API_KEY),  # OpenAI 사용 가능 여부
         }
 
     except ClientError as e:
@@ -429,37 +492,13 @@ async def transcribe_audio_streaming(audio_bytes, transcribe_client):
         return None
 
 
-# WebSocket을 통한 AWS Transcribe 프록시 (간단한 버전)
-async def handle_transcribe_websocket(websocket):
-    """WebSocket을 통해 AWS Transcribe 및 번역 처리"""
+# WebSocket을 통한 OpenAI transcript 처리 및 번역
+async def handle_transcribe_websocket_openai(websocket):
+    """WebSocket을 통해 OpenAI transcript 수신 및 번역 처리"""
     print(f"[WebSocket] 클라이언트 연결: {websocket.remote_address}")
 
-    # 🔧 필요한 모듈들을 함수 시작 부분에서 import
     try:
-        import io
-        import struct
-        import wave
-
-        from amazon_transcribe.client import TranscribeStreamingClient
-        from amazon_transcribe.handlers import TranscriptResultStreamHandler
-        from amazon_transcribe.model import TranscriptEvent
-
-        transcribe_available = True
-        print("[WebSocket] AWS Transcribe 모듈 로드 성공")
-    except ImportError:
-        transcribe_available = False
-        print(
-            "[WebSocket] ⚠️ AWS Transcribe 모듈이 없습니다. uv add amazon-transcribe 실행 필요"
-        )
-
-    try:
-        # AWS 클라이언트 초기화
-        boto3.client(
-            "transcribe",
-            aws_access_key_id=AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-            region_name=AWS_REGION,
-        )
+        # AWS Translate 클라이언트 초기화 (번역만 필요)
 
         translate_client = boto3.client(
             "translate",
@@ -1708,6 +1747,146 @@ async def handle_transcribe_websocket(websocket):
         print("[WebSocket] 클라이언트 연결 종료")
 
 
+# 새로운 간단한 OpenAI 전용 WebSocket 핸들러
+async def handle_openai_websocket(websocket):
+    """OpenAI Realtime API와 통합된 WebSocket 핸들러"""
+    print(f"[WebSocket] OpenAI 모드 - 클라이언트 연결: {websocket.remote_address}")
+
+    try:
+        # 번역 클라이언트만 초기화
+        translate_client = boto3.client(
+            "translate",
+            aws_access_key_id=AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+            region_name=AWS_REGION,
+        )
+
+        # Bedrock 클라이언트 (선택적)
+        try:
+            bedrock_client = boto3.client(
+                "bedrock-runtime",
+                aws_access_key_id=AWS_ACCESS_KEY_ID,
+                aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+                region_name=AWS_REGION,
+            )
+            bedrock_available = True
+            print("  🤖 Bedrock LLM 준비 완료")
+        except:
+            bedrock_client = None
+            bedrock_available = False
+            print("  ⚠️ Bedrock 사용 불가, AWS Translate 사용")
+
+        await websocket.send(
+            json.dumps(
+                {
+                    "type": "connection",
+                    "status": "connected",
+                    "message": "OpenAI Realtime + 번역 서비스 준비",
+                }
+            )
+        )
+
+        # 메시지 처리 루프
+        async for message in websocket:
+            try:
+                data = json.loads(message)
+
+                # OpenAI 세션 요청
+                if data["type"] == "request_openai_session":
+                    try:
+                        session = await create_openai_session()
+                        await websocket.send(
+                            json.dumps({"type": "openai_session", "session": session})
+                        )
+                        print("[OpenAI] ✅ 세션 생성 완료")
+                    except Exception as e:
+                        await websocket.send(
+                            json.dumps(
+                                {
+                                    "type": "error",
+                                    "message": f"OpenAI 세션 생성 실패: {str(e)}",
+                                }
+                            )
+                        )
+                        print(f"[OpenAI] ❌ 세션 생성 실패: {e}")
+
+                # OpenAI transcript 수신 및 번역
+                elif data["type"] == "transcript":
+                    transcript = data.get("text", "")
+                    if not transcript:
+                        continue
+
+                    print(f"[OpenAI] 📝 Transcript: {transcript}")
+
+                    # 간단한 언어 감지
+                    has_korean = any(
+                        ord(c) >= 0xAC00 and ord(c) <= 0xD7A3 for c in transcript
+                    )
+
+                    if has_korean:
+                        source_lang = "ko"
+                        target_lang = "en"
+                    else:
+                        source_lang = "en"
+                        target_lang = "ko"
+
+                    # 번역 처리
+                    translated_text = None
+                    used_llm = False
+
+                    if bedrock_available:
+                        try:
+                            translated_text = translate_with_llm(
+                                bedrock_client, transcript, source_lang, target_lang
+                            )
+                            if translated_text:
+                                used_llm = True
+                                print("[Translate] ✅ LLM 번역 완료")
+                        except:
+                            pass
+
+                    if not translated_text:
+                        try:
+                            response = translate_client.translate_text(
+                                Text=transcript,
+                                SourceLanguageCode=source_lang,
+                                TargetLanguageCode=target_lang,
+                            )
+                            translated_text = response["TranslatedText"]
+                            print("[Translate] ✅ AWS Translate 완료")
+                        except Exception as e:
+                            print(f"[Translate] ❌ 번역 실패: {e}")
+                            translated_text = transcript  # 실패시 원문 그대로
+
+                    # 결과 전송
+                    await websocket.send(
+                        json.dumps(
+                            {
+                                "type": "transcription_result",
+                                "original_text": transcript,
+                                "translated_text": translated_text,
+                                "source_language": source_lang,
+                                "target_language": target_lang,
+                                "used_llm": used_llm,
+                                "timestamp": time.time(),
+                            }
+                        )
+                    )
+
+            except json.JSONDecodeError:
+                await websocket.send(
+                    json.dumps({"type": "error", "message": "Invalid JSON format"})
+                )
+            except Exception as e:
+                print(f"[WebSocket] 메시지 처리 오류: {e}")
+                await websocket.send(json.dumps({"type": "error", "message": str(e)}))
+
+    except Exception as e:
+        print(f"[WebSocket] 연결 오류: {e}")
+    finally:
+        print("[WebSocket] 클라이언트 연결 종료")
+
+
 def start_websocket_server():
     """WebSocket 서버 시작 (동적 포트 할당)"""
     global WEBSOCKET_PORT
@@ -1724,10 +1903,13 @@ def start_websocket_server():
 
         async def run_server():
             try:
+                # OpenAI 모드를 기본으로 사용
                 server = await websockets.serve(
-                    handle_transcribe_websocket, "localhost", free_port
+                    handle_openai_websocket, "localhost", free_port
                 )
-                print(f"[WebSocket] 서버 시작 완료: ws://localhost:{free_port}")
+                print(
+                    f"[WebSocket] 서버 시작 완료 (OpenAI 모드): ws://localhost:{free_port}"
+                )
 
                 await server.wait_closed()
             except Exception as e:
@@ -1765,15 +1947,22 @@ if "action" not in st.session_state:
     st.session_state["action"] = "idle"
 
 # Handle actions
-aws_session = None
+openai_session = None
 if start:
     try:
         # 사이드바 상태 유지
         st.session_state["sidebar_state"] = "expanded"
 
         with st.spinner("시작 중..."):
-            aws_session = create_aws_session()
-            st.session_state["aws_session"] = aws_session
+            # OpenAI Realtime API 세션 생성
+            import asyncio
+
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            openai_session = loop.run_until_complete(create_openai_session())
+            loop.close()
+
+            st.session_state["openai_session"] = openai_session
             st.session_state["action"] = "start"
             st.rerun()
     except ValueError as e:
@@ -1786,7 +1975,7 @@ elif stop:
     # 사이드바 상태 유지
     st.session_state["sidebar_state"] = "expanded"
     st.session_state["action"] = "stop"
-    st.session_state.pop("aws_session", None)
+    st.session_state.pop("openai_session", None)
     st.rerun()
 
 # 메인 캡션 뷰어
@@ -1796,8 +1985,9 @@ try:
 
     payload = {
         "action": st.session_state["action"],
-        "aws_session": st.session_state.get("aws_session"),
-        "service": "aws_transcribe_translate",
+        "openai_session": st.session_state.get("openai_session"),
+        "service": "openai_realtime",
+        "websocket_port": WEBSOCKET_PORT,
     }
 
     html_content = html_template.replace("{{BOOTSTRAP_JSON}}", json.dumps(payload))
