@@ -716,7 +716,7 @@ try {
 
 자연스러운 공식 발표체. 의미·사실·어조를 유지하되 과도한 의역은 금지하고, 최소한의 문장 다듬기만 허용합니다(~합니다/습니다).
 
-잡음 제거. “um/uh”, 반복·말꼬리 등 비의미적 군더더기는 삭제합니다. [laughter], [music] 등 비언어 표기는 무시합니다.
+잡음 제거. "um/uh", 반복·말꼬리 등 비의미적 군더더기는 삭제합니다. [laughter], [music] 등 비언어 표기는 무시합니다.
 
 분절/길이. 입력 덩어리마다 정보 순서를 유지해 1–2개 문장(또는 불릿)으로 간결히 냅니다. 입력이 목록이면 줄바꿈으로 대응합니다.
 
@@ -1184,12 +1184,14 @@ try {
         }
       }
 
-      // 임시: WSS 연결 문제로 인해 WS 강제 사용 (개발/테스트용)
-      // TODO: 프로덕션에서는 WSS 사용하도록 수정 필요
-      const protocol = 'ws:'; // 강제로 WS 사용
-      const wsUrl = `${protocol}//${hostname}:${wsPort}`;
+      // 현재 페이지 프로토콜에 맞춰 WebSocket 프로토콜 결정
+      const isHTTPS = window.location.protocol === 'https:' ||
+                      (window.parent && window.parent.location.protocol === 'https:');
 
-      console.log(`🔗 WebSocket 연결 시도: ${wsUrl}`);
+      const wsProtocol = isHTTPS ? 'wss:' : 'ws:';
+      const wsUrl = `${wsProtocol}//${hostname}:${wsPort}`;
+
+      console.log(`🔗 WebSocket 연결 시도: ${wsUrl} (HTTPS: ${isHTTPS})`);
 
       openaiWebSocket = new WebSocket(wsUrl);
 
