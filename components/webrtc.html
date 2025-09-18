@@ -1184,8 +1184,12 @@ try {
         }
       }
 
-      const protocol = (window.parent?.location?.protocol === 'https:' || window.location.protocol === 'https:') ? 'wss:' : 'ws:';
+      // 임시: WSS 연결 문제로 인해 WS 강제 사용 (개발/테스트용)
+      // TODO: 프로덕션에서는 WSS 사용하도록 수정 필요
+      const protocol = 'ws:'; // 강제로 WS 사용
       const wsUrl = `${protocol}//${hostname}:${wsPort}`;
+
+      console.log(`🔗 WebSocket 연결 시도: ${wsUrl}`);
 
       openaiWebSocket = new WebSocket(wsUrl);
 
