@@ -95,32 +95,51 @@ def translate_with_llm(bedrock_client, text, source_lang, target_lang):
             }
             source_lang_name = source_lang_names.get(source_lang, "원본 언어")
 
-            prompt = f"""다음 {source_lang_name} 텍스트를 자연스러운 한국어로 번역해주세요.
-기술 프레젠테이션이나 비즈니스 맥락에서 사용될 실시간 자막입니다.
+            prompt = f"""다음 {source_lang_name} 텍스트를 청중이 듣기 좋은 자연스러운 한국어로 의역해주세요.
+실시간 컨퍼런스/기술발표 자막으로 사용되며, 완전한 직역보다는 의미 전달이 우선입니다.
 
 원문: "{text}"
 
-번역 시 고려사항:
-- 자연스럽고 이해하기 쉬운 한국어 사용
-- 기술 용어나 회사명은 적절히 처리
-- 실시간 자막에 적합한 간결한 표현
-- 문화적 뉘앙스 반영
+번역 가이드라인:
+- 💡 의미 중심: 원문의 핵심 의미를 자연스럽게 전달
+- 🎯 청중 친화적: 듣는 사람이 이해하기 쉬운 한국어 표현
+- 🚀 맥락 반영: 기술발표/비즈니스 상황에 맞는 톤앤매너
+- ⚡ 간결성: 실시간 자막에 적합한 깔끔한 문장 (최대 2문장)
+- 🔧 용어 처리: 기술용어는 한국 개발자들이 실제 사용하는 표현
+- 📝 자연스러움: 한국어 어순과 관용표현 우선, 직역 금지
 
-번역 결과만 답변해주세요:"""
+예시 변환:
+- "Let me walk you through" → "함께 살펴보겠습니다"
+- "It's pretty straightforward" → "사실 꽤 간단합니다"
+- "This is game-changing" → "이건 정말 혁신적이에요"
+- "That landed differently for me" → "제게는 다르게 다가왔습니다"
+
+번역 결과만 출력하세요 (설명, 주석, 부연설명 일절 금지):
+
+한국어 번역:"""
 
         else:
             # 한국어 → 영어
-            prompt = f"""다음 한국어 텍스트를 자연스러운 영어로 번역해주세요.
-기술 프레젠테이션이나 비즈니스 맥락에서 사용될 실시간 자막입니다.
+            prompt = f"""다음 한국어를 국제 컨퍼런스에서 쓰이는 자연스러운 영어로 의역해주세요.
+글로벌 청중을 위한 실시간 자막으로, 직역보다는 의미가 잘 전달되는 것이 중요합니다.
 
 원문: "{text}"
 
-번역 시 고려사항:
-- 자연스럽고 전문적인 영어 사용
-- 비즈니스 맥락에 적합한 표현
-- 실시간 자막에 적합한 명확한 표현
+번역 가이드라인:
+- 🌍 글로벌 표준: 국제 컨퍼런스에서 실제 쓰이는 자연스러운 영어
+- 💼 프로페셔널: 기술발표/비즈니스에 적합한 톤
+- 🎯 명확성: 비영어권 청중도 이해하기 쉬운 표현
+- ⚡ 간결성: 자막에 적합한 깔끔한 문장
+- 🔧 용어 활용: 업계 표준 기술용어 및 표현 사용
 
-번역 결과만 답변해주세요:"""
+예시 변환:
+- "이걸 한번 보시면" → "Let's take a look at this"
+- "꽤 괜찮은 것 같아요" → "This looks pretty promising"
+- "정말 대단한 기술이에요" → "This is truly impressive technology"
+
+번역 결과만 출력하세요 (설명, 주석, 부연설명 일절 금지):
+
+English translation:"""
 
         # Claude 모델 사용 (Bedrock 표준 포맷 - 2025 업데이트)
         body = json.dumps(
@@ -130,7 +149,7 @@ def translate_with_llm(bedrock_client, text, source_lang, target_lang):
                 "messages": [
                     {"role": "user", "content": [{"type": "text", "text": prompt}]}
                 ],
-                "temperature": 0.3,
+                "temperature": 0.5,
                 "top_p": 0.9,
             }
         )
@@ -161,6 +180,29 @@ def translate_with_llm(bedrock_client, text, source_lang, target_lang):
 
         # 결과 정리 (따옴표나 불필요한 문자 제거)
         translated_text = translated_text.strip("\"'")
+
+        # 설명 텍스트 제거 (정규식으로 번역 결과만 추출)
+        import re
+
+        # "This translation:" 이후 설명 제거
+        translated_text = re.sub(r'This translation:.*$', '', translated_text, flags=re.DOTALL | re.IGNORECASE)
+
+        # "Here's a natural..." 패턴 제거
+        translated_text = re.sub(r'Here\'s a natural.*?:', '', translated_text, flags=re.DOTALL | re.IGNORECASE)
+
+        # "This [설명]:" 패턴 제거
+        translated_text = re.sub(r'This.*?:', '', translated_text, flags=re.DOTALL | re.IGNORECASE)
+
+        # 첫 번째 문장만 추출 (줄바꿈 이전)
+        lines = translated_text.split('\n')
+        if lines:
+            translated_text = lines[0].strip()
+
+        # 따옴표로 둘러싸인 경우 제거
+        translated_text = re.sub(r'^["\'](.+)["\']$', r'\1', translated_text)
+
+        # 최종 정리
+        translated_text = translated_text.strip()
 
         return translated_text
 
