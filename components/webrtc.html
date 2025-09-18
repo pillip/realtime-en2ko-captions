@@ -1171,12 +1171,14 @@ try {
 
       // WebSocket 연결 (app.py의 OpenAI handler와 통신용)
       const wsPort = BOOT.websocket_port || 8765;
-      const wsUrl = `ws://localhost:${wsPort}`;
+      // 배포 환경 호환: 동적 호스트 설정
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${protocol}//${window.location.hostname}:${wsPort}`;
 
       openaiWebSocket = new WebSocket(wsUrl);
 
       openaiWebSocket.onopen = () => {
-        console.log('✅ OpenAI WebSocket 연결됨');
+        console.log(`✅ OpenAI WebSocket 연결됨: ${wsUrl}`);
       };
 
       openaiWebSocket.onmessage = (event) => {
@@ -1189,11 +1191,11 @@ try {
       };
 
       openaiWebSocket.onerror = (error) => {
-        console.error('❌ OpenAI WebSocket 오류:', error);
+        console.error(`❌ OpenAI WebSocket 오류 (${wsUrl}):`, error);
       };
 
-      openaiWebSocket.onclose = () => {
-        console.log('🔌 OpenAI WebSocket 연결 종료');
+      openaiWebSocket.onclose = (event) => {
+        console.log(`🔌 OpenAI WebSocket 연결 종료 (${wsUrl}): Code ${event.code}`);
       };
 
       return true;
