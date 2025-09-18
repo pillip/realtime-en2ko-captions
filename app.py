@@ -624,12 +624,14 @@ def start_websocket_server():
 
         async def run_server():
             try:
-                # OpenAI 모드를 기본으로 사용
+                # 🔧 Docker 환경에서는 반드시 0.0.0.0으로 바인딩
                 server = await websockets.serve(
-                    handle_openai_websocket, "localhost", free_port
+                    handle_openai_websocket,
+                    "0.0.0.0",
+                    free_port,  # localhost → 0.0.0.0
                 )
                 print(
-                    f"[WebSocket] 서버 시작 완료 (OpenAI 모드): ws://localhost:{free_port}"
+                    f"[WebSocket] 서버 시작 완료 (OpenAI 모드): ws://0.0.0.0:{free_port}"
                 )
 
                 await server.wait_closed()
