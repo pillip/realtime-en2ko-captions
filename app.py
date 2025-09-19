@@ -468,6 +468,34 @@ def create_aws_session() -> dict:
 # AWS Transcribe 함수 제거됨 - OpenAI Realtime API 사용
 
 
+# 간단한 HTTP 헬스체크 서버
+def start_health_server(port):
+    """ALB 헬스체크용 간단한 HTTP 서버"""
+    import http.server
+    import socketserver
+
+    class HealthHandler(http.server.SimpleHTTPRequestHandler):
+        def do_GET(self):
+            if self.path in ["/", "/health"]:
+                self.send_response(200)
+                self.send_header("Content-type", "text/plain")
+                self.end_headers()
+                self.wfile.write(b"OK")
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def log_message(self, format, *args):
+            pass  # 로그 최소화
+
+    try:
+        with socketserver.TCPServer(("0.0.0.0", port), HealthHandler) as httpd:
+            print(f"[Health Check] HTTP 서버 시작: http://0.0.0.0:{port}/health")
+            httpd.serve_forever()
+    except Exception as e:
+        print(f"[Health Check] 서버 오류: {e}")
+
+
 # 새로운 간단한 OpenAI 전용 WebSocket 핸들러
 async def handle_openai_websocket(websocket):
     """OpenAI Realtime API와 통합된 WebSocket 핸들러"""
@@ -618,6 +646,8 @@ def start_websocket_server():
 
         # 글로벌 변수에 포트 저장
         WEBSOCKET_PORT = free_port
+
+        # ALB 헬스체크는 "/" 경로로 WebSocket 업그레이드 시도하도록 설정
 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)

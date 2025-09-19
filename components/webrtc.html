@@ -1170,8 +1170,7 @@ try {
       };
 
       // WebSocket 연결 (app.py의 OpenAI handler와 통신용)
-      const wsPort = BOOT.websocket_port || 8765;
-      // 배포 환경 호환: 동적 호스트 설정 (Streamlit iframe 환경 고려)
+      // ALB 경로 기반 라우팅 사용: /ws 경로로 연결
       let hostname = window.location.hostname;
 
       // about:srcdoc 환경에서는 부모 창의 hostname 사용
@@ -1189,7 +1188,11 @@ try {
                       (window.parent && window.parent.location.protocol === 'https:');
 
       const wsProtocol = isHTTPS ? 'wss:' : 'ws:';
-      const wsUrl = `${wsProtocol}//${hostname}:${wsPort}`;
+
+      // ALB 경로 기반 라우팅: 포트 없이 /ws 경로 사용
+      const wsUrl = hostname === 'localhost'
+        ? `${wsProtocol}//localhost:${BOOT.websocket_port || 8765}` // 로컬 개발
+        : `${wsProtocol}//${hostname}/ws`; // 배포 환경
 
       console.log(`🔗 WebSocket 연결 시도: ${wsUrl} (HTTPS: ${isHTTPS})`);
 
