@@ -254,37 +254,55 @@ except:
 st.markdown(
     """
 <style>
-    /* 전체 페이지 높이 제한 */
+    /* 🚫 전체 페이지 스크롤 완전 차단 */
     html, body {
+        position: fixed !important;
+        top: 0 !important;
+        left: 0 !important;
+        width: 100% !important;
         height: 100vh !important;
+        max-height: 100vh !important;
         overflow: hidden !important;
         margin: 0 !important;
         padding: 0 !important;
+        touch-action: none !important;
+        overscroll-behavior: none !important;
     }
 
-    .main > div {
-        padding-top: 0rem !important;
-        padding-bottom: 0rem !important;
-        height: 100vh !important;
-        overflow: hidden !important;
-    }
-
-    .stApp {
-        overflow: hidden !important;
-        height: 100vh !important;
-        max-height: 100vh !important;
-    }
-
-    .main {
-        overflow: hidden !important;
+    /* Streamlit 컨테이너들 스크롤 차단 */
+    .stApp, .main, [data-testid="stAppViewContainer"],
+    [data-testid="stSidebar"], .block-container {
+        position: fixed !important;
+        top: 0 !important;
+        left: 0 !important;
+        width: 100% !important;
         height: 100vh !important;
         max-height: 100vh !important;
+        overflow: hidden !important;
+        touch-action: none !important;
+        overscroll-behavior: none !important;
     }
 
-    /* 🎯 iframe 높이를 더 줄여서 확실히 100vh 안에 맞춤 */
+    /* 추가 스크롤 차단 CSS */
+    * {
+        overflow: hidden !important;
+        touch-action: none !important;
+        overscroll-behavior: none !important;
+    }
+
+    /* iframe 제외하고 모든 요소 스크롤 차단 */
+    *:not(iframe):not(iframe *) {
+        overflow: hidden !important;
+    }
+
+    /* 🎯 iframe을 전체 화면에 정확히 맞춤 */
     .main iframe {
-        height: 95vh !important;
-        max-height: 95vh !important;
+        height: 100% !important;
+        max-height: 100% !important;
+        width: 100% !important;
+        border: none !important;
+        margin: 0 !important;
+        padding: 0 !important;
     }
 
     /* 모든 컨테이너 패딩/마진 제거 */
@@ -301,15 +319,48 @@ st.markdown(
         max-height: 100vh !important;
     }
 
-    /* Streamlit 동적 클래스들의 패딩 조정 */
+    /* Streamlit 동적 클래스들의 패딩 완전 제거 */
     .stMainBlockContainer {
-        padding-top: 5vh !important;
-        padding-bottom: 0rem !important;
-        padding-left: 2rem !important;
-        padding-right: 2rem !important;
-        margin: 0rem !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        height: 100vh !important;
+        max-height: 100vh !important;
     }
 </style>
+
+<script>
+    // JavaScript로 스크롤 완전 차단
+    function preventScroll(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        return false;
+    }
+
+    // 페이지 로드 후 실행
+    window.addEventListener('load', function() {
+        // 모든 스크롤 이벤트 차단
+        document.addEventListener('wheel', preventScroll, { passive: false });
+        document.addEventListener('touchmove', preventScroll, { passive: false });
+        document.addEventListener('scroll', preventScroll, { passive: false });
+
+        // 스크롤 관련 키 차단
+        document.addEventListener('keydown', function(e) {
+            if([32, 33, 34, 35, 36, 37, 38, 39, 40].indexOf(e.keyCode) > -1) {
+                e.preventDefault();
+            }
+        }, false);
+
+        // 윈도우 스크롤 강제 방지
+        window.addEventListener('scroll', function() {
+            window.scrollTo(0, 0);
+        });
+
+        // 초기 스크롤 위치 고정
+        window.scrollTo(0, 0);
+        document.body.scrollTop = 0;
+        document.documentElement.scrollTop = 0;
+    });
+</script>
 """,
     unsafe_allow_html=True,
 )
