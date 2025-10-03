@@ -6,6 +6,9 @@ OpenAI Realtime API와 AWS Translate를 활용한 실시간 한국어-영어 자
 
 - 🎯 **실시간 음성 인식**: 저지연 실시간 영어/한국어 음성 텍스트 변환
 - 🔄 **양방향 번역**: 한국어 ↔ 영어 실시간 번역
+- 👥 **사용자 관리**: 개인별 계정 관리 및 사용량 추적
+- ⏱️ **사용량 기반 과금**: 실제 음성 길이 기반 정확한 사용량 측정
+- 🔧 **관리자 대시보드**: 사용자 생성/관리 및 사용량 통계
 - 🎨 **직관적인 UI**: 채팅 UI와 크레딧롤 형태의 자막 표시
 - 🎙️ **USB 마이크 지원**: USB 마이크와 시스템 오디오 선택 가능
 - ⚙️ **유연한 설정**: 번역 지연시간 및 자막 설정 조정 가능
@@ -13,10 +16,12 @@ OpenAI Realtime API와 AWS Translate를 활용한 실시간 한국어-영어 자
 
 ## 🛠️ 기술 스택
 
-- **Backend**: Python, Streamlit
+- **Backend**: Python, Streamlit, SQLite
 - **Frontend**: Vanilla JavaScript, WebRTC
-- **AI**: OpenAI Realtime API (gpt-4o-mini-realtime-preview)
+- **AI**: OpenAI Realtime API (gpt-4o-realtime-preview-2024-12-17)
 - **Translation**: AWS Translate + Bedrock
+- **Authentication**: PBKDF2-SHA256 with Salt
+- **Database**: SQLite with usage tracking
 - **Deployment**: Docker
 
 ## 🚀 빠른 시작
@@ -66,6 +71,12 @@ OPENAI_KEY=your_openai_api_key_here
 AWS_ACCESS_KEY_ID=your_aws_access_key_id
 AWS_SECRET_ACCESS_KEY=your_aws_secret_access_key
 AWS_REGION=us-east-1
+
+# 관리자 계정 설정 (초기 설정용)
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=admin123!
+ADMIN_EMAIL=admin@example.com
+ADMIN_FULL_NAME=System Administrator
 ```
 
 ### 2. Docker Compose 실행
@@ -108,6 +119,87 @@ uv run streamlit run app.py
 2. **오디오 장치 선택**: 설정에서 원하는 마이크/스피커 선택
 3. **언어 설정**: 번역 방향 설정 (한→영, 영→한)
 4. **자막 시작**: "시작" 버튼 클릭하여 실시간 자막 활성화
+
+## 👥 사용자 관리 시스템
+
+### 🔐 인증 및 로그인
+
+시스템 접속 시 먼저 로그인이 필요합니다:
+
+```
+http://localhost:8501/login     # 로그인 페이지
+http://localhost:8501/          # 메인 자막 시스템 (로그인 후)
+http://localhost:8501/admin     # 관리자 대시보드 (관리자만)
+```
+
+### 👑 관리자 기능
+
+관리자는 다음 기능을 사용할 수 있습니다:
+
+1. **사용자 계정 생성**
+   - 새로운 사용자 계정 생성
+   - 사용 가능 시간 설정 (시간 단위)
+   - 사용자 정보 관리 (이름, 이메일, 역할)
+
+2. **사용자 관리**
+   - 전체 사용자 목록 조회
+   - 사용자별 사용량 및 남은 시간 확인
+   - 사용자 정보 수정 및 사용 시간 추가
+   - 계정 활성화/비활성화
+
+3. **사용량 통계**
+   - 전체/기간별 사용량 통계
+   - 언어별 사용 패턴 분석
+   - 실시간 사용량 모니터링
+
+4. **로그 관리**
+   - 상세한 사용량 로그 조회
+   - 사용자별 활동 기록 추적
+
+### ⏱️ 사용량 측정 방식
+
+시스템은 다음과 같이 정확한 사용량을 측정합니다:
+
+1. **실시간 측정**: OpenAI의 `speech_started`/`speech_stopped` 이벤트로 실제 음성 길이 측정
+2. **Fallback 추정**: 타이밍 정보가 없을 경우 텍스트 길이 기반 추정 (`텍스트 길이 / 5.0` 초)
+3. **실시간 체크**: 매 transcription 완료 시점에 사용량 확인 및 초과 시 즉시 차단
+4. **상세 로그**: 모든 사용량이 메타데이터와 함께 데이터베이스에 기록
+
+### 📊 사용량 제한
+
+- **일반 사용자**: 계정별로 설정된 총 사용 가능 시간 (초 단위)
+- **관리자**: 무제한 사용 가능
+- **실시간 모니터링**: 사이드바에서 실시간 사용량 및 남은 시간 확인
+- **자동 차단**: 사용량 초과 시 자동으로 서비스 차단
+
+### 🗄️ 데이터베이스 구조
+
+```sql
+-- 사용자 테이블
+CREATE TABLE users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,  -- PBKDF2-SHA256
+    salt TEXT NOT NULL,
+    role TEXT DEFAULT 'user',     -- 'admin' 또는 'user'
+    total_usage_seconds INTEGER DEFAULT 0,
+    usage_limit_seconds INTEGER DEFAULT 3600,
+    is_active BOOLEAN DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 사용량 로그 테이블
+CREATE TABLE usage_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    action TEXT NOT NULL,         -- 'transcribe'
+    duration_seconds INTEGER NOT NULL,
+    source_language TEXT,
+    target_language TEXT,
+    metadata TEXT,                -- JSON: 추가 정보
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
 
 ## 🔧 설정 옵션
 
