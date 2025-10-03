@@ -201,7 +201,7 @@ def check_usage_limit(duration_seconds: int, user_info: dict = None) -> bool:
             return True
 
         return remaining >= duration_seconds
-    except:
+    except Exception:
         # Streamlit context가 없는 경우 (WebSocket 등)
         return False
 
@@ -259,12 +259,17 @@ def display_user_info(show_divider=True):
 
         # 사용량 정보 (관리자가 아닌 경우)
         if user["role"] != "admin":
-            remaining = get_user_remaining_seconds()
+            # DB에서 최신 사용량 조회
+            user_model = get_user_model()
+            remaining = user_model.get_remaining_seconds(user["id"])
+
             if remaining is not None:
-                total_limit = user["usage_limit_seconds"]
+                updated_user = user_model.get_user_by_id(user["id"])
+                total_limit = updated_user["usage_limit_seconds"]
                 used_seconds = total_limit - remaining
 
                 st.write(f"**사용량**: {used_seconds}초 / {total_limit}초")
+                st.caption("※ 정지 버튼 클릭 시 최신 사용량으로 업데이트됩니다")
 
                 # 진행률 바
                 progress = used_seconds / total_limit if total_limit > 0 else 0
