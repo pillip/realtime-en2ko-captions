@@ -368,7 +368,7 @@ def show_usage_logs(usage_log_model, user_model):
     user_options = {"전체": None}
     user_options.update({f"{u['username']} ({u['role']})": u["id"] for u in users})
 
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns([2, 2, 1])
 
     with col1:
         selected_user_label = st.selectbox(
@@ -382,6 +382,60 @@ def show_usage_logs(usage_log_model, user_model):
     with col2:
         # 페이지네이션 설정
         page_size = st.selectbox("페이지 당 항목 수", [10, 25, 50, 100], index=1)
+
+    with col3:
+        # CSV 다운로드 버튼 (특정 사용자 선택 시에만 표시)
+        if selected_user_id:
+            selected_username = next(
+                u["username"] for u in users if u["id"] == selected_user_id
+            )
+            if st.button("📥 CSV 다운로드", use_container_width=True):
+                # 전체 로그 조회
+                all_logs = usage_log_model.get_all_user_logs(selected_user_id)
+
+                if all_logs:
+                    # CSV 데이터 생성
+                    csv_data = []
+                    for log in all_logs:
+                        # metadata에서 source_text와 target_text 추출
+                        metadata = log.get("metadata", {})
+                        source_text = (
+                            metadata.get("source_text", "") if metadata else ""
+                        )
+                        target_text = (
+                            metadata.get("target_text", "") if metadata else ""
+                        )
+
+                        csv_data.append(
+                            {
+                                "ID": log["id"],
+                                "사용자ID": log["user_id"],
+                                "작업": log["action"],
+                                "시간(초)": log["duration_seconds"],
+                                "소스언어": log["source_language"] or "",
+                                "대상언어": log["target_language"] or "",
+                                "원문": source_text,
+                                "번역문": target_text,
+                                "생성일시": log["created_at"],
+                                "메타데이터": str(metadata) if metadata else "",
+                            }
+                        )
+
+                    csv_df = pd.DataFrame(csv_data)
+
+                    # CSV로 변환
+                    csv_string = csv_df.to_csv(index=False, encoding="utf-8-sig")
+
+                    # 다운로드 버튼
+                    st.download_button(
+                        label=f"💾 {selected_username}_로그.csv",
+                        data=csv_string,
+                        file_name=f"{selected_username}_usage_logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        mime="text/csv",
+                        use_container_width=True,
+                    )
+                else:
+                    st.warning("다운로드할 로그가 없습니다.")
 
     page_number = st.number_input("페이지", min_value=1, value=1) - 1
     offset = page_number * page_size

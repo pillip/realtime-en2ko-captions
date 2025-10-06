@@ -396,6 +396,29 @@ class UsageLog:
 
             return logs
 
+    def get_all_user_logs(self, user_id: int) -> list[dict[str, Any]]:
+        """특정 사용자의 모든 사용량 로그 조회 (CSV 다운로드용)"""
+        with self.db.get_connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT id, user_id, action, duration_seconds, source_language,
+                       target_language, created_at, metadata
+                FROM usage_logs
+                WHERE user_id = ?
+                ORDER BY created_at DESC
+            """,
+                (user_id,),
+            )
+
+            logs = []
+            for row in cursor.fetchall():
+                log_dict = dict(row)
+                if log_dict["metadata"]:
+                    log_dict["metadata"] = json.loads(log_dict["metadata"])
+                logs.append(log_dict)
+
+            return logs
+
     def get_all_logs(self, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
         """모든 사용량 로그 조회"""
         with self.db.get_connection() as conn:
