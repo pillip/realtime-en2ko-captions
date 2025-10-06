@@ -257,32 +257,32 @@ def display_user_info(show_divider=True):
         if user["full_name"]:
             st.write(f"**소속**: {user['full_name']}")
 
-        # 사용량 정보 (관리자가 아닌 경우)
-        if user["role"] != "admin":
-            # DB에서 최신 사용량 조회
-            user_model = get_user_model()
-            remaining = user_model.get_remaining_seconds(user["id"])
+        # # 사용량 정보 (관리자가 아닌 경우)
+        # if user["role"] != "admin":
+        #     # DB에서 최신 사용량 조회
+        #     user_model = get_user_model()
+        #     remaining = user_model.get_remaining_seconds(user["id"])
 
-            if remaining is not None:
-                updated_user = user_model.get_user_by_id(user["id"])
-                total_limit = updated_user["usage_limit_seconds"]
-                used_seconds = total_limit - remaining
+        #     if remaining is not None:
+        #         updated_user = user_model.get_user_by_id(user["id"])
+        #         total_limit = updated_user["usage_limit_seconds"]
+        #         used_seconds = total_limit - remaining
 
-                st.write(f"**사용량**: {used_seconds}초 / {total_limit}초")
-                st.caption("※ 정지 버튼 클릭 시 최신 사용량으로 업데이트됩니다")
+        #         st.write(f"**사용량**: {used_seconds}초 / {total_limit}초")
+        #         st.caption("※ 정지 버튼 클릭 시 최신 사용량으로 업데이트됩니다")
 
-                # 진행률 바
-                progress = used_seconds / total_limit if total_limit > 0 else 0
-                st.progress(min(progress, 1.0))
+        #         # 진행률 바
+        #         progress = used_seconds / total_limit if total_limit > 0 else 0
+        #         st.progress(min(progress, 1.0))
 
-                if remaining <= 0:
-                    st.error("사용량이 초과되었습니다.")
-                elif remaining <= 300:  # 5분 미만
-                    st.warning(f"남은 시간: {remaining}초")
-                else:
-                    st.info(f"남은 시간: {remaining}초")
-        else:
-            st.info("관리자 (무제한 사용)")
+        #         if remaining <= 0:
+        #             st.error("사용량이 초과되었습니다.")
+        #         elif remaining <= 300:  # 5분 미만
+        #             st.warning(f"남은 시간: {remaining}초")
+        #         else:
+        #             st.info(f"남은 시간: {remaining}초")
+        # else:
+        #     st.info("관리자 (무제한 사용)")
 
         if st.button("로그아웃"):
             logout_user()
