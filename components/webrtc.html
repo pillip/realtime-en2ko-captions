@@ -664,6 +664,8 @@ try {
   let isPaused = false;
   let isUserScrolling = false;    // 🎯 사용자 스크롤 상태
   let lastAutoScrollTime = 0;     // 🎯 마지막 자동 스크롤 시간
+  let speechStartTime = null;     // 🔊 음성 시작 시간
+  let speechEndTime = null;       // 🔊 음성 종료 시간
 
   // DOM elements with null checks
   const viewer = document.getElementById('viewer');
@@ -1291,6 +1293,15 @@ try {
 
       openaiWebSocket.onopen = () => {
         console.log(`✅ OpenAI WebSocket 연결됨: ${wsUrl}`);
+
+        // 사용자 정보 전송 (Bootstrap에서 전달받은 정보)
+        if (BOOT.user_info) {
+          openaiWebSocket.send(JSON.stringify({
+            type: 'auth',
+            user: BOOT.user_info
+          }));
+          console.log('[Auth] 사용자 정보 전송:', BOOT.user_info.username);
+        }
       };
 
       openaiWebSocket.onmessage = (event) => {
@@ -1337,20 +1348,38 @@ try {
 
           // WebSocket을 통해 app.py로 번역 요청 전송
           if (openaiWebSocket && openaiWebSocket.readyState === WebSocket.OPEN) {
+            // 실제 음성 길이 계산
+            let audioDurationSeconds = 0;
+            if (speechStartTime && speechEndTime && speechEndTime > speechStartTime) {
+              audioDurationSeconds = Math.max(0, (speechEndTime - speechStartTime) / 1000);
+              console.log('[Speech Timing] 실제 음성 길이:', audioDurationSeconds, '초');
+            } else {
+              console.log('[Speech Timing] 타이밍 정보 없음, 서버에서 추정 필요');
+            }
+
             openaiWebSocket.send(JSON.stringify({
               type: 'transcript',
               text: transcript,
+              audio_duration_seconds: audioDurationSeconds,
               timestamp: Date.now()
             }));
+
+            // 타이밍 변수 초기화
+            speechStartTime = null;
+            speechEndTime = null;
           }
         }
         break;
 
       case 'input_audio_buffer.speech_started':
+        speechStartTime = Date.now();
+        console.log('[Speech Timing] 음성 시작:', speechStartTime);
         logStatus('음성 감지됨', 'connecting');
         break;
 
       case 'input_audio_buffer.speech_stopped':
+        speechEndTime = Date.now();
+        console.log('[Speech Timing] 음성 종료:', speechEndTime);
         logStatus('음성 처리 중', 'connecting');
         break;
 
@@ -1380,10 +1409,39 @@ try {
             completeTypingTranslation(data.translated_text);
           }, 100);
         }
+
+        // 사용량 정보 업데이트 (Streamlit 부모 프레임에 메시지 전송)
+        if (data.remaining_seconds !== undefined) {
+          console.log('[Usage Update] 남은 시간:', data.remaining_seconds, '초');
+          try {
+            window.parent.postMessage({
+              type: 'usage_update',
+              remaining_seconds: data.remaining_seconds,
+              user_id: data.user_id,
+              timestamp: Date.now()
+            }, '*');
+          } catch (error) {
+            console.warn('[Usage Update] 부모 프레임 메시지 전송 실패:', error);
+          }
+        }
         break;
 
       case 'connection':
         console.log('[Translation] 연결 상태:', data.status);
+        break;
+
+      case 'auth_success':
+        console.log('[Translation] 인증 성공:', data.message);
+        break;
+
+      case 'usage_exceeded':
+        console.error('[Usage] 사용량 초과:', data.message);
+        showToast(data.message, 'error');
+        // 연결 중단
+        if (openaiWebSocket) {
+          openaiWebSocket.close();
+        }
+        closeConnection();
         break;
 
       case 'error':
@@ -2002,10 +2060,14 @@ try {
         break;
 
       case 'input_audio_buffer.speech_started':
+        speechStartTime = Date.now();
+        console.log('[Speech Timing] 음성 시작:', speechStartTime);
         logStatus('음성 인식 중', 'connecting');
         break;
 
       case 'input_audio_buffer.speech_stopped':
+        speechEndTime = Date.now();
+        console.log('[Speech Timing] 음성 종료:', speechEndTime);
         logStatus('처리 중', 'connecting');
         break;
 

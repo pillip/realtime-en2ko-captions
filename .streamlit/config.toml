@@ -9,3 +9,7 @@ maxUploadSize = 200
 [browser]
 # ALB 환경에서 자동 브라우저 실행 비활성화
 gatherUsageStats = false
+
+[client]
+# 사이드바 페이지 네비게이션 숨기기
+showSidebarNavigation = false

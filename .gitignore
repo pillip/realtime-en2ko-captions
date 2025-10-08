@@ -1,6 +1,10 @@
 # Environment variables
 .env
 
+# Database
+data/app.db
+data/*.db
+
 # Python
 __pycache__/
 *.py[cod]

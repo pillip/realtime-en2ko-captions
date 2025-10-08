@@ -13,6 +13,11 @@ import websockets
 from botocore.exceptions import ClientError
 from dotenv import load_dotenv
 
+from auth import check_usage_limit, get_current_user, update_user_session
+
+# 사용자 관리 시스템 imports
+from database import get_usage_log_model, get_user_model
+
 # Load environment variables
 load_dotenv()
 
@@ -241,6 +246,21 @@ st.set_page_config(
     initial_sidebar_state=st.session_state["sidebar_state"],
 )
 
+# 사용자 인증 체크
+from auth import (
+    display_login_form,
+    display_user_info,
+    init_session_state,
+    is_authenticated,
+)
+
+init_session_state()
+
+# 로그인되지 않은 경우 로그인 폼 표시
+if not is_authenticated():
+    display_login_form()
+    st.stop()
+
 # ALB/프록시 환경에서 HTTPS 지원을 위한 설정
 import streamlit.web.server.server as server
 
@@ -359,6 +379,20 @@ st.markdown(
         window.scrollTo(0, 0);
         document.body.scrollTop = 0;
         document.documentElement.scrollTop = 0;
+
+        // 사용량 업데이트 메시지 리스너 추가
+        window.addEventListener('message', function(event) {
+            if (event.data && event.data.type === 'usage_update') {
+                console.log('[Usage Listener] 사용량 업데이트 메시지 수신:', event.data);
+                // 짧은 지연 후 페이지 새로고침으로 사이드바 업데이트
+                setTimeout(function() {
+                    // Query parameter를 통해 새로고침 방지
+                    const url = new URL(window.location);
+                    url.searchParams.set('_t', Date.now());
+                    window.location.href = url.toString();
+                }, 1000);
+            }
+        });
     });
 </script>
 """,
@@ -367,7 +401,10 @@ st.markdown(
 
 # 상위 시스템 관리 패널
 with st.sidebar:
-    st.header("🏢 시스템 관리")
+    st.header("🧑‍💻 유저 정보")
+
+    # 사용자 정보 표시
+    display_user_info()
 
     if not AWS_ACCESS_KEY_ID or not AWS_SECRET_ACCESS_KEY:
         st.error("⚠️ AWS 자격 증명이 설정되지 않았습니다.")
@@ -552,6 +589,24 @@ async def handle_openai_websocket(websocket):
     """OpenAI Realtime API와 통합된 WebSocket 핸들러"""
     print(f"[WebSocket] OpenAI 모드 - 클라이언트 연결: {websocket.remote_address}")
 
+    # 첫 메시지로 사용자 정보 수신
+    user_info = None
+    try:
+        first_message = await asyncio.wait_for(websocket.recv(), timeout=5.0)
+        data = json.loads(first_message)
+        if data.get("type") == "auth":
+            user_info = data.get("user")
+            print(
+                f"[Auth] 사용자 인증: {user_info.get('username') if user_info else 'Unknown'}"
+            )
+            await websocket.send(
+                json.dumps({"type": "auth_success", "message": "인증 완료"})
+            )
+    except TimeoutError:
+        print("[Auth] 인증 정보 수신 타임아웃")
+    except Exception as e:
+        print(f"[Auth] 인증 처리 오류: {e}")
+
     try:
         # 번역 클라이언트만 초기화
         translate_client = boto3.client(
@@ -613,10 +668,47 @@ async def handle_openai_websocket(websocket):
                 # OpenAI transcript 수신 및 번역
                 elif data["type"] == "transcript":
                     transcript = data.get("text", "")
+                    audio_duration = data.get(
+                        "audio_duration_seconds", 0
+                    )  # 실제 음성 길이
+
                     if not transcript:
                         continue
 
                     print(f"[OpenAI] 📝 Transcript: {transcript}")
+                    print(f"[Usage] 🔊 Audio duration: {audio_duration} seconds")
+
+                    # 사용량 체크 (WebSocket으로 전달받은 사용자 정보 사용)
+                    current_user = user_info
+                    if not current_user:
+                        await websocket.send(
+                            json.dumps(
+                                {
+                                    "type": "error",
+                                    "message": "로그인이 필요합니다. 페이지를 새로고침하고 다시 로그인해주세요.",
+                                }
+                            )
+                        )
+                        continue
+
+                    # 사용량 제한 확인 - user_info 파라미터 추가
+                    if not check_usage_limit(audio_duration, current_user):
+                        user_model = get_user_model()
+                        remaining = user_model.get_remaining_seconds(current_user["id"])
+
+                        await websocket.send(
+                            json.dumps(
+                                {
+                                    "type": "usage_exceeded",
+                                    "message": f"사용량이 초과되었습니다. 남은 시간: {remaining}초",
+                                    "remaining_seconds": remaining or 0,
+                                }
+                            )
+                        )
+                        print(
+                            f"[Usage] ❌ 사용량 초과 - User: {current_user['username']}, Remaining: {remaining}초"
+                        )
+                        continue
 
                     # 간단한 언어 감지
                     has_korean = any(
@@ -658,7 +750,61 @@ async def handle_openai_websocket(websocket):
                             print(f"[Translate] ❌ 번역 실패: {e}")
                             translated_text = transcript  # 실패시 원문 그대로
 
-                    # 결과 전송
+                    # 사용량 기록 (번역 성공 후)
+                    try:
+                        user_model = get_user_model()
+                        usage_log_model = get_usage_log_model()
+
+                        # 실제 음성 길이가 없으면 텍스트 기반 추정 (fallback)
+                        if audio_duration <= 0:
+                            estimated_duration = max(
+                                1, len(transcript) / 5.0
+                            )  # 텍스트 길이 기반 추정
+                            audio_duration = estimated_duration
+                            print(
+                                f"[Usage] 📏 텍스트 기반 추정: {audio_duration:.1f}초"
+                            )
+
+                        # 사용량 추가
+                        user_model.add_usage(current_user["id"], int(audio_duration))
+
+                        # 사용량 로그 기록
+                        usage_log_model.record_usage(
+                            user_id=current_user["id"],
+                            action="transcribe",
+                            duration_seconds=int(audio_duration),
+                            source_language=source_lang,
+                            target_language=target_lang,
+                            metadata={
+                                "transcript_length": len(transcript),
+                                "translated_length": (
+                                    len(translated_text) if translated_text else 0
+                                ),
+                                "used_llm": used_llm,
+                                "estimated": audio_duration
+                                != data.get("audio_duration_seconds", 0),
+                                "source_text": transcript,
+                                "target_text": translated_text,
+                            },
+                        )
+
+                        # 세션의 사용자 정보 업데이트
+                        update_user_session(current_user["id"])
+
+                        print(
+                            f"[Usage] ✅ 사용량 기록 - User: {current_user['username']}, Duration: {audio_duration}초"
+                        )
+
+                    except Exception as e:
+                        print(f"[Usage] ❌ 사용량 기록 실패: {e}")
+
+                    # 사용량 정보 가져오기
+                    user_model = get_user_model()
+                    remaining_seconds = user_model.get_remaining_seconds(
+                        current_user["id"]
+                    )
+
+                    # 결과 전송 (사용량 정보 포함)
                     await websocket.send(
                         json.dumps(
                             {
@@ -668,7 +814,10 @@ async def handle_openai_websocket(websocket):
                                 "source_language": source_lang,
                                 "target_language": target_lang,
                                 "used_llm": used_llm,
+                                "audio_duration": audio_duration,
                                 "timestamp": time.time(),
+                                "remaining_seconds": remaining_seconds,
+                                "user_id": current_user["id"],
                             }
                         )
                     )
@@ -787,11 +936,17 @@ try:
     with open("components/webrtc.html", encoding="utf-8") as f:
         html_template = f.read()
 
+    # 현재 사용자 정보 가져오기
+    from auth import get_current_user
+
+    current_user = get_current_user()
+
     payload = {
         "action": st.session_state["action"],
         "openai_session": st.session_state.get("openai_session"),
         "service": "openai_realtime",
         "websocket_port": WEBSOCKET_PORT,
+        "user_info": current_user,  # 사용자 정보 추가
     }
 
     html_content = html_template.replace("{{BOOTSTRAP_JSON}}", json.dumps(payload))

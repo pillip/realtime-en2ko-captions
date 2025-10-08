@@ -1,0 +1,9 @@
+[[pages]]
+path = "app.py"
+name = "Realtime Caption"
+icon = "🎙️"
+
+[[pages]]
+path = "pages/admin_dashboard.py"
+name = "Admin Dashboard"
+icon = "🔧"
