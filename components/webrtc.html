@@ -1351,7 +1351,7 @@ try {
             // 실제 음성 길이 계산
             let audioDurationSeconds = 0;
             if (speechStartTime && speechEndTime && speechEndTime > speechStartTime) {
-              audioDurationSeconds = (speechEndTime - speechStartTime) / 1000;
+              audioDurationSeconds = Math.max(0, (speechEndTime - speechStartTime) / 1000);
               console.log('[Speech Timing] 실제 음성 길이:', audioDurationSeconds, '초');
             } else {
               console.log('[Speech Timing] 타이밍 정보 없음, 서버에서 추정 필요');
