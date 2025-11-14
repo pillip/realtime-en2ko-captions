@@ -16,6 +16,8 @@ services:
     volumes:
       # 로그 파일을 호스트에 저장
       - ./logs:/app/logs
+      # 데이터베이스 파일을 호스트에 저장 (영구 보존)
+      - ./data:/app/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8501"]
       interval: 30s
