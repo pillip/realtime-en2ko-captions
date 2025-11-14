@@ -1,62 +1,15 @@
 """
 인증 관련 유틸리티 모듈
 Streamlit session_state를 활용한 사용자 인증 및 권한 관리
-extra-streamlit-components의 CookieManager로 세션 관리
 """
 
-import hashlib
-import time
 from collections.abc import Callable
 from functools import wraps
 from typing import Any
 
 import streamlit as st
-from extra_streamlit_components import CookieManager
 
 from database import get_user_model
-
-# 쿠키 매니저 지연 초기화 (렌더링 방지)
-_cookie_manager = None
-
-
-def get_cookie_manager():
-    """CookieManager 지연 초기화"""
-    global _cookie_manager
-    if _cookie_manager is None:
-        _cookie_manager = CookieManager(key="auth_cookie_manager")
-    return _cookie_manager
-
-
-def generate_session_token(user_id: int, username: str) -> str:
-    """세션 토큰 생성"""
-    timestamp = str(int(time.time()))
-    data = f"{user_id}:{username}:{timestamp}"
-    return hashlib.sha256(data.encode()).hexdigest()[:32]
-
-
-def set_session_cookie(user_info: dict):
-    """세션 쿠키 설정 (CookieManager 사용)"""
-    token = generate_session_token(user_info["id"], user_info["username"])
-    cookie_data = f"{user_info['id']}:{user_info['username']}:{token}"
-
-    # 24시간 유효 (max_age는 초 단위)
-    get_cookie_manager().set("user_session", cookie_data, max_age=86400)
-
-
-def get_session_cookie() -> str | None:
-    """세션 쿠키에서 사용자 정보 가져오기 (CookieManager 사용)"""
-    try:
-        # get() 메서드로 직접 특정 쿠키 읽기 (더 안정적)
-        session_data = get_cookie_manager().get(cookie="user_session")
-        return session_data if session_data else None
-    except Exception as e:
-        print(f"[Auth] 쿠키 읽기 실패: {e}")
-        return None
-
-
-def clear_session_cookie():
-    """세션 쿠키 삭제 (CookieManager 사용)"""
-    get_cookie_manager().delete("user_session")
 
 
 def init_session_state():
@@ -65,32 +18,6 @@ def init_session_state():
         st.session_state.authenticated = False
     if "user" not in st.session_state:
         st.session_state.user = None
-    if "cookie_restore_attempted" not in st.session_state:
-        st.session_state.cookie_restore_attempted = False
-
-    # 쿠키에서 세션 복원은 display_login_form()에서 처리
-    # 여기서는 하지 않음 (CookieManager 렌더링 방지)
-
-
-def restore_session_from_cookie():
-    """쿠키에서 세션 복원 (CookieManager 사용)"""
-    session_data = get_session_cookie()
-
-    if session_data:
-        try:
-            user_id, username, token = session_data.split(":")
-            user_model = get_user_model()
-            user = user_model.get_user_by_id(int(user_id))
-
-            if user and user["username"] == username and user["is_active"]:
-                st.session_state.authenticated = True
-                st.session_state.user = user
-                print(f"[Auth] 세션 복원 성공: {username}")
-                return True
-        except (ValueError, TypeError) as e:
-            print(f"[Auth] 세션 복원 실패: {e}")
-
-    return False
 
 
 def login_user(username: str, password: str) -> bool:
@@ -101,11 +28,6 @@ def login_user(username: str, password: str) -> bool:
     if user:
         st.session_state.authenticated = True
         st.session_state.user = user
-        st.session_state.cookie_restore_attempted = (
-            True  # 로그인 직후 쿠키 복원 시도 방지
-        )
-        # 쿠키 설정
-        set_session_cookie(user)
         return True
 
     return False
@@ -115,9 +37,6 @@ def logout_user():
     """사용자 로그아웃"""
     st.session_state.authenticated = False
     st.session_state.user = None
-    st.session_state.cookie_restore_attempted = False  # 다음 로그인을 위해 리셋
-    # 쿠키 삭제
-    clear_session_cookie()
 
 
 def get_current_user() -> dict[str, Any] | None:
@@ -282,7 +201,6 @@ def display_login_form():
                 return False
 
             if login_user(username, password):
-                st.success("로그인 성공!")
                 st.rerun()
             else:
                 st.error("사용자명 또는 비밀번호가 잘못되었습니다.")
