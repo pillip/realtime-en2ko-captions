@@ -68,14 +68,8 @@ def init_session_state():
     if "cookie_restore_attempted" not in st.session_state:
         st.session_state.cookie_restore_attempted = False
 
-    # 쿠키에서 세션 복원 시도 (한 번만, 로그인 안 된 경우에만)
-    if (
-        not st.session_state.authenticated
-        and not st.session_state.cookie_restore_attempted
-    ):
-        st.session_state.cookie_restore_attempted = True
-        restore_session_from_cookie()
-        # rerun 제거: 쿠키 복원 성공해도 현재 렌더링 계속 진행
+    # 쿠키에서 세션 복원은 display_login_form()에서 처리
+    # 여기서는 하지 않음 (CookieManager 렌더링 방지)
 
 
 def restore_session_from_cookie():
