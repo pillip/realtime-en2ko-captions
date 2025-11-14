@@ -43,6 +43,8 @@ colorama==0.4.6 ; sys_platform == 'win32'
     # via click
 distlib==0.4.0
     # via virtualenv
+extra-streamlit-components==0.1.81
+    # via realtime-en2ko-captions
 filelock==3.19.1
     # via virtualenv
 gitdb==4.0.12
@@ -147,7 +149,9 @@ standard-aifc==3.13.0 ; python_full_version >= '3.13'
 standard-chunk==3.13.0 ; python_full_version >= '3.13'
     # via standard-aifc
 streamlit==1.48.1
-    # via realtime-en2ko-captions
+    # via
+    #   extra-streamlit-components
+    #   realtime-en2ko-captions
 tenacity==9.1.2
     # via streamlit
 toml==0.10.2

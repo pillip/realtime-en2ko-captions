@@ -8,6 +8,7 @@ dependencies = [
     "bcrypt>=5.0.0",
     "boto3>=1.40.25",
     "botocore>=1.40.25",
+    "extra-streamlit-components>=0.1.81",
     "httpx>=0.28.1",
     "python-dotenv>=1.1.1",
     "requests>=2.32.4",
