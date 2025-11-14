@@ -70,7 +70,8 @@ docker-compose down 2>/dev/null || true
 
 # Docker 이미지 빌드 및 실행
 echo "🔧 Docker 이미지 빌드 중..."
-docker-compose up -d --build
+docker-compose build --no-cache
+docker-compose up -d
 
 # 배포 결과 확인
 echo ""
