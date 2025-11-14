@@ -317,8 +317,6 @@ st.markdown(
 
     /* 🎯 iframe을 전체 화면에 정확히 맞춤 */
     .main iframe {
-        height: 100% !important;
-        max-height: 100% !important;
         width: 100% !important;
         border: none !important;
         margin: 0 !important;
