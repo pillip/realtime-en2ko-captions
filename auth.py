@@ -15,8 +15,16 @@ from extra_streamlit_components import CookieManager
 
 from database import get_user_model
 
-# 쿠키 매니저 초기화 (앱 전체에서 재사용, key로 상태 관리)
-cookie_manager = CookieManager(key="auth_cookie_manager")
+# 쿠키 매니저 지연 초기화 (렌더링 방지)
+_cookie_manager = None
+
+
+def get_cookie_manager():
+    """CookieManager 지연 초기화"""
+    global _cookie_manager
+    if _cookie_manager is None:
+        _cookie_manager = CookieManager(key="auth_cookie_manager")
+    return _cookie_manager
 
 
 def generate_session_token(user_id: int, username: str) -> str:
@@ -32,14 +40,14 @@ def set_session_cookie(user_info: dict):
     cookie_data = f"{user_info['id']}:{user_info['username']}:{token}"
 
     # 24시간 유효 (max_age는 초 단위)
-    cookie_manager.set("user_session", cookie_data, max_age=86400)
+    get_cookie_manager().set("user_session", cookie_data, max_age=86400)
 
 
 def get_session_cookie() -> str | None:
     """세션 쿠키에서 사용자 정보 가져오기 (CookieManager 사용)"""
     try:
         # get() 메서드로 직접 특정 쿠키 읽기 (더 안정적)
-        session_data = cookie_manager.get(cookie="user_session")
+        session_data = get_cookie_manager().get(cookie="user_session")
         return session_data if session_data else None
     except Exception as e:
         print(f"[Auth] 쿠키 읽기 실패: {e}")
@@ -48,7 +56,7 @@ def get_session_cookie() -> str | None:
 
 def clear_session_cookie():
     """세션 쿠키 삭제 (CookieManager 사용)"""
-    cookie_manager.delete("user_session")
+    get_cookie_manager().delete("user_session")
 
 
 def init_session_state():
@@ -60,15 +68,14 @@ def init_session_state():
     if "cookie_restore_attempted" not in st.session_state:
         st.session_state.cookie_restore_attempted = False
 
-    # 쿠키에서 세션 복원 시도 (한 번만)
+    # 쿠키에서 세션 복원 시도 (한 번만, 로그인 안 된 경우에만)
     if (
         not st.session_state.authenticated
         and not st.session_state.cookie_restore_attempted
     ):
         st.session_state.cookie_restore_attempted = True
-        if restore_session_from_cookie():
-            # 복원 성공 시 페이지 새로고침으로 UI 업데이트
-            st.rerun()
+        restore_session_from_cookie()
+        # rerun 제거: 쿠키 복원 성공해도 현재 렌더링 계속 진행
 
 
 def restore_session_from_cookie():
@@ -100,6 +107,9 @@ def login_user(username: str, password: str) -> bool:
     if user:
         st.session_state.authenticated = True
         st.session_state.user = user
+        st.session_state.cookie_restore_attempted = (
+            True  # 로그인 직후 쿠키 복원 시도 방지
+        )
         # 쿠키 설정
         set_session_cookie(user)
         return True
