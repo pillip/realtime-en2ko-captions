@@ -1,6 +1,7 @@
 """
 인증 관련 유틸리티 모듈
 Streamlit session_state를 활용한 사용자 인증 및 권한 관리
+extra-streamlit-components의 CookieManager로 세션 관리
 """
 
 import hashlib
@@ -10,9 +11,12 @@ from functools import wraps
 from typing import Any
 
 import streamlit as st
-from streamlit.components.v1 import html
+from extra_streamlit_components import CookieManager
 
 from database import get_user_model
+
+# 쿠키 매니저 초기화 (앱 전체에서 재사용, key로 상태 관리)
+cookie_manager = CookieManager(key="auth_cookie_manager")
 
 
 def generate_session_token(user_id: int, username: str) -> str:
@@ -23,65 +27,28 @@ def generate_session_token(user_id: int, username: str) -> str:
 
 
 def set_session_cookie(user_info: dict):
-    """세션 쿠키 설정"""
+    """세션 쿠키 설정 (CookieManager 사용)"""
     token = generate_session_token(user_info["id"], user_info["username"])
     cookie_data = f"{user_info['id']}:{user_info['username']}:{token}"
 
-    html(
-        f"""
-    <script>
-        document.cookie = "user_session={cookie_data}; path=/; max-age=86400; SameSite=Lax";
-        console.log('Session cookie set');
-    </script>
-    """,
-        height=0,
-    )
+    # 24시간 유효 (max_age는 초 단위)
+    cookie_manager.set("user_session", cookie_data, max_age=86400)
 
 
-def get_session_cookie():
-    """세션 쿠키에서 사용자 정보 가져오기"""
-    html(
-        """
-    <script>
-        function getCookie(name) {
-            let cookieValue = null;
-            if (document.cookie && document.cookie !== '') {
-                const cookies = document.cookie.split(';');
-                for (let i = 0; i < cookies.length; i++) {
-                    const cookie = cookies[i].trim();
-                    if (cookie.substring(0, name.length + 1) === (name + '=')) {
-                        cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
-                        break;
-                    }
-                }
-            }
-            return cookieValue;
-        }
-
-        const sessionData = getCookie('user_session');
-        if (sessionData) {
-            window.parent.postMessage({
-                type: 'session_data',
-                data: sessionData
-            }, '*');
-        }
-    </script>
-    """,
-        height=0,
-    )
+def get_session_cookie() -> str | None:
+    """세션 쿠키에서 사용자 정보 가져오기 (CookieManager 사용)"""
+    try:
+        # get() 메서드로 직접 특정 쿠키 읽기 (더 안정적)
+        session_data = cookie_manager.get(cookie="user_session")
+        return session_data if session_data else None
+    except Exception as e:
+        print(f"[Auth] 쿠키 읽기 실패: {e}")
+        return None
 
 
 def clear_session_cookie():
-    """세션 쿠키 삭제"""
-    html(
-        """
-    <script>
-        document.cookie = "user_session=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT";
-        console.log('Session cookie cleared');
-    </script>
-    """,
-        height=0,
-    )
+    """세션 쿠키 삭제 (CookieManager 사용)"""
+    cookie_manager.delete("user_session")
 
 
 def init_session_state():
@@ -90,17 +57,23 @@ def init_session_state():
         st.session_state.authenticated = False
     if "user" not in st.session_state:
         st.session_state.user = None
+    if "cookie_restore_attempted" not in st.session_state:
+        st.session_state.cookie_restore_attempted = False
 
-    # 쿠키에서 세션 복원 시도
-    if not st.session_state.authenticated:
-        restore_session_from_cookie()
+    # 쿠키에서 세션 복원 시도 (한 번만)
+    if (
+        not st.session_state.authenticated
+        and not st.session_state.cookie_restore_attempted
+    ):
+        st.session_state.cookie_restore_attempted = True
+        if restore_session_from_cookie():
+            # 복원 성공 시 페이지 새로고침으로 UI 업데이트
+            st.rerun()
 
 
 def restore_session_from_cookie():
-    """쿠키에서 세션 복원"""
-    # Query parameter를 통한 세션 데이터 확인
-    query_params = st.query_params
-    session_data = query_params.get("session")
+    """쿠키에서 세션 복원 (CookieManager 사용)"""
+    session_data = get_session_cookie()
 
     if session_data:
         try:
@@ -138,6 +111,7 @@ def logout_user():
     """사용자 로그아웃"""
     st.session_state.authenticated = False
     st.session_state.user = None
+    st.session_state.cookie_restore_attempted = False  # 다음 로그인을 위해 리셋
     # 쿠키 삭제
     clear_session_cookie()
 

@@ -12,6 +12,8 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import Any
 
+import bcrypt
+
 
 class DatabaseManager:
     """데이터베이스 연결 및 스키마 관리"""
@@ -76,16 +78,16 @@ class DatabaseManager:
 
 
 class PasswordManager:
-    """비밀번호 해싱 및 검증 관리"""
+    """비밀번호 해싱 및 검증 관리 (PBKDF2 + bcrypt 지원)"""
 
     @staticmethod
     def generate_salt() -> str:
-        """랜덤 salt 생성"""
+        """랜덤 salt 생성 (PBKDF2용)"""
         return secrets.token_hex(32)
 
     @staticmethod
     def hash_password(password: str, salt: str) -> str:
-        """PBKDF2-SHA256으로 비밀번호 해싱"""
+        """PBKDF2-SHA256으로 비밀번호 해싱 (레거시)"""
         return hashlib.pbkdf2_hmac(
             "sha256",
             password.encode("utf-8"),
@@ -95,8 +97,19 @@ class PasswordManager:
 
     @staticmethod
     def verify_password(password: str, salt: str, password_hash: str) -> bool:
-        """비밀번호 검증"""
+        """PBKDF2 비밀번호 검증 (레거시)"""
         return PasswordManager.hash_password(password, salt) == password_hash
+
+    @staticmethod
+    def hash_password_bcrypt(password: str) -> str:
+        """bcrypt로 비밀번호 해싱 (새 방식)"""
+        salt = bcrypt.gensalt()
+        return bcrypt.hashpw(password.encode("utf-8"), salt).decode("utf-8")
+
+    @staticmethod
+    def verify_password_bcrypt(password: str, password_hash: str) -> bool:
+        """bcrypt 비밀번호 검증"""
+        return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
 
 
 class User:
@@ -114,9 +127,9 @@ class User:
         role: str = "user",
         usage_limit_seconds: int = 3600,
     ) -> int | None:
-        """새 사용자 생성"""
-        salt = PasswordManager.generate_salt()
-        password_hash = PasswordManager.hash_password(password, salt)
+        """새 사용자 생성 (bcrypt 사용)"""
+        # 새 사용자는 bcrypt로 생성
+        password_hash = PasswordManager.hash_password_bcrypt(password)
 
         try:
             with self.db.get_connection() as conn:
@@ -124,13 +137,12 @@ class User:
                     """
                     INSERT INTO users (
                         username, password_hash, salt, email, full_name,
-                        role, usage_limit_seconds
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        role, usage_limit_seconds, hash_type
+                    ) VALUES (?, ?, '', ?, ?, ?, ?, 'bcrypt')
                 """,
                     (
                         username,
                         password_hash,
-                        salt,
                         email,
                         full_name,
                         role,
@@ -144,13 +156,13 @@ class User:
             return None
 
     def authenticate(self, username: str, password: str) -> dict[str, Any] | None:
-        """사용자 인증"""
+        """사용자 인증 (점진적 bcrypt 마이그레이션 지원)"""
         with self.db.get_connection() as conn:
             cursor = conn.execute(
                 """
                 SELECT id, username, password_hash, salt, email, full_name,
                        role, is_active, total_usage_seconds, usage_limit_seconds,
-                       created_at, last_login
+                       created_at, last_login, hash_type
                 FROM users WHERE username = ? AND is_active = 1
             """,
                 (username,),
@@ -161,11 +173,37 @@ class User:
                 return None
 
             user_dict = dict(user_row)
+            hash_type = user_dict.get("hash_type", "pbkdf2")
 
-            # 비밀번호 검증
-            if not PasswordManager.verify_password(
-                password, user_dict["salt"], user_dict["password_hash"]
-            ):
+            # 비밀번호 검증 (hash_type에 따라)
+            is_valid = False
+
+            if hash_type == "bcrypt":
+                # 이미 bcrypt로 전환된 사용자
+                is_valid = PasswordManager.verify_password_bcrypt(
+                    password, user_dict["password_hash"]
+                )
+            else:
+                # 기존 PBKDF2 사용자
+                is_valid = PasswordManager.verify_password(
+                    password, user_dict["salt"], user_dict["password_hash"]
+                )
+
+                # ✅ 로그인 성공 시 bcrypt로 재해싱 (한 번만!)
+                if is_valid:
+                    new_hash = PasswordManager.hash_password_bcrypt(password)
+                    conn.execute(
+                        """
+                        UPDATE users
+                        SET password_hash = ?, salt = '', hash_type = 'bcrypt'
+                        WHERE id = ?
+                    """,
+                        (new_hash, user_dict["id"]),
+                    )
+                    conn.commit()
+                    print(f"[Auth] 사용자 {username} PBKDF2 → bcrypt 전환 완료")
+
+            if not is_valid:
                 return None
 
             # 마지막 로그인 시간 업데이트
@@ -174,6 +212,7 @@ class User:
             # 비밀번호 관련 정보는 제거
             del user_dict["password_hash"]
             del user_dict["salt"]
+            del user_dict["hash_type"]
 
             return user_dict
 
@@ -305,16 +344,16 @@ class User:
             conn.commit()
 
     def change_password(self, user_id: int, new_password: str) -> bool:
-        """비밀번호 변경"""
-        salt = PasswordManager.generate_salt()
-        password_hash = PasswordManager.hash_password(new_password, salt)
+        """비밀번호 변경 (bcrypt 사용)"""
+        password_hash = PasswordManager.hash_password_bcrypt(new_password)
 
         with self.db.get_connection() as conn:
             cursor = conn.execute(
                 """
-                UPDATE users SET password_hash = ?, salt = ? WHERE id = ?
+                UPDATE users SET password_hash = ?, salt = '', hash_type = 'bcrypt'
+                WHERE id = ?
             """,
-                (password_hash, salt, user_id),
+                (password_hash, user_id),
             )
             conn.commit()
 
