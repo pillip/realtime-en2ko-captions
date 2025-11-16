@@ -310,6 +310,12 @@
       display: none !important;
     }
 
+    /* 번역문 숨김 상태 */
+    .hide-translation .caption-line.stable,
+    .hide-translation .caption-line.typing {
+      display: none !important;
+    }
+
     /* 번역된 자막 스타일 */
     .caption-line.stable {
       font-size: var(--translation-font-size);
@@ -592,6 +598,14 @@
       </label>
     </div>
 
+    <!-- 번역문 표시 토글 -->
+    <div class="control-group">
+      <label style="display: flex; align-items: center; cursor: pointer;">
+        <input type="checkbox" id="showTranslationToggle" style="margin-right: 8px; width: 16px; height: 16px;">
+        <span>🌐 번역문 표시</span>
+      </label>
+    </div>
+
     <!-- 🚫 제어 섹션 완전 제거 (일시정지, 자막 지우기 버튼 삭제) -->
   </div>
 
@@ -682,6 +696,7 @@ try {
   const originalSizeSlider = document.getElementById('originalSizeSlider');
   const originalSizeValue = document.getElementById('originalSizeValue');
   const showOriginalToggle = document.getElementById('showOriginalToggle');
+  const showTranslationToggle = document.getElementById('showTranslationToggle');
 
   // Null check for critical elements
   if (!viewer || !captionContainer || !statusEl) {
@@ -698,6 +713,16 @@ try {
     // 초기 상태 적용
     if (!showOriginal) {
       captionContainer.classList.add('hide-original');
+    }
+
+    // 번역문 표시 설정 (기본값: true = 표시)
+    const showTranslation = localStorage.getItem('showTranslation') !== 'false';
+    if (showTranslationToggle) {
+      showTranslationToggle.checked = showTranslation;
+    }
+    // 초기 상태 적용
+    if (!showTranslation) {
+      captionContainer.classList.add('hide-translation');
     }
 
     // 폰트 크기 설정
@@ -750,6 +775,20 @@ try {
       }
       localStorage.setItem('showOriginal', showOriginal);
       console.log('원문 표시:', showOriginal ? '활성화' : '비활성화');
+    };
+  }
+
+  // 번역문 표시 토글 이벤트 핸들러
+  if (showTranslationToggle) {
+    showTranslationToggle.onchange = (e) => {
+      const showTranslation = e.target.checked;
+      if (showTranslation) {
+        captionContainer.classList.remove('hide-translation');
+      } else {
+        captionContainer.classList.add('hide-translation');
+      }
+      localStorage.setItem('showTranslation', showTranslation);
+      console.log('번역문 표시:', showTranslation ? '활성화' : '비활성화');
     };
   }
 
