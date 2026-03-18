@@ -1,0 +1,120 @@
+<style>
+    /* 전체 페이지 스크롤 완전 차단 */
+    html, body {
+        position: fixed !important;
+        top: 0 !important;
+        left: 0 !important;
+        width: 100% !important;
+        height: 100vh !important;
+        max-height: 100vh !important;
+        overflow: hidden !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        touch-action: none !important;
+        overscroll-behavior: none !important;
+    }
+
+    /* Streamlit 컨테이너들 스크롤 차단 */
+    .stApp, .main, [data-testid="stAppViewContainer"],
+    [data-testid="stSidebar"], .block-container {
+        position: fixed !important;
+        top: 0 !important;
+        left: 0 !important;
+        width: 100% !important;
+        height: 100vh !important;
+        max-height: 100vh !important;
+        overflow: hidden !important;
+        touch-action: none !important;
+        overscroll-behavior: none !important;
+    }
+
+    /* 추가 스크롤 차단 CSS */
+    * {
+        overflow: hidden !important;
+        touch-action: none !important;
+        overscroll-behavior: none !important;
+    }
+
+    /* iframe 제외하고 모든 요소 스크롤 차단 */
+    *:not(iframe):not(iframe *) {
+        overflow: hidden !important;
+    }
+
+    /* iframe을 전체 화면에 정확히 맞춤 */
+    .main iframe {
+        width: 100% !important;
+        border: none !important;
+        margin: 0 !important;
+        padding: 0 !important;
+    }
+
+    /* 모든 컨테이너 패딩/마진 제거 */
+    .main > div > div {
+        padding-top: 0rem !important;
+        padding-bottom: 0rem !important;
+        margin: 0 !important;
+    }
+
+    /* Streamlit 기본 여백 완전 제거 */
+    .block-container {
+        padding-top: 0rem !important;
+        padding-bottom: 0rem !important;
+        max-height: 100vh !important;
+    }
+
+    /* Streamlit 동적 클래스들의 패딩 완전 제거 */
+    .stMainBlockContainer {
+        padding: 0 !important;
+        margin: 0 !important;
+        height: 100vh !important;
+        max-height: 100vh !important;
+    }
+</style>
+
+<script>
+    // JavaScript로 스크롤 완전 차단
+    function preventScroll(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        return false;
+    }
+
+    // 페이지 로드 후 실행
+    window.addEventListener('load', function() {
+        // 모든 스크롤 이벤트 차단
+        document.addEventListener('wheel', preventScroll, { passive: false });
+        document.addEventListener('touchmove', preventScroll, { passive: false });
+        document.addEventListener('scroll', preventScroll, { passive: false });
+
+        // 스크롤 관련 키 차단
+        document.addEventListener('keydown', function(e) {
+            if([32, 33, 34, 35, 36, 37, 38, 39, 40].indexOf(e.keyCode) > -1) {
+                e.preventDefault();
+            }
+        }, false);
+
+        // 윈도우 스크롤 강제 방지
+        window.addEventListener('scroll', function() {
+            window.scrollTo(0, 0);
+        });
+
+        // 초기 스크롤 위치 고정
+        window.scrollTo(0, 0);
+        document.body.scrollTop = 0;
+        document.documentElement.scrollTop = 0;
+
+        // 사용량 업데이트 메시지 리스너 추가
+        window.addEventListener('message', function(event) {
+            if (event.data && event.data.type === 'usage_update') {
+                console.log('[Usage Listener] 사용량 업데이트 메시지 수신:', event.data);
+                // 짧은 지연 후 페이지 새로고침으로 사이드바 업데이트
+                setTimeout(function() {
+                    // Query parameter를 통해 새로고침 방지
+                    const url = new URL(window.location);
+                    url.searchParams.set('_t', Date.now());
+                    window.location.href = url.toString();
+                }, 1000);
+            }
+        });
+    });
+</script>
