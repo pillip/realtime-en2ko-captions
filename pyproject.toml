@@ -21,6 +21,8 @@ dependencies = [
 dev = [
     "black>=25.1.0",
     "pre-commit>=4.3.0",
+    "pytest>=9.0.2",
+    "pytest-cov>=7.0.0",
     "ruff>=0.12.9",
 ]
 
@@ -72,3 +74,8 @@ line-ending = "auto"
 
 [tool.ruff.lint.isort]
 known-first-party = ["realtime_en2ko_captions"]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra"
+testpaths = ["tests"]
