@@ -323,10 +323,11 @@ async def handle_openai_websocket(websocket):
             try:
                 data = json.loads(message)
 
-                if data["type"] == "request_openai_session":
+                msg_type = data.get("type")
+                if msg_type == "request_openai_session":
                     await _handle_session_request(websocket)
 
-                elif data["type"] == "transcript":
+                elif msg_type == "transcript":
                     await _handle_transcript(
                         websocket,
                         data,
