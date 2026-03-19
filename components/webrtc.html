@@ -413,6 +413,141 @@
       50% { opacity: 0.7; }
     }
 
+    /* 전체화면 FAB 버튼 */
+    .fullscreen-fab {
+      position: fixed;
+      top: calc(90px + 5%);
+      right: 24px;
+      width: 56px;
+      height: 56px;
+      background: rgba(255, 255, 255, 0.1);
+      border: none;
+      border-radius: 50%;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 22px;
+      z-index: 1001;
+      backdrop-filter: blur(10px);
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+    }
+
+    .fullscreen-fab:hover {
+      background: rgba(255, 255, 255, 0.2);
+      transform: scale(1.1);
+    }
+
+    /* 전체화면 폰트 조절 컨트롤 */
+    .fs-font-controls {
+      display: none;
+      position: absolute;
+      bottom: 24px;
+      right: 24px;
+      z-index: 1010;
+      opacity: 0.15;
+      transition: opacity 0.4s ease;
+      user-select: none;
+    }
+
+    .fs-font-controls:hover {
+      opacity: 0.85;
+    }
+
+    .fs-font-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 8px;
+    }
+
+    .fs-font-group:last-child {
+      margin-bottom: 0;
+    }
+
+    .fs-font-label {
+      color: #fff;
+      font-size: 11px;
+      min-width: 28px;
+      text-align: right;
+    }
+
+    .fs-font-btn {
+      width: 32px;
+      height: 32px;
+      border: 1px solid rgba(255, 255, 255, 0.3);
+      border-radius: 8px;
+      background: rgba(0, 0, 0, 0.5);
+      color: #fff;
+      font-size: 18px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s ease;
+      padding: 0;
+      line-height: 1;
+    }
+
+    .fs-font-btn:hover {
+      background: rgba(255, 255, 255, 0.2);
+      border-color: rgba(255, 255, 255, 0.5);
+    }
+
+    .fs-font-btn:active {
+      transform: scale(0.9);
+    }
+
+    .fs-font-size {
+      color: rgba(255, 255, 255, 0.7);
+      font-size: 11px;
+      min-width: 32px;
+      text-align: center;
+    }
+
+    /* 전체화면 상태 */
+    #viewer:fullscreen {
+      background: #000;
+      height: 100vh !important;
+      max-height: 100vh !important;
+      padding: 20px;
+    }
+
+    #viewer:fullscreen .caption-container {
+      max-width: 100%;
+      padding: 20px 40px;
+      padding-bottom: 100px;
+    }
+
+    #viewer:fullscreen .fs-font-controls {
+      display: flex;
+      flex-direction: column;
+    }
+
+    #viewer:fullscreen .welcome-state {
+      color: rgba(255, 255, 255, 0.8);
+    }
+
+    /* webkit prefix for Safari */
+    #viewer:-webkit-full-screen {
+      background: #000;
+      height: 100vh !important;
+      max-height: 100vh !important;
+      padding: 20px;
+    }
+
+    #viewer:-webkit-full-screen .caption-container {
+      max-width: 100%;
+      padding: 20px 40px;
+      padding-bottom: 100px;
+    }
+
+    #viewer:-webkit-full-screen .fs-font-controls {
+      display: flex;
+      flex-direction: column;
+    }
+
     /* 빈 상태 */
     .welcome-state {
       text-align: center;
@@ -504,6 +639,14 @@
         height: 48px;
         font-size: 20px;
       }
+
+      .fullscreen-fab {
+        top: calc(68px + 5%);
+        right: 10px;
+        width: 48px;
+        height: 48px;
+        font-size: 18px;
+      }
     }
 
     /* 높이 기준 미디어쿼리 - 더 컴팩트 */
@@ -553,6 +696,14 @@
         height: 40px;
         font-size: 18px;
       }
+
+      .fullscreen-fab {
+        top: calc(50px + 5%);
+        right: 5px;
+        width: 40px;
+        height: 40px;
+        font-size: 16px;
+      }
     }
   </style>
 </head>
@@ -560,6 +711,8 @@
 <body>
   <!-- 플로팅 설정 버튼 -->
   <button class="settings-fab" id="settingsFab">⚙️</button>
+  <!-- 전체화면 버튼 -->
+  <button class="fullscreen-fab" id="fullscreenFab" title="전체화면">⛶</button>
 
   <!-- 설정 패널 -->
   <div class="settings-panel" id="settingsPanel">
@@ -623,6 +776,21 @@
 
   <!-- 메인 캡션 뷰어 -->
   <div id="viewer">
+    <!-- 전체화면 전용 폰트 크기 조절 -->
+    <div class="fs-font-controls" id="fsFontControls">
+      <div class="fs-font-group">
+        <span class="fs-font-label">번역</span>
+        <button class="fs-font-btn" id="fsTransMinus">−</button>
+        <span class="fs-font-size" id="fsTransSize">28px</span>
+        <button class="fs-font-btn" id="fsTransPlus">+</button>
+      </div>
+      <div class="fs-font-group">
+        <span class="fs-font-label">원문</span>
+        <button class="fs-font-btn" id="fsOrigMinus">−</button>
+        <span class="fs-font-size" id="fsOrigSize">16px</span>
+        <button class="fs-font-btn" id="fsOrigPlus">+</button>
+      </div>
+    </div>
     <div class="caption-container" id="captionContainer">
       <div class="welcome-state">
         <div class="icon">🎙️</div>
@@ -697,6 +865,14 @@ try {
   const originalSizeValue = document.getElementById('originalSizeValue');
   const showOriginalToggle = document.getElementById('showOriginalToggle');
   const showTranslationToggle = document.getElementById('showTranslationToggle');
+  const fullscreenFab = document.getElementById('fullscreenFab');
+  const fsFontControls = document.getElementById('fsFontControls');
+  const fsTransSize = document.getElementById('fsTransSize');
+  const fsOrigSize = document.getElementById('fsOrigSize');
+  const fsTransPlus = document.getElementById('fsTransPlus');
+  const fsTransMinus = document.getElementById('fsTransMinus');
+  const fsOrigPlus = document.getElementById('fsOrigPlus');
+  const fsOrigMinus = document.getElementById('fsOrigMinus');
 
   // Null check for critical elements
   if (!viewer || !captionContainer || !statusEl) {
@@ -799,6 +975,74 @@ try {
       settingsFab.classList.toggle('active');
     };
   }
+
+  // === 전체화면 기능 ===
+  let fsTranslationSize = 28;
+  let fsOriginalSize = 16;
+
+  function isFullscreen() {
+    return !!(document.fullscreenElement || document.webkitFullscreenElement);
+  }
+
+  function toggleFullscreen() {
+    if (isFullscreen()) {
+      (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+    } else {
+      // 전체화면 진입 전: 현재 설정 폰트 크기를 가져와 초기값으로 사용
+      const currentTransSize = parseInt(
+        getComputedStyle(document.documentElement).getPropertyValue('--translation-font-size')
+      ) || 28;
+      const currentOrigSize = parseInt(
+        getComputedStyle(document.documentElement).getPropertyValue('--original-font-size')
+      ) || 16;
+      fsTranslationSize = currentTransSize;
+      fsOriginalSize = currentOrigSize;
+      if (fsTransSize) fsTransSize.textContent = `${fsTranslationSize}px`;
+      if (fsOrigSize) fsOrigSize.textContent = `${fsOriginalSize}px`;
+
+      (viewer.requestFullscreen || viewer.webkitRequestFullscreen).call(viewer);
+    }
+  }
+
+  function updateFsFont(target, delta) {
+    if (target === 'translation') {
+      fsTranslationSize = Math.max(14, Math.min(80, fsTranslationSize + delta));
+      document.documentElement.style.setProperty('--translation-font-size', `${fsTranslationSize}px`);
+      if (fsTransSize) fsTransSize.textContent = `${fsTranslationSize}px`;
+    } else {
+      fsOriginalSize = Math.max(10, Math.min(48, fsOriginalSize + delta));
+      document.documentElement.style.setProperty('--original-font-size', `${fsOriginalSize}px`);
+      if (fsOrigSize) fsOrigSize.textContent = `${fsOriginalSize}px`;
+    }
+  }
+
+  if (fullscreenFab) {
+    fullscreenFab.onclick = toggleFullscreen;
+  }
+
+  if (fsTransPlus) fsTransPlus.onclick = () => updateFsFont('translation', 2);
+  if (fsTransMinus) fsTransMinus.onclick = () => updateFsFont('translation', -2);
+  if (fsOrigPlus) fsOrigPlus.onclick = () => updateFsFont('original', 2);
+  if (fsOrigMinus) fsOrigMinus.onclick = () => updateFsFont('original', -2);
+
+  // 전체화면 해제 시 원래 설정 폰트 크기로 복원
+  document.addEventListener('fullscreenchange', () => {
+    if (!isFullscreen()) {
+      // 원래 settings 슬라이더 값으로 복원
+      const savedTransSize = localStorage.getItem('translationFontSize') || '28';
+      const savedOrigSize = localStorage.getItem('originalFontSize') || '16';
+      document.documentElement.style.setProperty('--translation-font-size', `${savedTransSize}px`);
+      document.documentElement.style.setProperty('--original-font-size', `${savedOrigSize}px`);
+    }
+  });
+  document.addEventListener('webkitfullscreenchange', () => {
+    if (!isFullscreen()) {
+      const savedTransSize = localStorage.getItem('translationFontSize') || '28';
+      const savedOrigSize = localStorage.getItem('originalFontSize') || '16';
+      document.documentElement.style.setProperty('--translation-font-size', `${savedTransSize}px`);
+      document.documentElement.style.setProperty('--original-font-size', `${savedOrigSize}px`);
+    }
+  });
 
   // 설정 패널 외부 클릭시 닫기
   document.addEventListener('click', (e) => {
