@@ -10,18 +10,28 @@ import boto3
 import httpx
 from botocore.exceptions import ClientError
 
-# AWS 설정
-AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
-AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
-AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 
-# OpenAI 설정
-OPENAI_API_KEY = os.getenv("OPENAI_KEY")
+# AWS 설정 — 함수로 읽어야 load_dotenv() 이후 값을 가져올 수 있음
+def get_aws_region():
+    return os.getenv("AWS_REGION", "us-east-1")
+
+
+def get_aws_access_key_id():
+    return os.getenv("AWS_ACCESS_KEY_ID")
+
+
+def get_aws_secret_access_key():
+    return os.getenv("AWS_SECRET_ACCESS_KEY")
+
+
+def get_openai_api_key():
+    return os.getenv("OPENAI_KEY")
 
 
 async def create_openai_session() -> dict:
     """OpenAI Realtime API ephemeral token 생성"""
-    if not OPENAI_API_KEY:
+    api_key = get_openai_api_key()
+    if not api_key:
         raise ValueError("OpenAI API 키가 설정되지 않았습니다.")
 
     try:
@@ -29,7 +39,7 @@ async def create_openai_session() -> dict:
             response = await client.post(
                 "https://api.openai.com/v1/realtime/sessions",
                 headers={
-                    "Authorization": f"Bearer {OPENAI_API_KEY}",
+                    "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
                     "OpenAI-Beta": "realtime=v1",
                 },
@@ -83,15 +93,19 @@ async def create_openai_session() -> dict:
 
 def create_aws_session(websocket_port=None) -> dict:
     """AWS 임시 credentials 생성"""
-    if not AWS_ACCESS_KEY_ID or not AWS_SECRET_ACCESS_KEY:
+    access_key = get_aws_access_key_id()
+    secret_key = get_aws_secret_access_key()
+    region = get_aws_region()
+
+    if not access_key or not secret_key:
         raise ValueError("AWS 자격 증명이 설정되지 않았습니다.")
 
     try:
         sts_client = boto3.client(
             "sts",
-            aws_access_key_id=AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-            region_name=AWS_REGION,
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            region_name=region,
         )
 
         caller_identity = sts_client.get_caller_identity()
@@ -100,12 +114,12 @@ def create_aws_session(websocket_port=None) -> dict:
         print(f"[AWS Session] WebSocket 포트: {ws_port}")
 
         return {
-            "access_key_id": AWS_ACCESS_KEY_ID,
-            "secret_access_key": AWS_SECRET_ACCESS_KEY,
-            "region": AWS_REGION,
+            "access_key_id": access_key,
+            "secret_access_key": secret_key,
+            "region": region,
             "account_id": caller_identity.get("Account"),
             "websocket_url": f"ws://localhost:{ws_port}",
-            "openai_available": bool(OPENAI_API_KEY),
+            "openai_available": bool(get_openai_api_key()),
         }
 
     except ClientError as e:

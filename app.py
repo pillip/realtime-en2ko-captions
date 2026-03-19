@@ -22,9 +22,9 @@ from auth import (
     is_authenticated,
 )
 from services import (
-    AWS_ACCESS_KEY_ID,
-    AWS_SECRET_ACCESS_KEY,
     create_openai_session,
+    get_aws_access_key_id,
+    get_aws_secret_access_key,
 )
 from websocket_handler import start_websocket_server
 
@@ -75,7 +75,7 @@ with st.sidebar:
     st.header("🧑‍💻 유저 정보")
     display_user_info()
 
-    if not AWS_ACCESS_KEY_ID or not AWS_SECRET_ACCESS_KEY:
+    if not get_aws_access_key_id() or not get_aws_secret_access_key():
         st.error("⚠️ AWS 자격 증명이 설정되지 않았습니다.")
         st.info("💡 .env 파일에 AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY를 설정하세요")
         st.stop()

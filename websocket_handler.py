@@ -14,10 +14,10 @@ import websockets
 from auth import check_usage_limit, update_user_session
 from database import get_usage_log_model, get_user_model
 from services import (
-    AWS_ACCESS_KEY_ID,
-    AWS_REGION,
-    AWS_SECRET_ACCESS_KEY,
     create_openai_session,
+    get_aws_access_key_id,
+    get_aws_region,
+    get_aws_secret_access_key,
 )
 from translation import detect_language, translate_with_llm
 
@@ -65,11 +65,15 @@ async def _authenticate_client(websocket):
 
 def _init_translation_clients():
     """번역용 AWS 클라이언트 초기화"""
+    access_key = get_aws_access_key_id()
+    secret_key = get_aws_secret_access_key()
+    region = get_aws_region()
+
     translate_client = boto3.client(
         "translate",
-        aws_access_key_id=AWS_ACCESS_KEY_ID,
-        aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-        region_name=AWS_REGION,
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+        region_name=region,
     )
 
     bedrock_client = None
@@ -77,9 +81,9 @@ def _init_translation_clients():
     try:
         bedrock_client = boto3.client(
             "bedrock-runtime",
-            aws_access_key_id=AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-            region_name=AWS_REGION,
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            region_name=region,
         )
         bedrock_available = True
         print("  🤖 Bedrock LLM 준비 완료")
