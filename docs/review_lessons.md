@@ -34,8 +34,8 @@ Preventable patterns identified during code reviews. Each entry includes when th
 ## [RL-004] Weak test assertions that pass trivially
 
 - **Category**: Testing
-- **Frequency**: 1
-- **Observed-In**: PR #8
+- **Frequency**: 2
+- **Observed-In**: PR #8, PR #12 (E2E fullscreen tests silently pass when fullscreen is unavailable; string-matching unit tests cannot detect structural correctness)
 - **Description**: Tests use `assert len(result) >= 1` for functions that split text into multiple parts. This assertion passes even when the function fails to split at all, giving false confidence.
 - **Prevention**: During test review, check that assertions would fail if the function under test did nothing (returned input unchanged). If an assertion passes for both correct and broken implementations, it is too weak.
 - **Recommended action**: Use exact expected values or at minimum assert the expected count of results.
@@ -66,3 +66,30 @@ Preventable patterns identified during code reviews. Each entry includes when th
 - **Description**: Functions that were never called in the original monolith (`create_aws_session`, `start_health_server`) were faithfully extracted into the new module structure. Refactoring is the ideal time to identify and remove dead code, but the mechanical nature of extraction ("move, don't change") can preserve it indefinitely.
 - **Prevention**: During refactoring kickoff, run a dead code analysis (e.g., `vulture` or manual grep for callers) on the original file. Flag uncalled functions for removal or explicit documentation of their intended future use.
 - **Recommended action**: Add a dead code scan step to the refactoring checklist. Functions with no callers should either be removed or annotated with a comment explaining their purpose.
+
+## [RL-008] Browser API calls without capability guards
+
+- **Category**: Code Quality
+- **Frequency**: 1
+- **Observed-In**: PR #12
+- **Description**: Calling browser APIs (e.g., `requestFullscreen`, `exitFullscreen`) via `(obj.method || obj.prefixedMethod).call(obj)` without checking that the resolved value is a function. When neither variant exists, the expression evaluates to `undefined` and `.call()` throws a `TypeError`, crashing the feature entirely instead of degrading gracefully.
+- **Prevention**: At implementation time, always wrap optional browser APIs in a capability check (`if (fn) fn.call(obj); else fallback()`). This is especially important for APIs that require specific iframe attributes or user gestures to be available.
+- **Recommended action**: Establish a project convention for calling optional/prefixed browser APIs: resolve the function reference first, check for truthiness, then call. Add this to the JS code style guide.
+
+## [RL-009] Vendor-prefixed event handlers with duplicated logic
+
+- **Category**: Code Quality
+- **Frequency**: 1
+- **Observed-In**: PR #12
+- **Description**: Registering separate event listeners for `fullscreenchange` and `webkitfullscreenchange` with identical inline handler bodies. When the handler logic needs to change, both copies must be updated, creating a maintenance risk.
+- **Prevention**: Extract the shared handler into a named function and register it for both events. This is a standard DRY pattern that should be applied whenever vendor-prefixed events require parallel listeners.
+- **Recommended action**: Refactor to `function onFsChange() { ... }; ['fullscreenchange', 'webkitfullscreenchange'].forEach(e => document.addEventListener(e, onFsChange));`.
+
+## [RL-010] Interactive elements without accessible names or focus indicators
+
+- **Category**: Accessibility
+- **Frequency**: 1
+- **Observed-In**: PR #12
+- **Description**: Icon-only buttons (emoji/unicode symbols) shipped without `aria-label` attributes, and `border: none` removed default focus rings without providing `:focus-visible` replacements. Font controls had `opacity: 0.15` making them effectively invisible (contrast ratio 1.39:1 vs required 4.5:1). These are WCAG 2.1 AA failures that affect keyboard and screen reader users.
+- **Prevention**: At implementation time, every interactive element should have: (1) an accessible name (`aria-label` for icon-only buttons), (2) a visible focus indicator, (3) sufficient contrast in its default state. Add these as a checklist item for UI PRs.
+- **Recommended action**: Create a project-level a11y checklist for UI components: aria-labels, focus-visible styles, contrast ratios, touch target sizes (44x44px minimum).

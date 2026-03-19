@@ -103,13 +103,13 @@ class TestFullscreenCSS:
         html = _read_html()
         assert "#viewer:fullscreen .fs-font-controls" in html
 
-    def test_font_controls_low_opacity(self):
-        """폰트 조절 컨트롤이 낮은 불투명도"""
+    def test_font_controls_base_opacity(self):
+        """폰트 조절 컨트롤 기본 불투명도 (a11y 개선: 0.6)"""
         html = _read_html()
         controls_css = html[html.find(".fs-font-controls {") :]
         closing_brace = controls_css.find("}")
         rule = controls_css[:closing_brace]
-        assert "opacity: 0.15" in rule
+        assert "opacity: 0.6" in rule
 
     def test_font_controls_hover_opacity(self):
         """호버 시 불투명도 증가"""

@@ -1,5 +1,5 @@
 <!doctype html>
-<html>
+<html lang="ko">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -35,8 +35,8 @@
       right: 24px;
       width: 56px;
       height: 56px;
-      background: rgba(255, 255, 255, 0.1);
-      border: none;
+      background: rgba(255, 255, 255, 0.15);
+      border: 1px solid rgba(255, 255, 255, 0.25);
       border-radius: 50%;
       cursor: pointer;
       display: flex;
@@ -420,8 +420,8 @@
       right: 24px;
       width: 56px;
       height: 56px;
-      background: rgba(255, 255, 255, 0.1);
-      border: none;
+      background: rgba(255, 255, 255, 0.15);
+      border: 1px solid rgba(255, 255, 255, 0.25);
       border-radius: 50%;
       cursor: pointer;
       display: flex;
@@ -446,13 +446,14 @@
       bottom: 24px;
       right: 24px;
       z-index: 1010;
-      opacity: 0.15;
+      opacity: 0.6;
       transition: opacity 0.4s ease;
       user-select: none;
     }
 
-    .fs-font-controls:hover {
-      opacity: 0.85;
+    .fs-font-controls:hover,
+    .fs-font-controls:focus-within {
+      opacity: 1.0;
     }
 
     .fs-font-group {
@@ -474,8 +475,8 @@
     }
 
     .fs-font-btn {
-      width: 32px;
-      height: 32px;
+      width: 44px;
+      height: 44px;
       border: 1px solid rgba(255, 255, 255, 0.3);
       border-radius: 8px;
       background: rgba(0, 0, 0, 0.5);
@@ -497,6 +498,20 @@
 
     .fs-font-btn:active {
       transform: scale(0.9);
+    }
+
+    /* 키보드 포커스 표시 (WCAG 2.4.7) */
+    .settings-fab:focus-visible,
+    .fullscreen-fab:focus-visible,
+    .fs-font-btn:focus-visible {
+      outline: 2px solid #3b82f6;
+      outline-offset: 2px;
+      box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.3);
+    }
+
+    .settings-fab:focus:not(:focus-visible),
+    .fullscreen-fab:focus:not(:focus-visible) {
+      outline: none;
     }
 
     .fs-font-size {
@@ -710,12 +725,12 @@
 
 <body>
   <!-- 플로팅 설정 버튼 -->
-  <button class="settings-fab" id="settingsFab">⚙️</button>
+  <button class="settings-fab" id="settingsFab" aria-label="설정" aria-expanded="false" aria-controls="settingsPanel">⚙️</button>
   <!-- 전체화면 버튼 -->
-  <button class="fullscreen-fab" id="fullscreenFab" title="전체화면">⛶</button>
+  <button class="fullscreen-fab" id="fullscreenFab" aria-label="전체화면" title="전체화면">⛶</button>
 
   <!-- 설정 패널 -->
-  <div class="settings-panel" id="settingsPanel">
+  <div class="settings-panel" id="settingsPanel" role="region" aria-label="실시간 자막 설정">
     <h2>실시간 자막 설정</h2>
 
     <div class="control-group">
@@ -777,18 +792,18 @@
   <!-- 메인 캡션 뷰어 -->
   <div id="viewer">
     <!-- 전체화면 전용 폰트 크기 조절 -->
-    <div class="fs-font-controls" id="fsFontControls">
-      <div class="fs-font-group">
+    <div class="fs-font-controls" id="fsFontControls" role="group" aria-label="전체화면 글자 크기 조절">
+      <div class="fs-font-group" role="group" aria-label="번역 글자 크기">
         <span class="fs-font-label">번역</span>
-        <button class="fs-font-btn" id="fsTransMinus">−</button>
-        <span class="fs-font-size" id="fsTransSize">28px</span>
-        <button class="fs-font-btn" id="fsTransPlus">+</button>
+        <button class="fs-font-btn" id="fsTransMinus" aria-label="번역 글자 크기 줄이기">−</button>
+        <span class="fs-font-size" id="fsTransSize" aria-live="polite">28px</span>
+        <button class="fs-font-btn" id="fsTransPlus" aria-label="번역 글자 크기 키우기">+</button>
       </div>
-      <div class="fs-font-group">
+      <div class="fs-font-group" role="group" aria-label="원문 글자 크기">
         <span class="fs-font-label">원문</span>
-        <button class="fs-font-btn" id="fsOrigMinus">−</button>
-        <span class="fs-font-size" id="fsOrigSize">16px</span>
-        <button class="fs-font-btn" id="fsOrigPlus">+</button>
+        <button class="fs-font-btn" id="fsOrigMinus" aria-label="원문 글자 크기 줄이기">−</button>
+        <span class="fs-font-size" id="fsOrigSize" aria-live="polite">16px</span>
+        <button class="fs-font-btn" id="fsOrigPlus" aria-label="원문 글자 크기 키우기">+</button>
       </div>
     </div>
     <div class="caption-container" id="captionContainer">
@@ -971,8 +986,9 @@ try {
   // 설정 패널 토글
   if (settingsFab && settingsPanel) {
     settingsFab.onclick = () => {
-      settingsPanel.classList.toggle('open');
+      const isOpen = settingsPanel.classList.toggle('open');
       settingsFab.classList.toggle('active');
+      settingsFab.setAttribute('aria-expanded', isOpen);
     };
   }
 
@@ -986,7 +1002,8 @@ try {
 
   function toggleFullscreen() {
     if (isFullscreen()) {
-      (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+      const exitFn = document.exitFullscreen || document.webkitExitFullscreen;
+      if (exitFn) exitFn.call(document);
     } else {
       // 전체화면 진입 전: 현재 설정 폰트 크기를 가져와 초기값으로 사용
       const currentTransSize = parseInt(
@@ -1000,7 +1017,9 @@ try {
       if (fsTransSize) fsTransSize.textContent = `${fsTranslationSize}px`;
       if (fsOrigSize) fsOrigSize.textContent = `${fsOriginalSize}px`;
 
-      (viewer.requestFullscreen || viewer.webkitRequestFullscreen).call(viewer);
+      const requestFn = viewer.requestFullscreen || viewer.webkitRequestFullscreen;
+      if (requestFn) requestFn.call(viewer);
+      else console.warn('Fullscreen API not supported in this environment');
     }
   }
 
@@ -1050,6 +1069,17 @@ try {
         !settingsPanel.contains(e.target) && !settingsFab.contains(e.target)) {
       settingsPanel.classList.remove('open');
       settingsFab.classList.remove('active');
+      settingsFab.setAttribute('aria-expanded', 'false');
+    }
+  });
+
+  // 설정 패널 Escape 키로 닫기
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && settingsPanel && settingsPanel.classList.contains('open')) {
+      settingsPanel.classList.remove('open');
+      settingsFab.classList.remove('active');
+      settingsFab.setAttribute('aria-expanded', 'false');
+      settingsFab.focus();
     }
   });
 
