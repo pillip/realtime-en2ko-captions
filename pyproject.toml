@@ -23,6 +23,7 @@ dev = [
     "pre-commit>=4.3.0",
     "pytest>=9.0.2",
     "pytest-cov>=7.0.0",
+    "pytest-playwright>=0.7.2",
     "ruff>=0.12.9",
 ]
 
@@ -77,5 +78,8 @@ known-first-party = ["realtime_en2ko_captions"]
 
 [tool.pytest.ini_options]
 minversion = "7.0"
-addopts = "-ra"
+addopts = "-ra -m 'not e2e'"
 testpaths = ["tests"]
+markers = [
+    "e2e: End-to-end browser tests (requires Streamlit server)",
+]

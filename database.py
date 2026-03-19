@@ -114,7 +114,8 @@ class User:
                 cursor = conn.execute(
                     """
                     INSERT INTO users (
-                        username, password_hash, email, full_name, role, usage_limit_seconds
+                        username, password_hash, email,
+                        full_name, role, usage_limit_seconds
                     ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
                     (
@@ -411,8 +412,10 @@ class UsageLog:
         with self.db.get_connection() as conn:
             cursor = conn.execute(
                 """
-                SELECT ul.id, ul.user_id, u.username, ul.action, ul.duration_seconds,
-                       ul.source_language, ul.target_language, ul.created_at, ul.metadata
+                SELECT ul.id, ul.user_id, u.username,
+                       ul.action, ul.duration_seconds,
+                       ul.source_language, ul.target_language,
+                       ul.created_at, ul.metadata
                 FROM usage_logs ul
                 JOIN users u ON ul.user_id = u.id
                 ORDER BY ul.created_at DESC
@@ -533,7 +536,8 @@ def get_db_manager() -> DatabaseManager:
     """데이터베이스 매니저 싱글톤 인스턴스 반환"""
     global _db_manager
     if _db_manager is None:
-        _db_manager = DatabaseManager()
+        db_path = os.getenv("DB_PATH", "data/app.db")
+        _db_manager = DatabaseManager(db_path)
         # 초기 관리자 계정 생성 시도
         init_admin_from_env(_db_manager)
     return _db_manager
