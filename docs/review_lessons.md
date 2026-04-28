@@ -7,8 +7,8 @@ Preventable patterns identified during code reviews. Each entry includes when th
 ## [RL-001] Copy-paste testing instead of extracting importable modules
 
 - **Category**: Architecture
-- **Frequency**: 2
-- **Observed-In**: PR #8, PR #10 (partially addressed -- modules extracted but tests not yet added)
+- **Frequency**: 3
+- **Observed-In**: PR #8, PR #10 (partially addressed -- modules extracted but tests not yet added), PR #42 (`SessionState` class duplicated in `test_coverage_gaps.py`)
 - **Description**: When a source file has import side effects (e.g., Streamlit's `st.set_page_config` at module level), test authors copy pure functions into the test file instead of importing them. This creates drift risk -- the copy diverges from the original as the source evolves, producing false coverage.
 - **Prevention**: At kickoff/design time, separate pure logic (port finding, text splitting, API response parsing) into side-effect-free modules. This is a 10-minute refactor that eliminates an entire class of test maintenance bugs.
 - **Recommended action**: Extract pure functions into `utils.py` or similar; import in both `app.py` and tests.
