@@ -340,8 +340,10 @@ async def _handle_transcript(
     output_lang = lang.get("output_lang")
 
     if input_lang == "auto" or not input_lang:
-        # Fall back to auto-detection
-        source_lang, target_lang = detect_language(transcript)
+        # Fall back to auto-detection (ISSUE-4)
+        source_lang, target_lang = detect_language(
+            transcript, output_lang=output_lang or "ko"
+        )
     else:
         source_lang = input_lang
         target_lang = output_lang or "ko"

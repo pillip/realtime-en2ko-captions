@@ -26,12 +26,49 @@ BEDROCK_MODEL_IDS = [
 ]
 
 
-def detect_language(text):
-    """간단한 한국어 감지 (한글 유니코드 범위 기반)"""
+def detect_language(text, output_lang="ko"):
+    """다국어 감지 (유니코드 범위 기반)
+
+    감지 우선순위: 한국어 > 중국어 > 베트남어 > 영어(기본)
+    detected == output_lang이면 source를 "en"으로 폴백.
+
+    Args:
+        text: 감지 대상 텍스트
+        output_lang: 출력 언어 (detected와 같으면 폴백)
+
+    Returns:
+        (source_lang, target_lang) 튜플
+    """
+    # 1. Korean: hangul range
     has_korean = any(0xAC00 <= ord(c) <= 0xD7A3 for c in text)
     if has_korean:
-        return "ko", "en"
-    return "en", "ko"
+        detected = "ko"
+        if detected == output_lang:
+            return "ko", "en"
+        return "ko", output_lang
+
+    # 2. Chinese: CJK unified ideographs
+    has_chinese = any(0x4E00 <= ord(c) <= 0x9FFF for c in text)
+    if has_chinese:
+        detected = "zh"
+        if detected == output_lang:
+            return "zh", "en"
+        return "zh", output_lang
+
+    # 3. Vietnamese: special diacritics
+    vietnamese_chars = set("ăơưđĂƠƯĐ")
+    has_vietnamese = any(c in vietnamese_chars for c in text)
+    if has_vietnamese:
+        detected = "vi"
+        if detected == output_lang:
+            return "vi", "en"
+        return "vi", output_lang
+
+    # 4. Default: English
+    detected = "en"
+    if detected == output_lang:
+        return "en", "ko"
+    return "en", output_lang
 
 
 def split_into_sentences(text, language="ko"):
