@@ -309,7 +309,7 @@ class TestUsageLog:
 
     def test_get_user_logs_pagination(self, usage_log_model, sample_user):
         """로그 페이지네이션"""
-        for i in range(5):
+        for _i in range(5):
             usage_log_model.record_usage(sample_user, "transcribe", 10)
 
         page1 = usage_log_model.get_user_logs(sample_user, limit=2, offset=0)
@@ -321,7 +321,7 @@ class TestUsageLog:
 
     def test_get_all_user_logs(self, usage_log_model, sample_user):
         """특정 사용자의 모든 로그 조회"""
-        for i in range(3):
+        for _i in range(3):
             usage_log_model.record_usage(sample_user, "transcribe", 10)
 
         logs = usage_log_model.get_all_user_logs(sample_user)

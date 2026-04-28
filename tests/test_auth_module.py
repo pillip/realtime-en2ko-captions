@@ -16,7 +16,7 @@ class SessionState(dict):
         try:
             return self[key]
         except KeyError:
-            raise AttributeError(key)
+            raise AttributeError(key) from None
 
     def __setattr__(self, key, value):
         self[key] = value
@@ -25,7 +25,7 @@ class SessionState(dict):
         try:
             del self[key]
         except KeyError:
-            raise AttributeError(key)
+            raise AttributeError(key) from None
 
 
 # auth.py는 streamlit을 임포트하므로 mock 처리 필요
