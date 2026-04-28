@@ -4,7 +4,7 @@ Streamlit session_state를 활용한 사용자 인증 및 권한 관리
 extra-streamlit-components의 CookieManager로 세션 관리
 """
 
-import hashlib
+import secrets
 import time
 from collections.abc import Callable
 from functools import wraps
@@ -28,10 +28,8 @@ def get_cookie_manager():
 
 
 def generate_session_token(user_id: int, username: str) -> str:
-    """세션 토큰 생성"""
-    timestamp = str(int(time.time()))
-    data = f"{user_id}:{username}:{timestamp}"
-    return hashlib.sha256(data.encode()).hexdigest()[:32]
+    """세션 토큰 생성 (CSPRNG 기반)"""
+    return secrets.token_hex(32)
 
 
 def set_session_cookie(user_info: dict):
