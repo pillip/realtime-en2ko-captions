@@ -1015,12 +1015,27 @@ try {
   // 설정 초기화
   loadSettings();
 
+  // 언어 변경을 WebSocket으로 전송 (ISSUE-2: 재연결 없이 반영)
+  function sendLanguageUpdate() {
+    if (openaiWebSocket && openaiWebSocket.readyState === WebSocket.OPEN) {
+      const inputLang = selInputLang ? selInputLang.value : 'auto';
+      const outputLang = selOutputLang ? selOutputLang.value : 'ko';
+      openaiWebSocket.send(JSON.stringify({
+        type: 'language_update',
+        input_lang: inputLang,
+        output_lang: outputLang
+      }));
+      console.log('[Lang] 언어 변경 전송:', inputLang, '->', outputLang);
+    }
+  }
+
   // 언어 선택 이벤트 핸들러
   if (selInputLang) {
     selInputLang.onchange = () => {
       localStorage.setItem('inputLanguage', selInputLang.value);
       checkLangWarning();
       updateWelcomeTranslationRules();
+      sendLanguageUpdate();
     };
   }
   if (selOutputLang) {
@@ -1028,6 +1043,7 @@ try {
       localStorage.setItem('outputLanguage', selOutputLang.value);
       checkLangWarning();
       updateWelcomeTranslationRules();
+      sendLanguageUpdate();
     };
   }
 
@@ -1703,13 +1719,20 @@ try {
       openaiWebSocket.onopen = () => {
         console.log(`✅ OpenAI WebSocket 연결됨: ${wsUrl}`);
 
-        // 사용자 정보 전송 (Bootstrap에서 전달받은 정보)
+        // 사용자 정보 + 언어 설정 전송 (ISSUE-2)
         if (BOOT.user_info) {
+          const inputLang = selInputLang ? selInputLang.value : 'auto';
+          const outputLang = selOutputLang ? selOutputLang.value : 'ko';
           openaiWebSocket.send(JSON.stringify({
             type: 'auth',
-            user: BOOT.user_info
+            user: BOOT.user_info,
+            language_settings: {
+              input_lang: inputLang,
+              output_lang: outputLang
+            }
           }));
-          console.log('[Auth] 사용자 정보 전송:', BOOT.user_info.username);
+          console.log('[Auth] 사용자 정보 전송:', BOOT.user_info.username,
+                       '언어:', inputLang, '->', outputLang);
         }
       };
 

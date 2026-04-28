@@ -120,6 +120,13 @@ async def _authenticate_client(websocket):
                 "is_active": db_user["is_active"],
             }
 
+            # Extract language settings from auth message (ISSUE-2)
+            language_settings = data.get("language_settings", {})
+            validated_user["language_settings"] = {
+                "input_lang": language_settings.get("input_lang", "auto"),
+                "output_lang": language_settings.get("output_lang", "ko"),
+            }
+
             print(f"[Auth] 사용자 인증 성공: {validated_user['username']}")
             await websocket.send(
                 json.dumps({"type": "auth_success", "message": "인증 완료"})
@@ -280,6 +287,7 @@ async def _handle_transcript(
     translate_client,
     bedrock_client,
     bedrock_available,
+    language_settings=None,
 ):
     """트랜스크립트 메시지 처리 (번역 + 사용량)"""
     transcript = data.get("text", "")
@@ -326,7 +334,17 @@ async def _handle_transcript(
         )
         return
 
-    source_lang, target_lang = detect_language(transcript)
+    # Use connection-level language settings if available (ISSUE-2)
+    lang = language_settings or {}
+    input_lang = lang.get("input_lang", "auto")
+    output_lang = lang.get("output_lang")
+
+    if input_lang == "auto" or not input_lang:
+        # Fall back to auto-detection
+        source_lang, target_lang = detect_language(transcript)
+    else:
+        source_lang = input_lang
+        target_lang = output_lang or "ko"
 
     translated_text, used_llm = _translate_text(
         transcript,
@@ -405,6 +423,14 @@ async def handle_openai_websocket(websocket):
 
     user_info = await _authenticate_client(websocket)
 
+    # Per-connection language settings (ISSUE-2)
+    # Initialised from auth message; updated by language_update messages.
+    language_settings = (
+        user_info.get("language_settings", {"input_lang": "auto", "output_lang": "ko"})
+        if user_info
+        else {"input_lang": "auto", "output_lang": "ko"}
+    )
+
     # Per-connection sliding window for rate limiting
     message_timestamps = _collections.deque()
 
@@ -451,6 +477,31 @@ async def handle_openai_websocket(websocket):
                 if msg_type == "request_openai_session":
                     await _handle_session_request(websocket)
 
+                elif msg_type == "language_update":
+                    # Live language change without reconnection (ISSUE-2)
+                    language_settings["input_lang"] = data.get(
+                        "input_lang",
+                        language_settings["input_lang"],
+                    )
+                    language_settings["output_lang"] = data.get(
+                        "output_lang",
+                        language_settings["output_lang"],
+                    )
+                    await websocket.send(
+                        json.dumps(
+                            {
+                                "type": "language_updated",
+                                "input_lang": language_settings["input_lang"],
+                                "output_lang": language_settings["output_lang"],
+                            }
+                        )
+                    )
+                    print(
+                        f"[Lang] Language updated: "
+                        f"{language_settings['input_lang']} -> "
+                        f"{language_settings['output_lang']}"
+                    )
+
                 elif msg_type == "transcript":
                     await _handle_transcript(
                         websocket,
@@ -459,6 +510,7 @@ async def handle_openai_websocket(websocket):
                         translate_client,
                         bedrock_client,
                         bedrock_available,
+                        language_settings=language_settings,
                     )
 
             except json.JSONDecodeError:

@@ -437,3 +437,226 @@ class TestHandleOpenaiWebsocket:
         error_msgs = [m for m in sent if m.get("type") == "error"]
         assert len(error_msgs) >= 1
         assert "Invalid JSON" in error_msgs[0]["message"]
+
+
+# ============================================================
+# ISSUE-2: Language settings in _handle_transcript
+# ============================================================
+class TestHandleTranscriptLanguageSettings:
+    """_handle_transcript 언어 설정 전달 테스트 (ISSUE-2)"""
+
+    def test_specific_language_skips_detect(self, mock_db, user_info):
+        """input_lang이 특정 언어이면 detect_language를 호출하지 않음"""
+        from database import UsageLog, User
+        from websocket_handler import _handle_transcript
+
+        user_model = User(mock_db)
+        usage_log_model = UsageLog(mock_db)
+
+        ws = _make_websocket()
+        data = {"text": "Hello world", "audio_duration_seconds": 5}
+        lang_settings = {"input_lang": "en", "output_lang": "ja"}
+
+        with (
+            patch("websocket_handler.check_usage_limit", return_value=True),
+            patch("websocket_handler.detect_language") as mock_detect,
+            patch(
+                "websocket_handler._translate_text",
+                return_value=("こんにちは", True),
+            ),
+            patch("websocket_handler.get_user_model", return_value=user_model),
+            patch(
+                "websocket_handler.get_usage_log_model",
+                return_value=usage_log_model,
+            ),
+            patch("websocket_handler.update_user_session"),
+        ):
+            asyncio.run(
+                _handle_transcript(
+                    ws,
+                    data,
+                    user_info,
+                    MagicMock(),
+                    MagicMock(),
+                    True,
+                    language_settings=lang_settings,
+                )
+            )
+
+        # detect_language should NOT be called
+        mock_detect.assert_not_called()
+
+        sent = _get_sent_messages(ws)
+        assert len(sent) == 1
+        assert sent[0]["source_language"] == "en"
+        assert sent[0]["target_language"] == "ja"
+
+    def test_auto_input_lang_uses_detect(self, mock_db, user_info):
+        """input_lang이 'auto'이면 detect_language()를 사용"""
+        from database import UsageLog, User
+        from websocket_handler import _handle_transcript
+
+        user_model = User(mock_db)
+        usage_log_model = UsageLog(mock_db)
+
+        ws = _make_websocket()
+        data = {"text": "Hello world", "audio_duration_seconds": 5}
+        lang_settings = {"input_lang": "auto", "output_lang": "ko"}
+
+        with (
+            patch("websocket_handler.check_usage_limit", return_value=True),
+            patch(
+                "websocket_handler.detect_language",
+                return_value=("en", "ko"),
+            ) as mock_detect,
+            patch(
+                "websocket_handler._translate_text",
+                return_value=("안녕하세요", True),
+            ),
+            patch("websocket_handler.get_user_model", return_value=user_model),
+            patch(
+                "websocket_handler.get_usage_log_model",
+                return_value=usage_log_model,
+            ),
+            patch("websocket_handler.update_user_session"),
+        ):
+            asyncio.run(
+                _handle_transcript(
+                    ws,
+                    data,
+                    user_info,
+                    MagicMock(),
+                    MagicMock(),
+                    True,
+                    language_settings=lang_settings,
+                )
+            )
+
+        # detect_language SHOULD be called
+        mock_detect.assert_called_once_with("Hello world")
+
+    def test_no_language_settings_uses_detect(self, mock_db, user_info):
+        """language_settings가 None이면 detect_language() 사용 (하위 호환)"""
+        from database import UsageLog, User
+        from websocket_handler import _handle_transcript
+
+        user_model = User(mock_db)
+        usage_log_model = UsageLog(mock_db)
+
+        ws = _make_websocket()
+        data = {"text": "Hello world", "audio_duration_seconds": 5}
+
+        with (
+            patch("websocket_handler.check_usage_limit", return_value=True),
+            patch(
+                "websocket_handler.detect_language",
+                return_value=("en", "ko"),
+            ) as mock_detect,
+            patch(
+                "websocket_handler._translate_text",
+                return_value=("안녕하세요", True),
+            ),
+            patch("websocket_handler.get_user_model", return_value=user_model),
+            patch(
+                "websocket_handler.get_usage_log_model",
+                return_value=usage_log_model,
+            ),
+            patch("websocket_handler.update_user_session"),
+        ):
+            asyncio.run(
+                _handle_transcript(
+                    ws,
+                    data,
+                    user_info,
+                    MagicMock(),
+                    MagicMock(),
+                    True,
+                    language_settings=None,
+                )
+            )
+
+        mock_detect.assert_called_once_with("Hello world")
+
+    def test_empty_input_lang_uses_detect(self, mock_db, user_info):
+        """input_lang이 빈 문자열이면 detect_language() 사용"""
+        from database import UsageLog, User
+        from websocket_handler import _handle_transcript
+
+        user_model = User(mock_db)
+        usage_log_model = UsageLog(mock_db)
+
+        ws = _make_websocket()
+        data = {"text": "Hello", "audio_duration_seconds": 3}
+        lang_settings = {"input_lang": "", "output_lang": "ko"}
+
+        with (
+            patch("websocket_handler.check_usage_limit", return_value=True),
+            patch(
+                "websocket_handler.detect_language",
+                return_value=("en", "ko"),
+            ) as mock_detect,
+            patch(
+                "websocket_handler._translate_text",
+                return_value=("안녕", True),
+            ),
+            patch("websocket_handler.get_user_model", return_value=user_model),
+            patch(
+                "websocket_handler.get_usage_log_model",
+                return_value=usage_log_model,
+            ),
+            patch("websocket_handler.update_user_session"),
+        ):
+            asyncio.run(
+                _handle_transcript(
+                    ws,
+                    data,
+                    user_info,
+                    MagicMock(),
+                    MagicMock(),
+                    True,
+                    language_settings=lang_settings,
+                )
+            )
+
+        mock_detect.assert_called_once()
+
+    def test_specific_lang_defaults_output_to_ko(self, mock_db, user_info):
+        """output_lang이 없으면 기본값 'ko' 사용"""
+        from database import UsageLog, User
+        from websocket_handler import _handle_transcript
+
+        user_model = User(mock_db)
+        usage_log_model = UsageLog(mock_db)
+
+        ws = _make_websocket()
+        data = {"text": "Bonjour", "audio_duration_seconds": 3}
+        lang_settings = {"input_lang": "fr"}
+
+        with (
+            patch("websocket_handler.check_usage_limit", return_value=True),
+            patch(
+                "websocket_handler._translate_text",
+                return_value=("안녕하세요", False),
+            ),
+            patch("websocket_handler.get_user_model", return_value=user_model),
+            patch(
+                "websocket_handler.get_usage_log_model",
+                return_value=usage_log_model,
+            ),
+            patch("websocket_handler.update_user_session"),
+        ):
+            asyncio.run(
+                _handle_transcript(
+                    ws,
+                    data,
+                    user_info,
+                    MagicMock(),
+                    MagicMock(),
+                    True,
+                    language_settings=lang_settings,
+                )
+            )
+
+        sent = _get_sent_messages(ws)
+        assert sent[0]["source_language"] == "fr"
+        assert sent[0]["target_language"] == "ko"
