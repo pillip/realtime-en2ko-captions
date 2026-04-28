@@ -6,11 +6,13 @@ LLM 번역, 문장 분리, 언어 감지 기능 제공
 import json
 import re
 
-# 언어 이름 매핑 (한국어 표시용)
+# 언어 이름 매핑 (표시용)
 SOURCE_LANG_NAMES = {
     "en": "영어",
+    "ko": "한국어",
     "ja": "일본어",
     "zh": "중국어",
+    "vi": "베트남어",
     "es": "스페인어",
     "fr": "프랑스어",
     "de": "독일어",
@@ -101,28 +103,82 @@ def _build_prompt_to_korean(text, source_lang):
 한국어 번역:"""
 
 
-def _build_prompt_to_english(text):
+def _build_prompt_to_english(text, source_lang=None):
     """영어 번역 프롬프트 생성"""
-    return f"""다음 한국어를 국제 컨퍼런스에서 쓰이는 자연스러운 영어로 의역해주세요.
-글로벌 청중을 위한 실시간 자막으로, 직역보다는 의미가 잘 전달되는 것이 중요합니다.
+    source_lang_name = (
+        SOURCE_LANG_NAMES.get(source_lang, "원본 언어") if source_lang else "한국어"
+    )
+    header = (
+        f"다음 {source_lang_name} 텍스트를 "
+        "국제 컨퍼런스에서 쓰이는 자연스러운 영어로 의역해주세요."
+    )
+    return f"""{header}
+글로벌 청중을 위한 실시간 자막으로,
+직역보다는 의미가 잘 전달되는 것이 중요합니다.
 
 원문: "{text}"
 
 번역 가이드라인:
-- 🌍 글로벌 표준: 국제 컨퍼런스에서 실제 쓰이는 자연스러운 영어
-- 💼 프로페셔널: 기술발표/비즈니스에 적합한 톤
-- 🎯 명확성: 비영어권 청중도 이해하기 쉬운 표현
-- ⚡ 간결성: 자막에 적합한 깔끔한 문장
-- 🔧 용어 활용: 업계 표준 기술용어 및 표현 사용
+- 글로벌 표준: 국제 컨퍼런스에서 실제 쓰이는 자연스러운 영어
+- 프로페셔널: 기술발표/비즈니스에 적합한 톤
+- 명확성: 비영어권 청중도 이해하기 쉬운 표현
+- 간결성: 자막에 적합한 깔끔한 문장
+- 용어 활용: 업계 표준 기술용어 및 표현 사용
 
 예시 변환:
-- "이걸 한번 보시면" → "Let's take a look at this"
-- "꽤 괜찮은 것 같아요" → "This looks pretty promising"
-- "정말 대단한 기술이에요" → "This is truly impressive technology"
+- "이걸 한번 보시면" -> "Let's take a look at this"
+- "꽤 괜찮은 것 같아요" -> "This looks pretty promising"
+- "정말 대단한 기술이에요" -> "This is truly impressive technology"
 
 번역 결과만 출력하세요 (설명, 주석, 부연설명 일절 금지):
 
 English translation:"""
+
+
+def _build_prompt_to_chinese(text, source_lang):
+    """중국어 번역 프롬프트 생성"""
+    source_lang_name = SOURCE_LANG_NAMES.get(source_lang, "原始语言")
+    return f"""请将以下{source_lang_name}文本翻译成自然流畅的中文。
+这是实时会议/技术演讲的字幕，意译优先于直译。
+
+原文: "{text}"
+
+翻译指南:
+- 语义为主: 自然传达原文的核心含义
+- 受众友好: 使用听众容易理解的中文表达
+- 场景适配: 符合技术演讲/商务场景的语气
+- 简洁明了: 适合实时字幕的简洁句子（最多2句）
+- 术语处理: 技术术语使用中国开发者常用的表达
+- 自然流畅: 优先使用中文语序和惯用表达，避免直译
+
+请只输出翻译结果（禁止任何说明、注释、附加解释）:
+
+中文翻译:"""
+
+
+def _build_prompt_to_vietnamese(text, source_lang):
+    """베트남어 번역 프롬프트 생성"""
+    source_lang_name = SOURCE_LANG_NAMES.get(source_lang, "ngon ngu goc")
+    header = (
+        f"Hay dich doan van ban {source_lang_name} sau day sang tieng Viet tu nhien."
+    )
+    return f"""{header}
+Day la phu de truc tiep cho hoi nghi/thuyet trinh ky thuat,
+uu tien truyen dat y nghia hon la dich sat.
+
+Van ban goc: "{text}"
+
+Huong dan dich:
+- Tap trung y nghia: Truyen dat tu nhien y chinh cua van ban goc
+- Than thien voi nguoi nghe: Su dung cach dien dat tieng Viet de hieu
+- Phu hop ngu canh: Giong dieu phu hop voi thuyet trinh ky thuat/kinh doanh
+- Ngan gon: Cau ngan gon phu hop voi phu de truc tiep (toi da 2 cau)
+- Xu ly thuat ngu: Su dung thuat ngu ky thuat pho bien tai Viet Nam
+- Tu nhien: Uu tien trat tu tu va cach dien dat tieng Viet
+
+Chi xuat ket qua dich (khong giai thich, khong chu thich, khong bo sung):
+
+Ban dich tieng Viet:"""
 
 
 def _clean_llm_response(translated_text):
@@ -180,8 +236,12 @@ def translate_with_llm(bedrock_client, text, source_lang, target_lang):
     try:
         if target_lang == "ko":
             prompt = _build_prompt_to_korean(text, source_lang)
+        elif target_lang == "zh":
+            prompt = _build_prompt_to_chinese(text, source_lang)
+        elif target_lang == "vi":
+            prompt = _build_prompt_to_vietnamese(text, source_lang)
         else:
-            prompt = _build_prompt_to_english(text)
+            prompt = _build_prompt_to_english(text, source_lang)
 
         body = json.dumps(
             {
