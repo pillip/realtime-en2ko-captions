@@ -1,218 +1,93 @@
-# Review Notes — PR #12 (ISSUE #11: 전체화면 모드)
+# Review Notes -- PR #42 (testgen/add-missing-tests)
 
 **Reviewer**: Claude Opus 4.6 (automated)
-**Date**: 2026-03-19
-**PR Size**: ~919 lines added across 8 files (within review threshold)
-**Test Results**: 102/102 passing (unit), E2E tests excluded by default via `-m 'not e2e'`
-**Confidence Rating**: Medium -- E2E tests were not executed during this review due to requiring a running Streamlit server. Unit-level tests (test_fullscreen.py) are string-matching only.
+**Date**: 2026-04-28
+**PR Size**: 298 lines, 1 file (`tests/test_coverage_gaps.py`), 11 tests
+**Test Results**: 11/11 passing
+**Confidence Rating**: High -- all source files, existing test patterns, and the new test file were reviewed in full.
 
 ---
 
-## Code Review
+## Summary
 
-### Critical
+PR #42 adds `tests/test_coverage_gaps.py` covering previously untested code paths:
+- `websocket_handler._init_translation_clients` (happy path + Bedrock fallback)
+- `websocket_handler._handle_session_request` (success + failure)
+- `websocket_handler.handle_openai_websocket` language_update message branch
+- `websocket_handler._authenticate_client` generic exception branch
+- `auth.init_session_state` (3 scenarios)
+- `auth.get_user_remaining_seconds` (no user + logged-in user)
 
-(none)
-
-### High
-
-#### [CR-1] `toggleFullscreen` throws TypeError if Fullscreen API is entirely unavailable (webrtc.html:987-1004)
-
-```js
-function toggleFullscreen() {
-    if (isFullscreen()) {
-      (document.exitFullscreen || document.webkitExitFullscreen).call(document);
-    } else {
-      // ...
-      (viewer.requestFullscreen || viewer.webkitRequestFullscreen).call(viewer);
-    }
-  }
-```
-
-If neither `requestFullscreen` nor `webkitRequestFullscreen` exists on the element (e.g., older browsers, or iframe without `allowfullscreen` attribute), the expression `(undefined || undefined)` evaluates to `undefined`, and `.call(viewer)` throws `TypeError: undefined is not a function`. Since this button is always visible, users on unsupported browsers will get a silent JS error.
-
-**Fix suggestion**: Guard with a capability check:
-```js
-const fn = viewer.requestFullscreen || viewer.webkitRequestFullscreen;
-if (fn) fn.call(viewer);
-else console.warn('Fullscreen API not supported');
-```
-
-The same pattern applies to `document.exitFullscreen || document.webkitExitFullscreen`.
-
-### Medium
-
-#### [CR-2] Duplicated fullscreen exit handler logic (webrtc.html:1029-1045)
-
-The `fullscreenchange` and `webkitfullscreenchange` event listeners contain identical logic for restoring font sizes from localStorage. This is a maintenance risk -- if the restore logic changes, both handlers must be updated in lockstep.
-
-```js
-document.addEventListener('fullscreenchange', () => {
-    if (!isFullscreen()) {
-      const savedTransSize = localStorage.getItem('translationFontSize') || '28';
-      // ...
-    }
-  });
-  document.addEventListener('webkitfullscreenchange', () => {
-    if (!isFullscreen()) {
-      const savedTransSize = localStorage.getItem('translationFontSize') || '28';
-      // ...
-    }
-  });
-```
-
-**Fix suggestion**: Extract into a named function `onFullscreenExit()` and register it for both events.
-
-#### [CR-3] Fragile position-based HTML assertion in test_fullscreen.py (test_fullscreen.py:59-65)
-
-```python
-def test_font_controls_inside_viewer(self):
-    html = _read_html()
-    viewer_start = html.find('id="viewer"')
-    viewer_end = html.find("</div>", html.find("</div>", viewer_start) + 1)
-    controls_pos = html.find('id="fsFontControls"')
-    assert viewer_start < controls_pos < viewer_end + 500
-```
-
-This test uses character position arithmetic with a magic offset of `+500` to determine DOM nesting. Any HTML reformatting (e.g., Prettier, added attributes, comments) will break this test without any functional change. The assertion is also structurally flawed -- `viewer_end` finds only the second `</div>` after `id="viewer"`, which may not be the closing tag of the viewer element.
-
-**Fix suggestion**: Use a proper HTML parser (e.g., `html.parser` from stdlib or `BeautifulSoup`) to verify DOM nesting, or remove this test in favor of the E2E test that verifies the actual rendered DOM.
-
-#### [CR-4] E2E tests silently pass when fullscreen is unavailable (test_fullscreen_e2e.py:56-83, 85-102)
-
-`TestFullscreenEntry` tests fall back to checking `typeof requestFullscreen === 'function'` when fullscreen activation fails due to security restrictions. The test also conditionally skips key assertions (`if is_fs:` on line 95). In CI environments, fullscreen will almost always be blocked, meaning the core assertions never execute.
-
-```python
-if not is_fs:
-    has_fn = frame.evaluate(
-        "typeof document.documentElement.requestFullscreen === 'function'"
-    )
-    assert has_fn, "requestFullscreen 함수가 존재해야 함"
-```
-
-This matches **RL-004** (weak test assertions that pass trivially). The test "passes" but verifies almost nothing about the fullscreen behavior.
-
-**Fix suggestion**: At minimum, add a `pytest.warns` or a log message when the fallback path is taken, so CI logs make it obvious that the real assertion was skipped. Consider using Playwright's `--headless=false` option in CI with Xvfb for actual fullscreen testing.
-
-#### [CR-5] Global singleton mutation in database.py creates test isolation risk (database.py:530-543)
-
-```python
-_db_manager = None
-
-def get_db_manager() -> DatabaseManager:
-    global _db_manager
-    if _db_manager is None:
-        db_path = os.getenv("DB_PATH", "data/app.db")
-        _db_manager = DatabaseManager(db_path)
-```
-
-The `DB_PATH` env var is read only on first call. If any test (unit or otherwise) imports and calls `get_db_manager()` before E2E tests set `DB_PATH`, the singleton will point to the production `data/app.db` path and will not be re-initialized. The E2E conftest mitigates this by setting the env var before launching the Streamlit subprocess, but any in-process test using `get_db_manager()` directly is at risk.
-
-**Fix suggestion**: Add a `reset_db_manager()` function for testing, or accept `db_path` as an optional parameter that forces re-initialization.
-
-### Low
-
-#### [CR-6] `test_fullscreen.py` tests are pure string matching (RL-004 pattern)
-
-All 17 tests in `test_fullscreen.py` use `assert "some_string" in html` to verify the HTML file contains expected IDs, CSS rules, and function names. While these catch deletion/rename regressions, they cannot detect:
-- Correct nesting (a string can exist in a comment or wrong element)
-- CSS specificity conflicts
-- JS runtime behavior
-
-The E2E tests (`test_fullscreen_e2e.py`) cover the runtime behavior, which is the appropriate layer for these checks. The string-matching tests provide a quick-feedback safety net, which is acceptable as a complement, but should not be the primary verification.
-
-#### [CR-7] `database.py` line-length reformatting mixed with functional change
-
-The PR includes SQL line-wrapping changes alongside the functional `DB_PATH` env var change. Mixing formatting and functional changes in the same commit makes it harder to review and bisect. This is minor for a small diff but worth noting as a practice.
+All 11 tests pass. The tests are generally well-structured with meaningful assertions. However, there are style conformance issues and one test isolation bug that should be addressed before merge.
 
 ---
 
-## Security Findings
+## Findings
 
-### Critical
+### Code Review
 
-(none)
+### [Medium] CR-1: Module-level sys.modules mutation lacks per-test cleanup (test isolation risk)
 
-### High
+- **File**: `tests/test_coverage_gaps.py:35-41`
+- **Issue**: The file mutates `sys.modules` at import time (lines 35-41) and never cleans up. This is the older pattern used in `test_websocket_handler.py`, but the established best practice in this project (see `test_auth_module.py:32-47`) uses a `monkeypatch`-based `autouse` fixture that: (a) replaces `sys.modules` entries per test, (b) pops the `auth` module to force reimport, ensuring clean state. Without this, the `auth` module caches a reference to the first mock `st` object, and mutations to `auth.st.session_state` in one test leak into subsequent tests. This is particularly dangerous for the `TestInitSessionState` class, where three tests sequentially mutate `auth.st.session_state`.
+- **Blocking**: Yes -- test ordering could produce false passes or false failures.
+- **Fix**: Adopt the `monkeypatch` autouse fixture pattern from `test_auth_module.py` for the auth-related test classes (`TestInitSessionState`, `TestGetUserRemainingSeconds`). The websocket-related tests (which only patch at the function level) are less affected but would still benefit from consistency.
 
-(none)
+### [Medium] CR-2: SessionState class duplicated across test files (RL-001 pattern)
 
-### Medium
+- **File**: `tests/test_coverage_gaps.py:16-33`
+- **Issue**: The `SessionState` helper class is copy-pasted from `tests/test_auth_module.py:12-29`. This is the exact pattern described in RL-001 (copy-paste testing). If the real Streamlit `session_state` behavior changes or a bug is found in the helper, both copies must be updated.
+- **Blocking**: No -- functional correctness is not affected.
+- **Fix**: Extract `SessionState` into `tests/conftest.py` or a shared `tests/helpers.py` module and import from both test files. This is a follow-up task.
 
-#### [SEC-1] Dummy AWS credentials in E2E conftest (conftest.py:42-43)
+### [Low] CR-3: TestLanguageUpdateMessage verifies echo response but not internal state mutation
 
-```python
-"AWS_ACCESS_KEY_ID": "test_key",
-"AWS_SECRET_ACCESS_KEY": "test_secret",
-```
+- **File**: `tests/test_coverage_gaps.py:153-200`
+- **Issue**: The test verifies that a `language_updated` response message is sent with the correct `input_lang` and `output_lang`. However, the primary purpose of the `language_update` handler (lines 482-505 of `websocket_handler.py`) is to mutate the connection-level `language_settings` dict so that subsequent `transcript` messages use the new settings. The test does not verify this side effect -- it only checks the echo. If the echo line were present but the dict mutation were removed, the test would still pass.
+- **Mitigating factors**: The echo values are derived from the same `language_settings` dict that was mutated, so in practice they are correlated. The risk of the mutation being removed while the echo remains is low.
+- **Fix suggestion**: Send a follow-up `transcript` message after the `language_update` and verify the translation uses the new language settings. This would be a more robust integration test.
 
-These are clearly dummy values for test startup, but they establish a pattern of hardcoding credential-shaped strings in test files. If a developer copies this pattern with real credentials, they could leak secrets.
+### [Low] CR-4: Missing `pytest` import deviates from project convention
 
-**Mitigating factors**: The values are obviously fake (`test_key`, `test_secret`). The `.gitignore` should already exclude `.env` files.
+- **File**: `tests/test_coverage_gaps.py`
+- **Issue**: The file does not import `pytest` and uses no pytest fixtures, markers, or parametrize decorators. Every other test file in the project imports `pytest`. While the tests work fine without it (plain `unittest.mock` + class-based tests), the lack of fixtures means no shared setup/teardown, which contributes to CR-1.
+- **Blocking**: No.
+- **Fix**: Add `import pytest` and consider converting the auth-related tests to use fixtures for session state setup.
 
-**Fix suggestion**: Add a comment explicitly stating these are dummy values, or use `TESTING_MODE=true` env var to skip AWS credential validation entirely during tests.
+### [Info] CR-5: All tests use `asyncio.run()` directly instead of pytest-asyncio
 
-#### [SEC-2] DB_PATH env var allows arbitrary file path (database.py:539)
-
-```python
-db_path = os.getenv("DB_PATH", "data/app.db")
-_db_manager = DatabaseManager(db_path)
-```
-
-The `DB_PATH` environment variable is not validated. An attacker with env var control (e.g., via container misconfiguration) could point the database to an arbitrary path, potentially overwriting files or reading from unexpected locations.
-
-**Mitigating factors**: Environment variables are typically controlled by the deployer, not by end users. This is a defense-in-depth concern rather than an exploitable vulnerability.
-
-**Severity justification**: Medium because env var manipulation requires infrastructure-level access, but the lack of any path validation means no defense-in-depth.
-
-### Low
-
-#### [SEC-3] Fullscreen JS executes within sandboxed iframe
-
-The fullscreen feature uses `requestFullscreen` on the `#viewer` element within a Streamlit `st.components.v1.html` iframe. For fullscreen to work, the parent must set the `allow="fullscreen"` or `allowfullscreen` attribute on the iframe. If the parent does not set this, the Fullscreen API will silently fail or throw. This is not a security vulnerability per se, but a configuration dependency worth documenting.
+- **File**: `tests/test_coverage_gaps.py:122, 139, 189, 216`
+- **Issue**: The project has `pytest-asyncio` installed, but the PR uses `asyncio.run()` to invoke async functions. This is consistent with the existing pattern in `test_websocket_handler.py` and `test_websocket_auth.py`, so this is not a deviation. Noted for awareness only -- if the project migrates to `async def test_*` with `pytest-asyncio`, these tests will need updating.
+- **Blocking**: No.
 
 ---
 
-## Accessibility Audit (WCAG 2.1 AA)
+### Security Findings
 
-**Total findings**: 14 (3 Critical, 5 High, 4 Medium, 2 Low)
+### [Low] SEC-1: Mock AWS credential strings in test patches
 
-### Fixes Applied
+- **File**: `tests/test_coverage_gaps.py:64-66`
+- **Issue**: The test patches `get_aws_access_key_id` with `return_value="key"` and `get_aws_secret_access_key` with `return_value="secret"`. These are obviously fake values and never reach any AWS endpoint (boto3.client is also mocked). However, the pattern of using credential-like strings in tests should ideally use clearly marked dummy values (e.g., `"FAKE_ACCESS_KEY_FOR_TESTING"`).
+- **Mitigating factors**: The values never leave the test process. `boto3.client` is fully mocked. No real AWS calls are made.
+- **Blocking**: No.
 
-| Finding | Severity | Fix |
-|---------|----------|-----|
-| P-1/P-2: `.fs-font-controls` opacity 0.15 (contrast 1.39:1) | **Critical** | Changed to `opacity: 0.6`, hover/focus-within to `1.0` |
-| O-3: No focus-visible styles on interactive elements | **Critical** | Added `:focus-visible` with `#3b82f6` outline (5.3:1 contrast) |
-| P-3/P-4: FAB background contrast 1.29:1 | **High** | Added `border: 1px solid rgba(255,255,255,0.25)`, bg to 0.15 |
-| P-5/P-6: No aria-label on FAB buttons | **High** | Added `aria-label="설정"` and `aria-label="전체화면"` |
-| P-7: No aria-label on font control buttons | **Medium** | Added descriptive `aria-label` to all 4 buttons |
-| O-1: Font button touch target 32x32px | **High** | Increased to 44x44px |
-| O-4: No Escape key for settings panel | **Medium** | Added `keydown` Escape handler |
-| R-1: Settings panel missing ARIA state | **Medium** | Added `aria-expanded`, `aria-controls`, `role="region"` |
-| U-1: Missing `lang` attribute | **Medium** | Added `lang="ko"` to `<html>` |
-| U-2: Font controls not programmatically grouped | **Low** | Added `role="group"` and `aria-label` to control groups, `aria-live="polite"` to size displays |
+---
 
-### Remaining (not fixed in this review)
+## Verdict
 
-| Finding | Severity | Reason |
-|---------|----------|--------|
-| O-2: FABs shrink to 40x40 in compact mode | Medium | Still above 24px AA minimum |
-| O-5: No `prefers-reduced-motion` support | Low | Enhancement, not blocking |
+**REQUEST_CHANGES**
+
+**Blocking issue**: CR-1 (test isolation). The `TestInitSessionState` tests mutate shared module-level state without cleanup between tests. While they currently pass due to favorable test ordering, any reordering (e.g., `pytest-randomly`) could cause spurious failures. The fix is to adopt the `monkeypatch` autouse fixture pattern already established in `test_auth_module.py`.
+
+**Non-blocking suggestions** (can be addressed in follow-up):
+- CR-2: Extract `SessionState` to shared module
+- CR-3: Strengthen language_update test with follow-up transcript
+- CR-4: Add `pytest` import and fixture usage
 
 ---
 
 ## Follow-ups
 
-1. **[Follow-up] Extract fullscreen exit handler into named function** -- Deduplicate the `fullscreenchange`/`webkitfullscreenchange` handlers (CR-2). Estimated: 5 minutes.
+1. **[Follow-up] Extract `SessionState` to `tests/conftest.py`** -- Deduplicate the helper class shared between `test_auth_module.py` and `test_coverage_gaps.py` (CR-2, RL-001). Estimated: 10 minutes.
 
-2. ~~**[Follow-up] Add Fullscreen API guard** (CR-1)~~ -- **DONE** in this review (capability guards added to `toggleFullscreen`).
-
-3. **[Follow-up] Replace HTML string-matching tests with parser-based assertions** -- The position arithmetic in `test_font_controls_inside_viewer` (CR-3) is fragile. Use `html.parser` or accept the E2E tests as the primary verification layer. Estimated: 30 minutes.
-
-4. **[Follow-up] Add `reset_db_manager()` for test isolation** -- Prevent singleton state leakage between test modules (CR-5). Estimated: 15 minutes.
-
-5. **[Follow-up] Document iframe `allowfullscreen` requirement** -- Ensure Streamlit component embedding sets the correct iframe attribute for fullscreen to work (SEC-3). Estimated: 10 minutes.
-
-6. **[Follow-up] Make E2E fullscreen skip explicit** -- When fullscreen cannot be activated in CI, log/warn clearly rather than silently passing (CR-4). Estimated: 15 minutes.
-
-7. **[Follow-up] Add `prefers-reduced-motion` media query** -- Disable animations for motion-sensitive users (O-5). Estimated: 10 minutes.
+2. **[Follow-up] Add integration-level language_update test** -- Verify that a `language_update` message actually affects subsequent `transcript` processing, not just the echo response (CR-3). Estimated: 20 minutes.

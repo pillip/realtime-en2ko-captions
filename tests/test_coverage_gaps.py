@@ -11,6 +11,8 @@ import json
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 
 # Mock Streamlit before importing modules that depend on it
 class SessionState(dict):
@@ -38,6 +40,18 @@ if "streamlit" not in sys.modules:
     sys.modules["streamlit"] = _mock_st
 if "extra_streamlit_components" not in sys.modules:
     sys.modules["extra_streamlit_components"] = MagicMock()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_auth_module():
+    """auth 모듈의 테스트 간 상태 격리.
+
+    각 테스트 전에 auth 모듈을 sys.modules에서 제거하여
+    session_state 변경이 다른 테스트에 누수되지 않도록 합니다.
+    (test_auth_module.py의 monkeypatch autouse 패턴 참고)
+    """
+    yield
+    sys.modules.pop("auth", None)
 
 
 # ============================================================
