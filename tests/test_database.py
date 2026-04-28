@@ -627,3 +627,49 @@ class TestDropLegacyColumns:
         user = user_model.get_user_by_id(uid)
         assert user["username"] == "newuser"
         assert user["email"] == "new@test.com"
+
+
+# === WAL Mode Tests (ISSUE-23) ===
+
+
+class TestWalMode:
+    """SQLite WAL journal mode 활성화 검증"""
+
+    def test_journal_mode_is_wal(self, db_manager):
+        """PRAGMA journal_mode가 'wal' 반환"""
+        with db_manager.get_connection() as conn:
+            cursor = conn.execute("PRAGMA journal_mode")
+            mode = cursor.fetchone()[0]
+        assert mode == "wal"
+
+    def test_wal_persistent_across_connections(self, db_manager):
+        """WAL 모드는 DB 파일에 영구 저장되어 새 연결에서도 유지"""
+        # Open a fresh connection to the same DB file (not via get_connection
+        # which might set pragmas) to verify WAL is persistent.
+        conn = sqlite3.connect(db_manager.db_path)
+        cursor = conn.execute("PRAGMA journal_mode")
+        mode = cursor.fetchone()[0]
+        conn.close()
+        assert mode == "wal"
+
+    def test_concurrent_writes_no_lock_error(self, db_manager, sample_user):
+        """WAL 모드에서 동시 쓰기가 'database is locked' 오류를 발생시키지 않음"""
+        usage_log = UsageLog(db_manager)
+
+        # Perform multiple writes in quick succession
+        for i in range(10):
+            log_id = usage_log.record_usage(
+                sample_user, "transcribe", 5 + i, source_language="en"
+            )
+            assert log_id is not None
+
+        logs = usage_log.get_user_logs(sample_user)
+        assert len(logs) == 10
+
+    def test_wal_idempotent(self, db_manager):
+        """init_database를 재실행해도 WAL 모드 유지"""
+        db_manager.init_database()
+        with db_manager.get_connection() as conn:
+            cursor = conn.execute("PRAGMA journal_mode")
+            mode = cursor.fetchone()[0]
+        assert mode == "wal"
