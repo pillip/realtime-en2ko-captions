@@ -10,6 +10,7 @@ dependencies = [
     "botocore>=1.40.25",
     "extra-streamlit-components>=0.1.81",
     "httpx>=0.28.1",
+    "pandas>=2.3.1",
     "python-dotenv>=1.1.1",
     "requests>=2.32.4",
     "speechrecognition>=3.14.3",
