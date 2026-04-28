@@ -236,7 +236,6 @@ docker-compose ps
 ## 📚 추가 문서
 
 - **[배포 가이드](DEPLOYMENT.md)**: 상세한 배포 및 운영 가이드
-- **[개선 사항](IMPROVEMENT_TASKLIST.md)**: 향후 개선 계획
 - **[기술 명세](CLAUDE.md)**: 개발자를 위한 기술 문서
 
 ## 🤝 기여하기
