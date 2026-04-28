@@ -44,18 +44,83 @@ def find_free_port(start_port=8765, max_port=8800):
 
 
 async def _authenticate_client(websocket):
-    """WebSocket 클라이언트 인증 처리"""
+    """WebSocket 클라이언트 인증 처리
+
+    Validates claimed identity against the database (RL-002).
+    Never trusts client-supplied role — always uses DB record.
+    Rejects inactive users and unknown user IDs.
+    """
     try:
         first_message = await asyncio.wait_for(websocket.recv(), timeout=5.0)
         data = json.loads(first_message)
         if data.get("type") == "auth":
             user_info = data.get("user")
-            username = user_info.get("username") if user_info else "Unknown"
-            print(f"[Auth] 사용자 인증: {username}")
+            if not user_info or "id" not in user_info:
+                print("[Auth] 인증 실패: 사용자 정보 누락")
+                await websocket.send(
+                    json.dumps(
+                        {
+                            "type": "auth_error",
+                            "message": "사용자 정보가 누락되었습니다.",
+                        }
+                    )
+                )
+                return None
+
+            # Validate against database (RL-002: never trust client identity)
+            user_model = get_user_model()
+            db_user = user_model.get_user_by_id(user_info["id"])
+
+            if db_user is None:
+                print(f"[Auth] 인증 실패: 존재하지 않는 사용자 ID {user_info['id']}")
+                await websocket.send(
+                    json.dumps(
+                        {"type": "auth_error", "message": "인증에 실패했습니다."}
+                    )
+                )
+                return None
+
+            # Reject inactive users
+            if not db_user["is_active"]:
+                print(f"[Auth] 인증 실패: 비활성 사용자 {db_user['username']}")
+                await websocket.send(
+                    json.dumps(
+                        {
+                            "type": "auth_error",
+                            "message": "비활성화된 계정입니다. 관리자에게 문의하세요.",
+                        }
+                    )
+                )
+                return None
+
+            # Validate username matches DB record
+            claimed_username = user_info.get("username")
+            if claimed_username != db_user["username"]:
+                print(
+                    f"[Auth] 인증 실패: 사용자명 불일치 "
+                    f"(claimed={claimed_username}, db={db_user['username']})"
+                )
+                await websocket.send(
+                    json.dumps(
+                        {"type": "auth_error", "message": "인증에 실패했습니다."}
+                    )
+                )
+                return None
+
+            # Build validated user_info from DB (overwrite client-supplied role)
+            validated_user = {
+                "id": db_user["id"],
+                "username": db_user["username"],
+                "role": db_user["role"],
+                "full_name": db_user.get("full_name"),
+                "is_active": db_user["is_active"],
+            }
+
+            print(f"[Auth] 사용자 인증 성공: {validated_user['username']}")
             await websocket.send(
                 json.dumps({"type": "auth_success", "message": "인증 완료"})
             )
-            return user_info
+            return validated_user
     except TimeoutError:
         print("[Auth] 인증 정보 수신 타임아웃")
     except Exception as e:
