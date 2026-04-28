@@ -27,6 +27,7 @@ class DatabaseManager:
         """컨텍스트 매니저로 DB 연결 관리"""
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row  # 딕셔너리 형태로 결과 반환
+        conn.execute("PRAGMA foreign_keys = ON")
         try:
             yield conn
         finally:
