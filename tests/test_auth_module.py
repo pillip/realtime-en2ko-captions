@@ -109,12 +109,20 @@ class TestGenerateSessionToken:
         token = generate_session_token(1, "testuser")
         assert isinstance(token, str)
 
-    def test_token_length(self):
-        """토큰 길이가 32자"""
+    def test_token_length_64_hex(self):
+        """토큰 길이가 64자 (secrets.token_hex(32))"""
         from auth import generate_session_token
 
         token = generate_session_token(1, "testuser")
-        assert len(token) == 32
+        assert len(token) == 64
+
+    def test_same_user_same_second_different_tokens(self):
+        """같은 사용자, 같은 초에 생성해도 다른 토큰"""
+        from auth import generate_session_token
+
+        token1 = generate_session_token(1, "testuser")
+        token2 = generate_session_token(1, "testuser")
+        assert token1 != token2
 
     def test_different_users_different_tokens(self):
         """다른 사용자는 다른 토큰 생성"""
@@ -129,7 +137,6 @@ class TestGenerateSessionToken:
         from auth import generate_session_token
 
         token = generate_session_token(1, "testuser")
-        # 16진수 변환 가능해야 함
         int(token, 16)
 
 
