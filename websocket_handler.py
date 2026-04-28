@@ -39,8 +39,8 @@ def find_free_port(start_port=8765, max_port=8800):
             port = s.getsockname()[1]
             print(f"[Port] OS 자동 할당 포트: {port}")
             return port
-    except OSError:
-        raise Exception("사용 가능한 포트를 찾을 수 없습니다")
+    except OSError as e:
+        raise Exception("사용 가능한 포트를 찾을 수 없습니다") from e
 
 
 async def _authenticate_client(websocket):

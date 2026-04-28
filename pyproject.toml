@@ -46,12 +46,15 @@ exclude = '''
   | build
   | dist
   | node_modules
+  | \.claude-kit
+  | \.claude
 )/
 '''
 
 [tool.ruff]
 target-version = "py311"
 line-length = 88
+extend-exclude = [".claude-kit"]
 
 [tool.ruff.lint]
 select = [
@@ -75,6 +78,9 @@ indent-style = "space"
 skip-magic-trailing-comma = false
 line-ending = "auto"
 
+[tool.ruff.lint.per-file-ignores]
+"pages/*" = ["E402"]  # Streamlit pages require st.set_page_config before some imports
+
 [tool.ruff.lint.isort]
 known-first-party = ["realtime_en2ko_captions"]
 
@@ -92,6 +98,9 @@ omit = [
     ".venv/*",
     "tests/*",
     "pages/*",
+    "app.py",
+    "login.py",
+    "admin.py",
 ]
 
 [tool.coverage.report]

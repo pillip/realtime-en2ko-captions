@@ -83,7 +83,7 @@ async def create_openai_session() -> dict:
 
     except httpx.HTTPError as e:
         print(f"[OpenAI] HTTP 오류: {e}")
-        raise Exception(f"OpenAI 세션 생성 실패: {e}")
+        raise Exception(f"OpenAI 세션 생성 실패: {e}") from e
     except Exception as e:
         print(f"[OpenAI] 예상치 못한 오류: {e}")
-        raise Exception(f"OpenAI 세션 생성 실패: {e}")
+        raise Exception(f"OpenAI 세션 생성 실패: {e}") from e
