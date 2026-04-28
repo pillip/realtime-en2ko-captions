@@ -532,8 +532,8 @@ class TestHandleTranscriptLanguageSettings:
                 )
             )
 
-        # detect_language SHOULD be called
-        mock_detect.assert_called_once_with("Hello world")
+        # detect_language SHOULD be called with output_lang (ISSUE-4)
+        mock_detect.assert_called_once_with("Hello world", output_lang="ko")
 
     def test_no_language_settings_uses_detect(self, mock_db, user_info):
         """language_settings가 None이면 detect_language() 사용 (하위 호환)"""
@@ -575,7 +575,7 @@ class TestHandleTranscriptLanguageSettings:
                 )
             )
 
-        mock_detect.assert_called_once_with("Hello world")
+        mock_detect.assert_called_once_with("Hello world", output_lang="ko")
 
     def test_empty_input_lang_uses_detect(self, mock_db, user_info):
         """input_lang이 빈 문자열이면 detect_language() 사용"""
