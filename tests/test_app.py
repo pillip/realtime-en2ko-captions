@@ -9,12 +9,81 @@ from io import BytesIO
 from unittest.mock import MagicMock
 
 from translation import (
+    _build_prompt_to_english,
+    _build_prompt_to_korean,
     _clean_llm_response,
     detect_language,
     split_into_sentences,
     translate_with_llm,
 )
 from websocket_handler import find_free_port
+
+# === _build_prompt_to_korean / _build_prompt_to_english Tests ===
+
+
+class TestBuildPromptToKorean:
+    def test_contains_source_text(self):
+        """프롬프트에 원본 텍스트 포함"""
+        prompt = _build_prompt_to_korean("Hello world", "en")
+        assert "Hello world" in prompt
+
+    def test_english_source_uses_correct_label(self):
+        """영어 소스일 때 '영어' 라벨 사용"""
+        prompt = _build_prompt_to_korean("Hello", "en")
+        assert "영어" in prompt
+
+    def test_japanese_source_uses_specific_label(self):
+        """일본어 소스일 때 '일본어' 라벨 사용 (generic이 아닌 구체적 언어명)"""
+        prompt = _build_prompt_to_korean("Hello", "ja")
+        assert "일본어" in prompt
+
+    def test_chinese_source_uses_specific_label(self):
+        """중국어 소스일 때 '중국어' 라벨 사용"""
+        prompt = _build_prompt_to_korean("Hello", "zh")
+        assert "중국어" in prompt
+
+    def test_unknown_source_uses_fallback_label(self):
+        """매핑되지 않은 언어 코드는 '원본 언어' 폴백 사용"""
+        prompt = _build_prompt_to_korean("Hello", "xx")
+        assert "원본 언어" in prompt
+
+    def test_contains_korean_translation_instruction(self):
+        """한국어 번역 지시사항 포함"""
+        prompt = _build_prompt_to_korean("Hello", "en")
+        assert "한국어" in prompt
+
+    def test_contains_guidelines(self):
+        """번역 가이드라인 포함"""
+        prompt = _build_prompt_to_korean("Hello", "en")
+        assert "가이드라인" in prompt
+
+
+class TestBuildPromptToEnglish:
+    def test_contains_source_text(self):
+        """프롬프트에 원본 한국어 텍스트 포함"""
+        prompt = _build_prompt_to_english("안녕하세요")
+        assert "안녕하세요" in prompt
+
+    def test_contains_english_translation_instruction(self):
+        """영어 번역 지시사항 포함"""
+        prompt = _build_prompt_to_english("안녕하세요")
+        assert "English" in prompt or "영어" in prompt
+
+    def test_contains_conference_context(self):
+        """컨퍼런스 컨텍스트 포함"""
+        prompt = _build_prompt_to_english("안녕하세요")
+        assert "컨퍼런스" in prompt
+
+    def test_contains_guidelines(self):
+        """번역 가이드라인 포함"""
+        prompt = _build_prompt_to_english("안녕하세요")
+        assert "가이드라인" in prompt
+
+    def test_different_text_reflected_in_prompt(self):
+        """다른 입력 텍스트도 프롬프트에 반영"""
+        prompt = _build_prompt_to_english("대한민국 만세")
+        assert "대한민국 만세" in prompt
+
 
 # === find_free_port Tests ===
 
