@@ -275,3 +275,86 @@ class TestAuthenticateClientDbValidation:
                 assert "testuser" not in msg.get("message", "")
                 # Should not contain user_id
                 assert str(db_user["id"]) not in msg.get("message", "")
+
+
+# === ISSUE-2: Language Settings in Auth ===
+
+
+class TestAuthenticateClientLanguageSettings:
+    """_authenticate_client 언어 설정 전달 테스트 (ISSUE-2)"""
+
+    def test_language_settings_extracted_from_auth(self, mock_db):
+        """auth 메시지에 language_settings가 있으면 validated_user에 포함"""
+        from websocket_handler import _authenticate_client
+
+        db_user = mock_db.get_user_by_username("testuser")
+        ws = _make_websocket(
+            {
+                "type": "auth",
+                "user": {
+                    "id": db_user["id"],
+                    "username": "testuser",
+                    "role": "user",
+                },
+                "language_settings": {
+                    "input_lang": "en",
+                    "output_lang": "ko",
+                },
+            }
+        )
+
+        with patch("websocket_handler.get_user_model", return_value=mock_db):
+            result = asyncio.run(_authenticate_client(ws))
+
+        assert result is not None
+        assert result["language_settings"]["input_lang"] == "en"
+        assert result["language_settings"]["output_lang"] == "ko"
+
+    def test_language_settings_defaults_when_missing(self, mock_db):
+        """auth 메시지에 language_settings가 없으면 기본값(auto/ko) 사용"""
+        from websocket_handler import _authenticate_client
+
+        db_user = mock_db.get_user_by_username("testuser")
+        ws = _make_websocket(
+            {
+                "type": "auth",
+                "user": {
+                    "id": db_user["id"],
+                    "username": "testuser",
+                    "role": "user",
+                },
+            }
+        )
+
+        with patch("websocket_handler.get_user_model", return_value=mock_db):
+            result = asyncio.run(_authenticate_client(ws))
+
+        assert result is not None
+        assert result["language_settings"]["input_lang"] == "auto"
+        assert result["language_settings"]["output_lang"] == "ko"
+
+    def test_language_settings_partial_defaults(self, mock_db):
+        """language_settings에 일부 필드만 있으면 나머지는 기본값"""
+        from websocket_handler import _authenticate_client
+
+        db_user = mock_db.get_user_by_username("testuser")
+        ws = _make_websocket(
+            {
+                "type": "auth",
+                "user": {
+                    "id": db_user["id"],
+                    "username": "testuser",
+                    "role": "user",
+                },
+                "language_settings": {
+                    "input_lang": "ja",
+                },
+            }
+        )
+
+        with patch("websocket_handler.get_user_model", return_value=mock_db):
+            result = asyncio.run(_authenticate_client(ws))
+
+        assert result is not None
+        assert result["language_settings"]["input_lang"] == "ja"
+        assert result["language_settings"]["output_lang"] == "ko"
