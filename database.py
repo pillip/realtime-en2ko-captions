@@ -74,6 +74,20 @@ class DatabaseManager:
             """
             )
 
+            # usage_logs 인덱스 생성 (조회 성능 개선)
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_usage_logs_user_id
+                ON usage_logs(user_id)
+            """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_usage_logs_created_at
+                ON usage_logs(created_at)
+            """
+            )
+
             conn.commit()
 
 

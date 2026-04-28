@@ -453,3 +453,43 @@ class TestForeignKeyEnforcement:
 
         logs = usage_log.get_user_logs(sample_user)
         assert len(logs) == 0
+
+
+# === Index Tests (ISSUE-13) ===
+
+
+class TestUsageLogsIndexes:
+    """usage_logs 테이블 인덱스 검증"""
+
+    def test_user_id_index_exists(self, db_manager):
+        """idx_usage_logs_user_id 인덱스 존재 확인"""
+        with db_manager.get_connection() as conn:
+            cursor = conn.execute("PRAGMA index_list('usage_logs')")
+            indexes = {row["name"] for row in cursor.fetchall()}
+        assert "idx_usage_logs_user_id" in indexes
+
+    def test_created_at_index_exists(self, db_manager):
+        """idx_usage_logs_created_at 인덱스 존재 확인"""
+        with db_manager.get_connection() as conn:
+            cursor = conn.execute("PRAGMA index_list('usage_logs')")
+            indexes = {row["name"] for row in cursor.fetchall()}
+        assert "idx_usage_logs_created_at" in indexes
+
+    def test_indexes_idempotent(self, db_manager):
+        """init_database 재실행 시 인덱스 중복 생성 없음"""
+        db_manager.init_database()  # 두 번째 호출
+        with db_manager.get_connection() as conn:
+            cursor = conn.execute("PRAGMA index_list('usage_logs')")
+            index_names = [row["name"] for row in cursor.fetchall()]
+        # 중복 인덱스 없음
+        assert index_names.count("idx_usage_logs_user_id") == 1
+        assert index_names.count("idx_usage_logs_created_at") == 1
+
+    def test_existing_tests_pass_with_indexes(self, db_manager, sample_user):
+        """인덱스 추가 후 기존 usage_logs 작업 정상 동작"""
+        usage_log = UsageLog(db_manager)
+        log_id = usage_log.record_usage(sample_user, "transcribe", 30)
+        assert log_id is not None
+
+        logs = usage_log.get_user_logs(sample_user)
+        assert len(logs) == 1
