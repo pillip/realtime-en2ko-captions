@@ -4,8 +4,12 @@ Streamlit session_state를 활용한 사용자 인증 및 권한 관리
 extra-streamlit-components의 CookieManager로 세션 관리
 """
 
+import hashlib
+import hmac
+import os
 import secrets
 import time
+import warnings
 from collections.abc import Callable
 from functools import wraps
 from typing import Any
@@ -14,6 +18,50 @@ import streamlit as st
 from extra_streamlit_components import CookieManager
 
 from database import get_user_model
+
+
+def _get_session_secret() -> str:
+    """SESSION_SECRET 환경변수를 반환. 없으면 자동 생성 후 경고."""
+    secret = os.environ.get("SESSION_SECRET")
+    if not secret:
+        secret = secrets.token_hex(32)
+        os.environ["SESSION_SECRET"] = secret
+        warnings.warn(
+            "SESSION_SECRET not set. Auto-generated a random secret. "
+            "Sessions will not survive server restarts.",
+            stacklevel=2,
+        )
+    return secret
+
+
+def _compute_hmac(data: str) -> str:
+    """HMAC-SHA256 서명 계산"""
+    secret = _get_session_secret()
+    return hmac.new(secret.encode(), data.encode(), hashlib.sha256).hexdigest()
+
+
+def _sign_cookie(user_id: int, username: str, token: str) -> str:
+    """쿠키 데이터에 HMAC 서명 추가. 형식: user_id:username:token:hmac"""
+    payload = f"{user_id}:{username}:{token}"
+    signature = _compute_hmac(payload)
+    return f"{payload}:{signature}"
+
+
+def _verify_cookie(cookie_data: str) -> tuple[str, str, str] | None:
+    """HMAC 서명 검증. 성공하면 (user_id, username, token) 반환, 실패하면 None."""
+    try:
+        parts = cookie_data.rsplit(":", 1)
+        if len(parts) != 2:
+            return None
+        payload, signature = parts
+        expected = _compute_hmac(payload)
+        if not hmac.compare_digest(signature, expected):
+            return None
+        user_id, username, token = payload.split(":", 2)
+        return user_id, username, token
+    except (ValueError, TypeError):
+        return None
+
 
 # 쿠키 매니저 지연 초기화 (렌더링 방지)
 _cookie_manager = None
@@ -33,12 +81,12 @@ def generate_session_token(user_id: int, username: str) -> str:
 
 
 def set_session_cookie(user_info: dict):
-    """세션 쿠키 설정 (CookieManager 사용)"""
+    """세션 쿠키 설정 (HMAC 서명 포함, CookieManager 사용)"""
     token = generate_session_token(user_info["id"], user_info["username"])
-    cookie_data = f"{user_info['id']}:{user_info['username']}:{token}"
+    signed_cookie = _sign_cookie(user_info["id"], user_info["username"], token)
 
     # 24시간 유효 (max_age는 초 단위)
-    get_cookie_manager().set("user_session", cookie_data, max_age=86400)
+    get_cookie_manager().set("user_session", signed_cookie, max_age=86400)
 
 
 def get_session_cookie() -> str | None:
@@ -76,12 +124,17 @@ def init_session_state():
 
 
 def restore_session_from_cookie():
-    """쿠키에서 세션 복원 (CookieManager 사용)"""
+    """쿠키에서 세션 복원 (HMAC 검증 포함, CookieManager 사용)"""
     session_data = get_session_cookie()
 
     if session_data:
         try:
-            user_id, username, token = session_data.split(":")
+            verified = _verify_cookie(session_data)
+            if verified is None:
+                print("[Auth] 세션 복원 실패: HMAC 검증 실패 (변조 의심)")
+                return False
+
+            user_id, username, token = verified
             user_model = get_user_model()
             user = user_model.get_user_by_id(int(user_id))
 

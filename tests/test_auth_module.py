@@ -47,6 +47,12 @@ def mock_streamlit(monkeypatch):
     yield mock_st
 
 
+@pytest.fixture(autouse=True)
+def set_session_secret(monkeypatch):
+    """테스트용 SESSION_SECRET 설정"""
+    monkeypatch.setenv("SESSION_SECRET", "test-secret-for-auth-module-tests")
+
+
 @pytest.fixture
 def db_path(tmp_path):
     """임시 데이터베이스 경로"""
@@ -287,14 +293,17 @@ class TestRestoreSessionFromCookie:
     def test_valid_cookie_active_user_returns_true(
         self, mock_streamlit, mock_db, mock_cookie_manager
     ):
-        """유효한 쿠키 + 활성 사용자 -> authenticated=True, returns True"""
+        """유효한 HMAC 서명 쿠키 + 활성 사용자 -> authenticated=True, returns True"""
         from database import User
 
         user_model = User(mock_db)
         user = user_model.get_user_by_username("testuser")
 
-        # Cookie format: "user_id:username:token"
-        mock_cookie_manager.get.return_value = f"{user['id']}:testuser:faketoken123"
+        # Cookie format: "user_id:username:token:hmac_signature"
+        from auth import _sign_cookie
+
+        signed_cookie = _sign_cookie(user["id"], "testuser", "faketoken123")
+        mock_cookie_manager.get.return_value = signed_cookie
 
         with (
             patch("auth.get_cookie_manager", return_value=mock_cookie_manager),
@@ -311,15 +320,16 @@ class TestRestoreSessionFromCookie:
     def test_cookie_for_inactive_user_returns_false(
         self, mock_streamlit, mock_db_with_inactive, mock_cookie_manager
     ):
-        """비활성 사용자 쿠키 -> returns False"""
+        """비활성 사용자 쿠키 (유효한 HMAC) -> returns False"""
         from database import User
 
         user_model = User(mock_db_with_inactive)
         inactive = user_model.get_user_by_username("inactive_user")
 
-        mock_cookie_manager.get.return_value = (
-            f"{inactive['id']}:inactive_user:faketoken"
-        )
+        from auth import _sign_cookie
+
+        signed = _sign_cookie(inactive["id"], "inactive_user", "faketoken")
+        mock_cookie_manager.get.return_value = signed
 
         with (
             patch("auth.get_cookie_manager", return_value=mock_cookie_manager),
@@ -345,11 +355,15 @@ class TestRestoreSessionFromCookie:
     def test_cookie_for_nonexistent_user_returns_false(
         self, mock_streamlit, mock_db, mock_cookie_manager
     ):
-        """존재하지 않는 사용자 쿠키 -> returns False"""
+        """존재하지 않는 사용자 쿠키 (유효한 HMAC) -> returns False"""
         from database import User
 
         user_model = User(mock_db)
-        mock_cookie_manager.get.return_value = "9999:ghost:faketoken"
+
+        from auth import _sign_cookie
+
+        signed = _sign_cookie(9999, "ghost", "faketoken")
+        mock_cookie_manager.get.return_value = signed
 
         with (
             patch("auth.get_cookie_manager", return_value=mock_cookie_manager),
@@ -364,14 +378,17 @@ class TestRestoreSessionFromCookie:
     def test_cookie_username_mismatch_returns_false(
         self, mock_streamlit, mock_db, mock_cookie_manager
     ):
-        """쿠키의 username이 DB와 다른 경우 -> returns False"""
+        """쿠키의 username이 DB와 다른 경우 (유효한 HMAC) -> returns False"""
         from database import User
 
         user_model = User(mock_db)
         user = user_model.get_user_by_username("testuser")
 
-        # user_id matches but username is different
-        mock_cookie_manager.get.return_value = f"{user['id']}:wrongname:faketoken"
+        # user_id matches but username is different (signed with wrong username)
+        from auth import _sign_cookie
+
+        signed = _sign_cookie(user["id"], "wrongname", "faketoken")
+        mock_cookie_manager.get.return_value = signed
 
         with (
             patch("auth.get_cookie_manager", return_value=mock_cookie_manager),
