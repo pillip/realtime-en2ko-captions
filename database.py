@@ -86,6 +86,10 @@ class DatabaseManager:
             """
             )
 
+            # Enable WAL journal mode for better concurrent access (ISSUE-23)
+            # WAL is persistent per DB file — only needs to be set once.
+            conn.execute("PRAGMA journal_mode=WAL")
+
             conn.commit()
 
         # Migrate existing databases: drop legacy columns (ISSUE-20)
