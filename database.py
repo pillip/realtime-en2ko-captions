@@ -36,14 +36,13 @@ class DatabaseManager:
     def init_database(self):
         """데이터베이스 스키마 초기화"""
         with self.get_connection() as conn:
-            # users 테이블 생성
+            # users 테이블 생성 (salt/hash_type 제거 — ISSUE-20)
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS users (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     username TEXT UNIQUE NOT NULL,
                     password_hash TEXT NOT NULL,
-                    salt TEXT DEFAULT '',
                     email TEXT,
                     full_name TEXT,
                     role TEXT DEFAULT 'user',
@@ -51,8 +50,7 @@ class DatabaseManager:
                     total_usage_seconds INTEGER DEFAULT 0,
                     usage_limit_seconds INTEGER DEFAULT 3600,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    last_login TIMESTAMP,
-                    hash_type TEXT DEFAULT 'bcrypt'
+                    last_login TIMESTAMP
                 )
             """
             )
@@ -87,6 +85,27 @@ class DatabaseManager:
                 ON usage_logs(created_at)
             """
             )
+
+            conn.commit()
+
+        # Migrate existing databases: drop legacy columns (ISSUE-20)
+        self._migrate_drop_legacy_columns()
+
+    def _migrate_drop_legacy_columns(self):
+        """Drop unused salt and hash_type columns from users table.
+
+        Python 3.11 bundles SQLite >= 3.35 which supports
+        ALTER TABLE ... DROP COLUMN.
+        """
+        with self.get_connection() as conn:
+            # Check which columns currently exist
+            cursor = conn.execute("PRAGMA table_info(users)")
+            existing_columns = {row["name"] for row in cursor.fetchall()}
+
+            for col in ("salt", "hash_type"):
+                if col in existing_columns:
+                    conn.execute(f"ALTER TABLE users DROP COLUMN {col}")
+                    print(f"[Migration] Dropped legacy column: users.{col}")
 
             conn.commit()
 

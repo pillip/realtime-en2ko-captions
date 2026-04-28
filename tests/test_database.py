@@ -493,3 +493,137 @@ class TestUsageLogsIndexes:
 
         logs = usage_log.get_user_logs(sample_user)
         assert len(logs) == 1
+
+
+# === Drop Legacy Columns Tests (ISSUE-20) ===
+
+
+class TestDropLegacyColumns:
+    """users.salt 및 users.hash_type 컬럼 제거 검증"""
+
+    def _get_column_names(self, db_manager):
+        """users 테이블의 컬럼 이름 목록 반환"""
+        with db_manager.get_connection() as conn:
+            cursor = conn.execute("PRAGMA table_info(users)")
+            return {row["name"] for row in cursor.fetchall()}
+
+    def test_fresh_db_has_no_legacy_columns(self, db_manager):
+        """새 DB에는 salt, hash_type 컬럼이 없음"""
+        columns = self._get_column_names(db_manager)
+        assert "salt" not in columns
+        assert "hash_type" not in columns
+
+    def test_fresh_db_has_required_columns(self, db_manager):
+        """새 DB에 필수 컬럼이 모두 존재"""
+        columns = self._get_column_names(db_manager)
+        expected = {
+            "id",
+            "username",
+            "password_hash",
+            "email",
+            "full_name",
+            "role",
+            "is_active",
+            "total_usage_seconds",
+            "usage_limit_seconds",
+            "created_at",
+            "last_login",
+        }
+        assert expected.issubset(columns)
+
+    def test_existing_db_with_legacy_columns_migrated(self, tmp_path):
+        """기존 DB에 salt/hash_type이 있으면 마이그레이션으로 제거"""
+        db_path = str(tmp_path / "legacy.db")
+
+        # Create a legacy-schema database manually
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """
+            CREATE TABLE users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                salt TEXT DEFAULT '',
+                email TEXT,
+                full_name TEXT,
+                role TEXT DEFAULT 'user',
+                is_active BOOLEAN DEFAULT 1,
+                total_usage_seconds INTEGER DEFAULT 0,
+                usage_limit_seconds INTEGER DEFAULT 3600,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_login TIMESTAMP,
+                hash_type TEXT DEFAULT 'bcrypt'
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO users (username, password_hash, salt, hash_type)
+            VALUES ('olduser', 'hash123', 'somesalt', 'sha256')
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        # Now init DatabaseManager which should migrate
+        db = DatabaseManager(db_path)
+        columns = self._get_column_names(db)
+        assert "salt" not in columns
+        assert "hash_type" not in columns
+
+        # Verify existing data is preserved
+        user_model = User(db)
+        user = user_model.get_user_by_username("olduser")
+        assert user is not None
+        assert user["username"] == "olduser"
+
+    def test_migration_idempotent(self, db_manager):
+        """마이그레이션을 여러 번 실행해도 오류 없음"""
+        # init_database already ran; run migration again
+        db_manager._migrate_drop_legacy_columns()
+        columns = self._get_column_names(db_manager)
+        assert "salt" not in columns
+        assert "hash_type" not in columns
+
+    def test_user_crud_works_after_migration(self, tmp_path):
+        """마이그레이션 후 사용자 CRUD 정상 동작"""
+        db_path = str(tmp_path / "migrate_crud.db")
+
+        # Create legacy DB with a user
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """
+            CREATE TABLE users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                salt TEXT DEFAULT '',
+                email TEXT,
+                full_name TEXT,
+                role TEXT DEFAULT 'user',
+                is_active BOOLEAN DEFAULT 1,
+                total_usage_seconds INTEGER DEFAULT 0,
+                usage_limit_seconds INTEGER DEFAULT 3600,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_login TIMESTAMP,
+                hash_type TEXT DEFAULT 'bcrypt'
+            )
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        # Migrate via DatabaseManager init
+        db = DatabaseManager(db_path)
+        user_model = User(db)
+
+        # Create new user after migration
+        uid = user_model.create_user(
+            username="newuser", password="pass123", email="new@test.com"
+        )
+        assert uid is not None
+
+        # Verify user exists
+        user = user_model.get_user_by_id(uid)
+        assert user["username"] == "newuser"
+        assert user["email"] == "new@test.com"
