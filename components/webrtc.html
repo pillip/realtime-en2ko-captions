@@ -137,6 +137,21 @@
       font-size: 15px;
     }
 
+    .lang-warning {
+      display: none;
+      margin-top: 6px;
+      padding: 8px 12px;
+      border-radius: 8px;
+      background: rgba(245, 158, 11, 0.15);
+      border: 1px solid rgba(245, 158, 11, 0.4);
+      color: #fbbf24;
+      font-size: 13px;
+    }
+
+    .lang-warning.visible {
+      display: block;
+    }
+
     /* 🎨 슬라이더 스타일링 */
     .slider {
       width: 100%;
@@ -745,6 +760,28 @@
       </select>
     </div>
 
+    <div class="control-group">
+      <label>🗣️ 입력 언어</label>
+      <select id="selInputLang">
+        <option value="auto">자동 감지</option>
+        <option value="ko">한국어</option>
+        <option value="zh">중국어</option>
+        <option value="en">영어</option>
+        <option value="vi">베트남어</option>
+      </select>
+    </div>
+
+    <div class="control-group">
+      <label>🌐 출력 언어</label>
+      <select id="selOutputLang">
+        <option value="ko">한국어</option>
+        <option value="zh">중국어</option>
+        <option value="en">영어</option>
+        <option value="vi">베트남어</option>
+      </select>
+      <div class="lang-warning" id="langWarning">입력 언어와 출력 언어가 동일합니다</div>
+    </div>
+
     <!-- 🎨 폰트 크기 조절 -->
     <div class="control-group">
       <label>📝 번역 글자 크기</label>
@@ -868,6 +905,9 @@ try {
   const originalSizeValue = document.getElementById('originalSizeValue');
   const showOriginalToggle = document.getElementById('showOriginalToggle');
   const showTranslationToggle = document.getElementById('showTranslationToggle');
+  const selInputLang = document.getElementById('selInputLang');
+  const selOutputLang = document.getElementById('selOutputLang');
+  const langWarning = document.getElementById('langWarning');
   const fullscreenFab = document.getElementById('fullscreenFab');
   const fsFontControls = document.getElementById('fsFontControls');
   const fsTransSize = document.getElementById('fsTransSize');
@@ -919,10 +959,77 @@ try {
       originalSizeValue.textContent = `${originalSize}px`;
       document.documentElement.style.setProperty('--original-font-size', `${originalSize}px`);
     }
+
+    // 언어 설정 (입력: 기본 auto, 출력: 기본 ko)
+    const savedInputLang = localStorage.getItem('inputLanguage') || 'auto';
+    const savedOutputLang = localStorage.getItem('outputLanguage') || 'ko';
+    if (selInputLang) selInputLang.value = savedInputLang;
+    if (selOutputLang) selOutputLang.value = savedOutputLang;
+    checkLangWarning();
+    updateWelcomeTranslationRules();
   };
+
+  // 언어 이름 매핑
+  const LANG_NAMES = {
+    auto: '자동 감지',
+    ko: '한국어',
+    zh: '중국어',
+    en: '영어',
+    vi: '베트남어',
+  };
+
+  // 입력=출력 경고 체크 (auto 제외)
+  function checkLangWarning() {
+    if (!langWarning || !selInputLang || !selOutputLang) return;
+    const inputVal = selInputLang.value;
+    const outputVal = selOutputLang.value;
+    if (inputVal !== 'auto' && inputVal === outputVal) {
+      langWarning.classList.add('visible');
+    } else {
+      langWarning.classList.remove('visible');
+    }
+  }
+
+  // 웰컴 화면 번역 규칙 텍스트 동적 변경
+  function updateWelcomeTranslationRules() {
+    const rulesContainers = document.querySelectorAll('.welcome-state');
+    if (!rulesContainers.length) return;
+    const inputVal = selInputLang ? selInputLang.value : 'auto';
+    const outputVal = selOutputLang ? selOutputLang.value : 'ko';
+    const outputName = LANG_NAMES[outputVal] || outputVal;
+
+    let rulesHtml;
+    if (inputVal === 'auto') {
+      rulesHtml = `<div>🔄 번역 규칙:</div><div>• 감지된 언어 → ${outputName}</div>`;
+    } else {
+      const inputName = LANG_NAMES[inputVal] || inputVal;
+      rulesHtml = `<div>🔄 번역 규칙:</div><div>• ${inputName} → ${outputName}</div>`;
+    }
+
+    rulesContainers.forEach(ws => {
+      const rulesDiv = ws.querySelector('div[style*="margin-top: 16px"]');
+      if (rulesDiv) rulesDiv.innerHTML = rulesHtml;
+    });
+  }
 
   // 설정 초기화
   loadSettings();
+
+  // 언어 선택 이벤트 핸들러
+  if (selInputLang) {
+    selInputLang.onchange = () => {
+      localStorage.setItem('inputLanguage', selInputLang.value);
+      checkLangWarning();
+      updateWelcomeTranslationRules();
+    };
+  }
+  if (selOutputLang) {
+    selOutputLang.onchange = () => {
+      localStorage.setItem('outputLanguage', selOutputLang.value);
+      checkLangWarning();
+      updateWelcomeTranslationRules();
+    };
+  }
 
   // 🎨 폰트 크기 조절 이벤트 핸들러 (null check 포함)
   if (fontSizeSlider && fontSizeValue) {
@@ -1391,6 +1498,7 @@ try {
         </div>
       </div>
     `;
+    updateWelcomeTranslationRules();
     currentUnstableLine = null;
     currentTypingLine = null;
     if (backToLiveBtn) {
