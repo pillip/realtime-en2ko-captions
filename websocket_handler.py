@@ -5,6 +5,7 @@ OpenAI Realtime API 통합, 번역 처리, 사용량 추적
 
 import asyncio
 import json
+import os
 import socket
 import time
 
@@ -20,6 +21,9 @@ from services import (
     get_aws_secret_access_key,
 )
 from translation import detect_language, translate_with_llm
+
+# Per-connection rate limit: max messages per minute (sliding window)
+WS_RATE_LIMIT_PER_MINUTE = int(os.getenv("WS_RATE_LIMIT_PER_MINUTE", "30"))
 
 
 def find_free_port(start_port=8765, max_port=8800):
@@ -365,11 +369,44 @@ async def _handle_transcript(
     )
 
 
+def _check_rate_limit(message_timestamps, limit=None):
+    """Sliding-window rate limit check for a single connection.
+
+    Args:
+        message_timestamps: collections.deque storing timestamps of recent messages.
+        limit: Max messages per 60s window.
+            Defaults to WS_RATE_LIMIT_PER_MINUTE.
+
+    Returns:
+        True if the message is allowed, False if rate limit exceeded.
+    """
+    if limit is None:
+        limit = WS_RATE_LIMIT_PER_MINUTE
+
+    now = time.time()
+    window_start = now - 60.0
+
+    # Evict timestamps older than the 60-second window
+    while message_timestamps and message_timestamps[0] <= window_start:
+        message_timestamps.popleft()
+
+    if len(message_timestamps) >= limit:
+        return False
+
+    message_timestamps.append(now)
+    return True
+
+
 async def handle_openai_websocket(websocket):
     """OpenAI Realtime API와 통합된 WebSocket 핸들러"""
+    import collections as _collections
+
     print(f"[WebSocket] OpenAI 모드 - 클라이언트 연결: {websocket.remote_address}")
 
     user_info = await _authenticate_client(websocket)
+
+    # Per-connection sliding window for rate limiting
+    message_timestamps = _collections.deque()
 
     try:
         (
@@ -393,6 +430,24 @@ async def handle_openai_websocket(websocket):
                 data = json.loads(message)
 
                 msg_type = data.get("type")
+
+                # Rate limit transcript messages
+                if msg_type == "transcript":
+                    if not _check_rate_limit(message_timestamps):
+                        await websocket.send(
+                            json.dumps(
+                                {
+                                    "type": "error",
+                                    "message": "rate_limit_exceeded",
+                                }
+                            )
+                        )
+                        print(
+                            "[RateLimit] Rate limit exceeded for "
+                            f"{websocket.remote_address}"
+                        )
+                        continue
+
                 if msg_type == "request_openai_session":
                     await _handle_session_request(websocket)
 
