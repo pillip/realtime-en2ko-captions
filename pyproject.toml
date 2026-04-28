@@ -80,9 +80,19 @@ known-first-party = ["realtime_en2ko_captions"]
 
 [tool.pytest.ini_options]
 minversion = "7.0"
-addopts = "-ra -m 'not e2e'"
+addopts = "-ra -m 'not e2e' --cov=. --cov-report=term-missing --cov-fail-under=50"
 testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = [
     "e2e: End-to-end browser tests (requires Streamlit server)",
 ]
+
+[tool.coverage.run]
+omit = [
+    ".venv/*",
+    "tests/*",
+    "pages/*",
+]
+
+[tool.coverage.report]
+show_missing = true
