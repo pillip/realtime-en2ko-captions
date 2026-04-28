@@ -4,6 +4,7 @@ DatabaseManager, PasswordManager, User, UsageLog 클래스 테스트
 """
 
 import os
+import sqlite3
 from unittest.mock import patch
 
 import pytest
@@ -397,3 +398,58 @@ class TestInitAdminFromEnv:
         ):
             result = init_admin_from_env(db_manager)
             assert result is True
+
+
+# === Foreign Key Enforcement Tests (ISSUE-12) ===
+
+
+class TestForeignKeyEnforcement:
+    """PRAGMA foreign_keys = ON 적용 검증"""
+
+    def test_insert_usage_log_with_nonexistent_user_raises_error(self, db_manager):
+        """존재하지 않는 user_id로 usage_logs INSERT 시 IntegrityError 발생"""
+        with db_manager.get_connection() as conn:
+            with pytest.raises(sqlite3.IntegrityError):
+                conn.execute(
+                    """
+                    INSERT INTO usage_logs (user_id, action, duration_seconds)
+                    VALUES (?, ?, ?)
+                    """,
+                    (99999, "transcribe", 30),
+                )
+
+    def test_foreign_keys_pragma_is_on(self, db_manager):
+        """PRAGMA foreign_keys가 ON 상태인지 확인"""
+        with db_manager.get_connection() as conn:
+            cursor = conn.execute("PRAGMA foreign_keys")
+            result = cursor.fetchone()
+            assert result[0] == 1
+
+    def test_valid_user_id_insert_succeeds(self, db_manager, sample_user):
+        """유효한 user_id로 usage_logs INSERT 성공"""
+        with db_manager.get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO usage_logs (user_id, action, duration_seconds)
+                VALUES (?, ?, ?)
+                """,
+                (sample_user, "transcribe", 30),
+            )
+            conn.commit()
+
+            cursor = conn.execute(
+                "SELECT COUNT(*) FROM usage_logs WHERE user_id = ?",
+                (sample_user,),
+            )
+            assert cursor.fetchone()[0] == 1
+
+    def test_delete_user_cascade_still_works(self, db_manager, sample_user):
+        """사용자 삭제 시 usage_logs도 함께 삭제 (기존 cascade 유지)"""
+        usage_log = UsageLog(db_manager)
+        usage_log.record_usage(sample_user, "transcribe", 30)
+
+        user_model = User(db_manager)
+        user_model.delete_user(sample_user)
+
+        logs = usage_log.get_user_logs(sample_user)
+        assert len(logs) == 0
