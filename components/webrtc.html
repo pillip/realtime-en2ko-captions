@@ -846,16 +846,15 @@
     <div class="caption-container" id="captionContainer">
       <div class="welcome-state">
         <div class="icon">🎙️</div>
-        <h1>실시간 한영 자막</h1>
-        <p>한국어와 영어로 말하면<br>실시간 자막과 번역이 나타납니다</p>
+        <h1 class="welcome-title">실시간 다국어 자막</h1>
+        <p class="welcome-desc">말하면 실시간 자막과 번역이 나타납니다</p>
         <div class="hint">
           <span>⚙️</span>
           <span>우상단 설정에서 마이크를 활성화하세요</span>
         </div>
-        <div style="margin-top: 16px; font-size: 14px; color: rgba(255, 255, 255, 0.5);">
+        <div class="welcome-rules" style="margin-top: 16px; font-size: 14px; color: rgba(255, 255, 255, 0.5);">
           <div>🔄 번역 규칙:</div>
-          <div>• 한국어 → 영어</div>
-          <div>• 영어 → 한국어</div>
+          <div>• 감지된 언어 → 한국어</div>
         </div>
       </div>
     </div>
@@ -990,24 +989,45 @@ try {
     }
   }
 
-  // 웰컴 화면 번역 규칙 텍스트 동적 변경
+  // 웰컴 화면 텍스트 동적 변경 (제목, 설명, 번역 규칙)
   function updateWelcomeTranslationRules() {
     const rulesContainers = document.querySelectorAll('.welcome-state');
     if (!rulesContainers.length) return;
     const inputVal = selInputLang ? selInputLang.value : 'auto';
     const outputVal = selOutputLang ? selOutputLang.value : 'ko';
+    const inputName = LANG_NAMES[inputVal] || inputVal;
     const outputName = LANG_NAMES[outputVal] || outputVal;
 
+    // 제목 동적 변경
+    let title;
+    if (inputVal === 'auto') {
+      title = '실시간 다국어 자막';
+    } else {
+      title = `실시간 ${inputName} → ${outputName} 자막`;
+    }
+
+    // 설명 동적 변경
+    let desc;
+    if (inputVal === 'auto') {
+      desc = '말하면 실시간 자막과 번역이 나타납니다';
+    } else {
+      desc = `${inputName}로 말하면<br>실시간 ${outputName} 자막이 나타납니다`;
+    }
+
+    // 번역 규칙 동적 변경
     let rulesHtml;
     if (inputVal === 'auto') {
       rulesHtml = `<div>🔄 번역 규칙:</div><div>• 감지된 언어 → ${outputName}</div>`;
     } else {
-      const inputName = LANG_NAMES[inputVal] || inputVal;
       rulesHtml = `<div>🔄 번역 규칙:</div><div>• ${inputName} → ${outputName}</div>`;
     }
 
     rulesContainers.forEach(ws => {
-      const rulesDiv = ws.querySelector('div[style*="margin-top: 16px"]');
+      const titleEl = ws.querySelector('.welcome-title');
+      if (titleEl) titleEl.textContent = title;
+      const descEl = ws.querySelector('.welcome-desc');
+      if (descEl) descEl.innerHTML = desc;
+      const rulesDiv = ws.querySelector('.welcome-rules');
       if (rulesDiv) rulesDiv.innerHTML = rulesHtml;
     });
   }
@@ -1198,25 +1218,32 @@ try {
   // 🚫 컨텍스트 리셋 함수 완전 제거 (에러 원인 제거)
   // function resetConversationContext() { ... } ← 삭제
 
-  // 🎯 한영 번역 전용 instruction 함수
+  // 🎯 번역 전용 instruction 함수 (선택된 언어 반영)
   function getTranslationInstructions() {
-    return `### 실시간 한영 양방향 번역 AI ###
-역할
-당신은 전문 컨퍼런스(블록체인/웹3/창업/스타트업) 환경의 한영 동시통역 번역기입니다.
+    const inputVal = selInputLang ? selInputLang.value : 'auto';
+    const outputVal = selOutputLang ? selOutputLang.value : 'ko';
+    const inputName = LANG_NAMES[inputVal] || inputVal;
+    const outputName = LANG_NAMES[outputVal] || outputVal;
+    const langDesc = inputVal === 'auto'
+      ? '다국어 입력을 감지하여 번역'
+      : `${inputName} → ${outputName} 번역`;
 
-⚠️ 절대 규칙: 이 AI는 오직 한국어↔영어 번역 기능만 수행합니다.
+    return `### 실시간 ${langDesc} AI ###
+역할
+당신은 전문 컨퍼런스(블록체인/웹3/창업/스타트업) 환경의 동시통역 번역기입니다.
+
+⚠️ 절대 규칙: 이 AI는 오직 번역 기능만 수행합니다.
 ⚠️ 중요: 이 세션은 완전히 새로운 번역 세션입니다. 이전 대화나 컨텍스트는 모두 무시하세요.
 
-역할: 전문 컨퍼런스 한영 동시통역사
-입력: 한국어 또는 영어 음성 → 텍스트 (ASR 결과)
-출력: 반대 언어로 번역된 텍스트만
+역할: 전문 컨퍼런스 동시통역사
+입력: 음성 → 텍스트 (ASR 결과)
+출력: ${outputName}로 번역된 텍스트만
 
 ## 절대 규칙 (위반 시 즉시 세션 종료)
 
 1. **언어 판별 및 번역**:
-   - 한국어 입력 → 영어로 번역
-   - 영어 입력 → 한국어로 번역
-   - 한영 혼용 → 전체를 반대 언어로 번역
+   - 입력된 텍스트를 ${outputName}로 번역
+   - 입력 언어가 이미 ${outputName}인 경우 원문 그대로 출력
 2. **출력 제한**: 오직 번역문만. 다른 모든 텍스트 금지
 3. **메타텍스트 금지**: "번역:", 따옴표, 설명, 주석, 인사말, 질문, 대화 시도 모두 금지
 4. **대화 금지**: 안녕하세요, 감사합니다, 도움이 되었나요 등 모든 대화형 응답 금지
@@ -1501,16 +1528,15 @@ try {
     captionContainer.innerHTML = `
       <div class="welcome-state">
         <div class="icon">🎙️</div>
-        <h1>실시간 한영 자막</h1>
-        <p>한국어와 영어로 말하면<br>실시간 자막과 번역이 나타납니다</p>
+        <h1 class="welcome-title">실시간 다국어 자막</h1>
+        <p class="welcome-desc">말하면 실시간 자막과 번역이 나타납니다</p>
         <div class="hint">
           <span>⚙️</span>
           <span>우상단 설정에서 마이크를 활성화하세요</span>
         </div>
-        <div style="margin-top: 16px; font-size: 14px; color: rgba(255, 255, 255, 0.5);">
+        <div class="welcome-rules" style="margin-top: 16px; font-size: 14px; color: rgba(255, 255, 255, 0.5);">
           <div>🔄 번역 규칙:</div>
-          <div>• 한국어 → 영어</div>
-          <div>• 영어 → 한국어</div>
+          <div>• 감지된 언어 → 한국어</div>
         </div>
       </div>
     `;
