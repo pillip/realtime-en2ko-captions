@@ -1902,6 +1902,11 @@ try {
         closeConnection();
         break;
 
+      case 'language_mismatch':
+        console.warn(`[Lang] 언어 불일치: expected=${data.expected}, detected=${data.detected}`);
+        showToast(`입력 언어 불일치: ${LANG_NAMES[data.expected] || data.expected} 설정인데 ${LANG_NAMES[data.detected] || data.detected}가 감지됨`, 'warning');
+        break;
+
       case 'error':
         console.error('[Translation] 오류:', data.message);
         showToast(`번역 오류: ${data.message}`, 'error');

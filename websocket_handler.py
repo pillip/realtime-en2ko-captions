@@ -345,6 +345,24 @@ async def _handle_transcript(
             transcript, output_lang=output_lang or "ko"
         )
     else:
+        # Verify actual language matches the configured input_lang (ISSUE-34)
+        detected_lang, _ = detect_language(transcript)
+        if detected_lang != input_lang:
+            await websocket.send(
+                json.dumps(
+                    {
+                        "type": "language_mismatch",
+                        "expected": input_lang,
+                        "detected": detected_lang,
+                        "text": transcript[:100],
+                    }
+                )
+            )
+            print(
+                f"[Lang] Language mismatch: "
+                f"expected={input_lang}, detected={detected_lang}"
+            )
+            return
         source_lang = input_lang
         target_lang = output_lang or "ko"
 
