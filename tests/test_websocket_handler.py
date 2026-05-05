@@ -445,8 +445,8 @@ class TestHandleOpenaiWebsocket:
 class TestHandleTranscriptLanguageSettings:
     """_handle_transcript 언어 설정 전달 테스트 (ISSUE-2)"""
 
-    def test_specific_language_skips_detect(self, mock_db, user_info):
-        """input_lang이 특정 언어이면 detect_language를 호출하지 않음"""
+    def test_specific_language_validates_and_proceeds(self, mock_db, user_info):
+        """input_lang이 특정 언어이고 감지 결과가 일치하면 번역 진행 (ISSUE-34)"""
         from database import UsageLog, User
         from websocket_handler import _handle_transcript
 
@@ -459,7 +459,10 @@ class TestHandleTranscriptLanguageSettings:
 
         with (
             patch("websocket_handler.check_usage_limit", return_value=True),
-            patch("websocket_handler.detect_language") as mock_detect,
+            patch(
+                "websocket_handler.detect_language",
+                return_value=("en", "ko"),
+            ) as mock_detect,
             patch(
                 "websocket_handler._translate_text",
                 return_value=("こんにちは", True),
@@ -483,13 +486,85 @@ class TestHandleTranscriptLanguageSettings:
                 )
             )
 
-        # detect_language should NOT be called
-        mock_detect.assert_not_called()
+        # detect_language IS called for validation (ISSUE-34)
+        mock_detect.assert_called_once()
 
         sent = _get_sent_messages(ws)
         assert len(sent) == 1
         assert sent[0]["source_language"] == "en"
         assert sent[0]["target_language"] == "ja"
+
+    def test_language_mismatch_blocks_translation(self, mock_db, user_info):
+        """input_lang과 감지 언어가 다르면 번역 차단 (ISSUE-34)"""
+        from websocket_handler import _handle_transcript
+
+        ws = _make_websocket()
+        data = {"text": "Hello world", "audio_duration_seconds": 5}
+        lang_settings = {"input_lang": "ko", "output_lang": "en"}
+
+        with (
+            patch("websocket_handler.check_usage_limit", return_value=True),
+            patch(
+                "websocket_handler.detect_language",
+                return_value=("en", "ko"),
+            ),
+            patch("websocket_handler._translate_text") as mock_translate,
+        ):
+            asyncio.run(
+                _handle_transcript(
+                    ws,
+                    data,
+                    user_info,
+                    MagicMock(),
+                    MagicMock(),
+                    True,
+                    language_settings=lang_settings,
+                )
+            )
+
+        # Translation should NOT be called
+        mock_translate.assert_not_called()
+
+        sent = _get_sent_messages(ws)
+        mismatch_msgs = [m for m in sent if m.get("type") == "language_mismatch"]
+        assert len(mismatch_msgs) == 1
+        assert mismatch_msgs[0]["expected"] == "ko"
+        assert mismatch_msgs[0]["detected"] == "en"
+
+    def test_zh_mismatch_with_english_text(self, mock_db, user_info):
+        """input_lang=zh에 영어 텍스트 → 차단 (ISSUE-34)"""
+        from websocket_handler import _handle_transcript
+
+        ws = _make_websocket()
+        data = {"text": "Hello world", "audio_duration_seconds": 5}
+        lang_settings = {"input_lang": "zh", "output_lang": "ko"}
+
+        with (
+            patch("websocket_handler.check_usage_limit", return_value=True),
+            patch(
+                "websocket_handler.detect_language",
+                return_value=("en", "ko"),
+            ),
+            patch("websocket_handler._translate_text") as mock_translate,
+        ):
+            asyncio.run(
+                _handle_transcript(
+                    ws,
+                    data,
+                    user_info,
+                    MagicMock(),
+                    MagicMock(),
+                    True,
+                    language_settings=lang_settings,
+                )
+            )
+
+        mock_translate.assert_not_called()
+        sent = _get_sent_messages(ws)
+        mismatch_msgs = [m for m in sent if m.get("type") == "language_mismatch"]
+        assert len(mismatch_msgs) == 1
+        assert mismatch_msgs[0]["expected"] == "zh"
+        assert mismatch_msgs[0]["detected"] == "en"
 
     def test_auto_input_lang_uses_detect(self, mock_db, user_info):
         """input_lang이 'auto'이면 detect_language()를 사용"""
@@ -621,7 +696,7 @@ class TestHandleTranscriptLanguageSettings:
         mock_detect.assert_called_once()
 
     def test_specific_lang_defaults_output_to_ko(self, mock_db, user_info):
-        """output_lang이 없으면 기본값 'ko' 사용"""
+        """output_lang이 없으면 기본값 'ko' 사용 (감지 일치 시)"""
         from database import UsageLog, User
         from websocket_handler import _handle_transcript
 
@@ -629,11 +704,15 @@ class TestHandleTranscriptLanguageSettings:
         usage_log_model = UsageLog(mock_db)
 
         ws = _make_websocket()
-        data = {"text": "Bonjour", "audio_duration_seconds": 3}
-        lang_settings = {"input_lang": "fr"}
+        data = {"text": "Hello world", "audio_duration_seconds": 3}
+        lang_settings = {"input_lang": "en"}
 
         with (
             patch("websocket_handler.check_usage_limit", return_value=True),
+            patch(
+                "websocket_handler.detect_language",
+                return_value=("en", "ko"),
+            ),
             patch(
                 "websocket_handler._translate_text",
                 return_value=("안녕하세요", False),
@@ -658,5 +737,5 @@ class TestHandleTranscriptLanguageSettings:
             )
 
         sent = _get_sent_messages(ws)
-        assert sent[0]["source_language"] == "fr"
+        assert sent[0]["source_language"] == "en"
         assert sent[0]["target_language"] == "ko"
