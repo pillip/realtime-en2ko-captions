@@ -2308,29 +2308,10 @@ try {
       console.log('Bootstrap starting...', BOOT);
 
       if (BOOT.action === 'start' && BOOT.openai_session) {
-        // 입력=출력 동일 언어 체크 (auto 제외)
-        const inputVal = selInputLang ? selInputLang.value : 'auto';
-        const outputVal = selOutputLang ? selOutputLang.value : 'ko';
-        if (inputVal !== 'auto' && inputVal === outputVal) {
-          const langName = LANG_NAMES[inputVal] || inputVal;
-          logStatus('언어 설정 오류', 'error');
-          captionContainer.innerHTML = `
-            <div class="welcome-state">
-              <div class="icon">⚠️</div>
-              <h1 class="welcome-title">언어 설정을 확인하세요</h1>
-              <p class="welcome-desc">입력 언어와 출력 언어가 모두 <strong>${langName}</strong>로 설정되어 있습니다.<br>다른 언어를 선택해주세요.</p>
-              <div class="hint">
-                <span>⚙️</span>
-                <span>우상단 설정에서 언어를 변경하세요</span>
-              </div>
-            </div>`;
-          console.warn('[Lang] 입력=출력 동일 언어:', inputVal);
-        } else {
-          const hasPermission = await ensurePermission();
-          if (hasPermission) {
-            await listMics();
-            await connectOpenAIRealtime();
-          }
+        const hasPermission = await ensurePermission();
+        if (hasPermission) {
+          await listMics();
+          await connectOpenAIRealtime();
         }
       } else if (BOOT.action === 'stop') {
         closeConnection();
