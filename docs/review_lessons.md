@@ -93,3 +93,12 @@ Preventable patterns identified during code reviews. Each entry includes when th
 - **Description**: Icon-only buttons (emoji/unicode symbols) shipped without `aria-label` attributes, and `border: none` removed default focus rings without providing `:focus-visible` replacements. Font controls had `opacity: 0.15` making them effectively invisible (contrast ratio 1.39:1 vs required 4.5:1). These are WCAG 2.1 AA failures that affect keyboard and screen reader users.
 - **Prevention**: At implementation time, every interactive element should have: (1) an accessible name (`aria-label` for icon-only buttons), (2) a visible focus indicator, (3) sufficient contrast in its default state. Add these as a checklist item for UI PRs.
 - **Recommended action**: Create a project-level a11y checklist for UI components: aria-labels, focus-visible styles, contrast ratios, touch target sizes (44x44px minimum).
+
+## [RL-011] Using `100vh` without `dvh` fallback for mobile Safari
+
+- **Category**: Code Quality
+- **Frequency**: 1
+- **Observed-In**: PR #57 (ISSUE-36)
+- **Description**: CSS `100vh` on iOS Safari includes the space behind the browser's address bar, so elements sized to `100vh` extend beyond the visible viewport when the address bar is shown. This is a well-documented browser inconsistency affecting all iOS Safari versions. The fix is to use `100dvh` (dynamic viewport height, supported since Safari 15.4 / iOS 15.4, March 2022) with `100vh` as a fallback for older browsers.
+- **Prevention**: At implementation time, whenever `100vh` is used for full-viewport sizing, also declare `100dvh` as a progressive enhancement on the next line. The property cascade means older browsers ignore the unknown `dvh` unit and use the `vh` fallback.
+- **Recommended action**: Establish a project CSS convention: always pair `height: 100vh` with `height: 100dvh` when the intent is to fill the visible viewport. Apply retroactively to `scroll_lock.html` which uses `100vh` in multiple rules.
