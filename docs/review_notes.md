@@ -165,3 +165,109 @@ ISSUE-25 에서 도입된 `_authenticate_client` 의 generic 거부 메시지 �
 
 **APPROVED**. 코드 품질, 보안, 접근성, 테스트 모두 ship 가능. Critical/High
 결함 없음. CR-1은 follow-up으로 충분.
+
+---
+
+# Review Notes — ISSUE-28 (PR #62)
+
+**Reviewer**: Claude Opus 4.7 (automated, team-lead REVIEW phase)
+**Date**: 2026-05-07
+**PR Size**: +218 -0 across 6 files (app.py, components/webrtc.html,
+operator_ui.py, tests/test_operator_ui.py, tests/test_webrtc_room_id.py,
+tests/e2e/test_room_id_e2e.py)
+
+## Scope
+
+브라우저 컴포넌트(`webrtc.html`) 가 bootstrap JSON 의 `room_id` 를 읽어
+WebSocket auth 메시지에 포함시키고, 웰컴 화면에 룸 이름을 표시한다.
+ISSUE-27 PR #61 까지로 서버 사이드(룸 격리·라우팅·페이로드 전달)는 끝났고,
+본 PR 은 그 마지막 클라이언트 piece.
+
+## Code Review
+
+### Strengths (RL compliance)
+
+- **RL-008 (capability guards)** — N/A: 새 브라우저 API 도입 없음. 기존
+  WebSocket / DOM API 만 사용. 가드 추가 불필요.
+- **RL-010 (a11y)** — PASS: 웰컴 타이틀은 그대로 `<h1 class="welcome-title">`.
+  `textContent` (innerHTML 아님) 으로 갱신해 스크린리더에 plain text 로
+  전달되며 heading semantic 도 유지. 신규 focusable 컨트롤 없음.
+- **RL-014 (hotfix regression test)** — PASS: 변경된 동작별로 dedicated
+  string-match 테스트 (BOOT.room_id 참조 / auth 블록 내 room_id 키 / 'default'
+  폴백 / BOOT.room_name 참조 / updateWelcomeTranslationRules 내 사용 / user_info
+  · language_settings 회귀 가드) 7건. 각 단언이 실패하면 어느 동작이
+  깨졌는지 즉시 드러남.
+- **RL-004 (assertion strength)** — PASS: 모든 단언이 구체값/구체키 비교.
+  단순 `is not None` 류는 보조 단언으로만 사용 (idx 검색).
+- **RL-005 (extract-with-tests)** — PASS: `build_bootstrap_payload` 의 새
+  키워드 인자 (`room_name`) 에 대해 단위 테스트 2건 즉시 동반.
+
+### Findings
+
+- **CR-1 (Low)** — `BOOT.room_id || 'default'` 폴백 식이 빈 문자열도 'default'
+  로 코어스한다. 이는 의도된 동작 — 서버 `_authenticate_client` 도 빈/누락
+  room_id 를 `DEFAULT_ROOM_ID` 로 매핑하므로 일관됨. **No change.**
+
+- **CR-2 (Info)** — 룸 이름이 매우 길 경우 웰컴 타이틀이 길어질 수 있음.
+  기존 `.welcome-title` CSS 의 overflow 처리로 충분 (max-width + 폰트 크기
+  자동 축소 없음, 줄바꿈 가능). DB 측 룸 이름 길이 제한은 application 레이어
+  에 위임됨. **No change.**
+
+- **CR-3 (Info)** — `app.py` 의 `selected_room_name` 은 has_assigned_rooms
+  분기 안에서만 set 되고, 다른 경로 (admin / 빈 리스트) 에서는 `pop` 으로
+  명시적 cleanup. session 간 stale name 누설 방지 — 잘 처리됨.
+
+### Edge cases verified
+
+- **운영자가 룸을 선택한 뒤 시작 → BOOT.room_id 설정 → auth.room_id 전송**:
+  서버는 ISSUE-25 RoomManager 라우팅으로 해당 룸으로만 자막 broadcast.
+- **admin 또는 룸 미선택 사용자**: `BOOT.room_id` = None →
+  `BOOT.room_id || 'default'` = 'default' → 서버는 DEFAULT_ROOM_ID 로 폴백.
+  ISSUE-27 이전과 동일 동작 (하위 호환).
+- **BOOT.room_name 미존재**: 웰컴 타이틀은 기존 문구 그대로. 회귀 없음.
+- **BOOT.room_name 에 특수문자/HTML**: server 측 `json.dumps` 가 escape 하고,
+  browser 측 `textContent` 가 다시 escape — XSS 표면 변화 없음.
+- **Stop → Start 재시작 (clearViewer 경로)**: line 1549 의
+  `updateWelcomeTranslationRules()` 호출로 room_name 이 다시 적용됨.
+
+## Security Findings
+
+| # | Severity | Finding | Resolution |
+|---|----------|---------|------------|
+| S-1 | None | XSS surface unchanged. `BOOT` is server-side `json.dumps`-encoded; welcome title uses `textContent` (not innerHTML) so room_name is HTML-escaped at render. | None needed. |
+| S-2 | None | Auth payload shape adds only `room_id` (string). Server-side `_authenticate_client` already validates `room_id` (must be pre-registered or fall back to default). No new attack surface. | None needed. |
+| S-3 | None | No long-term credentials, OpenAI tokens, or DB rows are exposed in the new code path. | None needed. |
+
+## Test Quality Verification
+
+- 신규 테스트 9건 (webrtc_room_id 7 + operator_ui 2). 빈 함수/pass-only/
+  assert 없는 테스트 0건. 모든 단언이 구체값 비교.
+- AC 매핑: AC1→test_boot_room_id_is_referenced + test_auth_message_contains_room_id_key,
+  AC2→test_default_fallback_string_present, AC3→test_boot_room_name_is_referenced
+  + test_room_name_used_in_welcome_title.
+- E2E 회귀 가드 (`tests/e2e/test_room_id_e2e.py`) 추가. `e2e` 마크로 기본
+  실행에서 deselect 되어 일반 CI 를 막지 않음.
+- `uv run pytest -q` (worktree venv): 264 passed.
+- `uv run ruff check .`, `uv run ruff format --check`, `uv run black --check`
+  모두 PASS.
+
+## Follow-up suggestions (non-blocking)
+
+1. **ISSUE-29 진행 시**: admin 이 룸 관리 화면에서 작업 중인 룸으로 직접
+   접속 가능해질 경우, BOOT 에 admin override 플래그 도입 검토.
+2. (Optional) `BOOT.room_name` 길이가 일정 이상일 때 ellipsis 처리.
+   현재는 wrap 으로 충분하나 풀스크린 모드에서 시각적 노이즈가 될 수 있음.
+3. (Optional) auth 메시지 형식이 `{type, user, room_id, language_settings}`
+   로 4-필드가 됨. 향후 추가될 필드를 고려해 schema 문서화 권장.
+
+## RL-008 / RL-010 / RL-014 / RL-004 verdict
+
+- **RL-008**: N/A (새 브라우저 API 미사용).
+- **RL-010**: PASS. heading semantic 유지, textContent 사용으로 a11y 안전.
+- **RL-014**: PASS. 변경된 모든 동작에 dedicated regression 테스트.
+- **RL-004**: PASS. 정확값 비교 단언, idx/window 보조 단언만 None-가드.
+
+## Verdict
+
+**APPROVED**. 코드 품질, 보안, 접근성, 테스트 모두 ship 가능. Critical/High
+결함 없음. Confidence: **High**.
