@@ -37,6 +37,7 @@ from services import (
 )
 from sse_broadcast import run_sse_server
 from websocket_handler import (
+    attach_broadcast_metrics_repo,
     get_broadcast_manager,
     start_websocket_server,
 )
@@ -250,6 +251,10 @@ if (
     sse_port = int(os.getenv("SSE_PORT", "8766"))
     sse_repo = get_room_model()
     sse_mgr = get_broadcast_manager()
+    # ISSUE-33: attach the metrics_repo so SSE register/unregister
+    # persists cumulative + peak viewer counts to rooms.total_viewers /
+    # rooms.peak_viewers. Idempotent — safe to call across reruns.
+    attach_broadcast_metrics_repo(sse_repo)
     st.session_state["sse_thread"] = threading.Thread(
         target=run_sse_server,
         kwargs={

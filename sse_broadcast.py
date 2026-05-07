@@ -59,35 +59,140 @@ class BroadcastManager:
     websocket_handler 가 메인/추가 언어 번역 결과를 publish 하면, 해당
     채널을 구독 중인 모든 SSE viewer 큐에 payload 가 enqueue 된다.
     SSE handler 는 큐에서 dequeue 해 ``data: ...\\n\\n`` 포맷으로 송신한다.
+
+    ISSUE-33: viewer metrics
+    -------------------------
+    - 인메모리 카운트 (room_id → 전체/언어별) 가 register/unregister 시점에
+      O(1) 로 갱신된다 (admin.py 의 metrics 위젯이 이 snapshot 을 읽는다).
+    - 옵션으로 ``metrics_repo`` (database.Room 호환 인터페이스) 를 주입받아
+      register 시점에 누적/peak 를 DB 에 영속화한다. 누적/peak 는 서버
+      재시작에도 보존되어야 하기 때문이다 (in-memory current 는 휘발성).
+    - DB 실패가 SSE 연결을 절대 끊지 않는다 — RL-006 의 일관된 적용 (서버
+      로그에 디테일을 남기되, 클라이언트는 generic 한 동작을 본다).
     """
 
-    def __init__(self, queue_maxsize: int = _DEFAULT_QUEUE_MAXSIZE) -> None:
+    def __init__(
+        self,
+        queue_maxsize: int = _DEFAULT_QUEUE_MAXSIZE,
+        *,
+        metrics_repo: Any | None = None,
+    ) -> None:
         # (room_id, lang) -> set[asyncio.Queue]
         self._channels: dict[tuple[str, str], set[asyncio.Queue]] = {}
         self._lock = asyncio.Lock()
         self._queue_maxsize = queue_maxsize
+        # ISSUE-33: viewer metrics state.
+        # room_id -> total current count
+        self._current: dict[str, int] = {}
+        # room_id -> {lang: count}
+        self._by_lang: dict[str, dict[str, int]] = {}
+        # database.Room 호환 (update_viewer_metrics / get_viewer_metrics).
+        # Typed Any to avoid an import cycle and to keep tests trivial.
+        self._metrics_repo = metrics_repo
 
     async def register_viewer(self, room_id: str, lang: str) -> asyncio.Queue:
-        """Add a viewer to (room_id, lang) and return its dedicated queue."""
+        """Add a viewer to (room_id, lang) and return its dedicated queue.
+
+        Side effects (ISSUE-33):
+          - in-memory current count for ``room_id`` increments by 1.
+          - in-memory ``by_lang[lang]`` count increments by 1.
+          - if a ``metrics_repo`` is attached, its
+            ``update_viewer_metrics(room_id, total_delta=1, current=N)`` is
+            called with N == the new in-memory current. DB failures are
+            logged and swallowed (RL-006) — viewers must never see a 5xx
+            because the metrics persistence path is flaky.
+        """
         q: asyncio.Queue = asyncio.Queue(maxsize=self._queue_maxsize)
         async with self._lock:
             self._channels.setdefault((room_id, lang), set()).add(q)
+            # In-memory metrics — accurate even when no DB repo is attached.
+            new_total = self._current.get(room_id, 0) + 1
+            self._current[room_id] = new_total
+            lang_map = self._by_lang.setdefault(room_id, {})
+            lang_map[lang] = lang_map.get(lang, 0) + 1
+            current_for_db = new_total
+
+        # DB persistence runs OUTSIDE the asyncio lock — repo is sync and
+        # we don't want a slow SQLite write to serialise concurrent
+        # registers. Errors are isolated; in-memory state is the source of
+        # truth for the live snapshot.
+        if self._metrics_repo is not None:
+            try:
+                self._metrics_repo.update_viewer_metrics(
+                    room_id, total_delta=1, current=current_for_db
+                )
+            except Exception as e:
+                # RL-006: never propagate raw error text. Log internally.
+                print(
+                    f"[SSE] metrics_repo.update_viewer_metrics failed "
+                    f"(room={room_id} lang={lang}): {e!r}"
+                )
         return q
 
     async def unregister_viewer(
         self, room_id: str, lang: str, queue: asyncio.Queue
     ) -> None:
-        """Remove a viewer queue. No-op if the channel/queue is unknown."""
+        """Remove a viewer queue. No-op if the channel/queue is unknown.
+
+        Side effects (ISSUE-33):
+          - in-memory current count decrements by 1 (clamped at 0 — defensive).
+          - in-memory by_lang[lang] decrements by 1; entry removed at 0.
+          - room dict entries are dropped when both counts reach 0 so
+            get_metrics returns the clean zero-state without stale keys.
+          - DB peak is NOT touched on unregister — peak is monotonically
+            non-decreasing (it was already max'd above on register).
+        """
         key = (room_id, lang)
         async with self._lock:
             viewers = self._channels.get(key)
             if viewers is None:
                 return
+            had_queue = queue in viewers
             viewers.discard(queue)
             if not viewers:
                 # Drop empty channel so has_viewers reports False quickly
                 # and lazy translation gates publication accurately.
                 self._channels.pop(key, None)
+
+            # Only mutate counters if the queue we removed was actually
+            # registered — guards against double-unregister scenarios that
+            # would otherwise underflow the count.
+            if had_queue:
+                # Per-language decrement.
+                lang_map = self._by_lang.get(room_id)
+                if lang_map is not None:
+                    lang_map[lang] = max(0, lang_map.get(lang, 0) - 1)
+                    if lang_map[lang] == 0:
+                        lang_map.pop(lang, None)
+                    if not lang_map:
+                        self._by_lang.pop(room_id, None)
+                # Total decrement (clamped).
+                new_total = max(0, self._current.get(room_id, 0) - 1)
+                if new_total == 0:
+                    self._current.pop(room_id, None)
+                else:
+                    self._current[room_id] = new_total
+
+    def get_metrics(self, room_id: str) -> dict[str, Any]:
+        """Return live in-memory snapshot for ``room_id`` (ISSUE-33).
+
+        Shape::
+            {
+                "current": int,            # 전체 동시 viewer 수
+                "by_lang": {lang: int},    # 언어별 동시 viewer 수 (>0 만)
+            }
+
+        Read-only and lock-free — admin.py polls this at every Streamlit
+        rerun so the metric widgets reflect the latest count without
+        blocking the publish path. Unknown rooms return zeros (no KeyError)
+        so the dashboard can render rooms with no current viewers as "0명".
+        """
+        # dict.copy() so the caller can't mutate internal state.
+        by_lang_src = self._by_lang.get(room_id) or {}
+        return {
+            "current": self._current.get(room_id, 0),
+            "by_lang": dict(by_lang_src),
+        }
 
     def has_viewers(self, room_id: str, lang: str) -> bool:
         """Return True iff at least one viewer is subscribed to (room, lang).

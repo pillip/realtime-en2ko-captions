@@ -289,6 +289,85 @@ def get_logs_for_operator(
     return usage_log_model.get_logs_by_room(requested_room_id)
 
 
+# ============================================================
+# ISSUE-33: 뷰어 지표 (Streamlit-free 변환 헬퍼)
+# ============================================================
+
+# 표시용 한글 라벨 — admin.py 의 metric 위젯이 그대로 사용한다.
+# 알려지지 않은 코드는 그대로 노출 (RL-006: fallback 보호).
+_LANG_KOR_LABELS: dict[str, str] = {
+    "ko": "한국어",
+    "en": "영어",
+    "ja": "일본어",
+    "zh": "중국어",
+}
+
+
+def _format_by_lang_label(by_lang: dict[str, int]) -> str:
+    """언어별 카운트 dict 를 사람이 읽는 한 줄 요약으로 변환.
+
+    Examples
+    --------
+    {} → ""                          (zero-state — admin.py 가 "0명" 으로 폴백)
+    {"ko": 45} → "한국어 45명"
+    {"ko": 45, "zh": 12} → "한국어 45명, 중국어 12명"
+    {"xx": 3} → "xx 3명"             (알 수 없는 코드는 코드 그대로 노출)
+
+    Items 는 카운트 내림차순 → 코드 오름차순으로 정렬해 동일 카운트의
+    표시 순서가 deterministic 하다 (스냅샷 테스트가 안정적이다).
+    """
+    if not by_lang:
+        return ""
+    items = sorted(by_lang.items(), key=lambda kv: (-kv[1], kv[0]))
+    return ", ".join(
+        f"{_LANG_KOR_LABELS.get(code, code)} {count}명"
+        for code, count in items
+        if count > 0
+    )
+
+
+def build_room_metrics_view_data(
+    *,
+    in_memory: dict[str, Any],
+    db_metrics: dict[str, int] | None,
+) -> dict[str, Any]:
+    """admin.py 의 룸별 지표 표시용 정규화된 dict 를 만든다 (ISSUE-33).
+
+    Args:
+        in_memory: ``BroadcastManager.get_metrics(room_id)`` 결과.
+            ``{"current": int, "by_lang": {lang: int}}`` 모양을 기대.
+        db_metrics: ``Room.get_viewer_metrics(room_id)`` 결과 또는 None.
+            ``{"total_viewers": int, "peak_viewers": int}`` 모양을 기대.
+            None 은 "DB 에 룸이 없거나 한 번도 viewer 가 붙은 적 없음" —
+            모두 0 으로 fallback (사용자에게는 zero-state 로만 보인다).
+
+    Returns:
+        ``{"current": int, "total": int, "peak": int, "by_lang_label": str}``
+        — Streamlit ``st.metric`` 4 개 위젯에 1:1 로 매핑되는 사전.
+
+    keyword-only 인자: 호출자가 in_memory / db_metrics 를 실수로 swap 하면
+    ``current`` 와 ``peak`` 가 뒤바뀌는 큰 표시 오류가 생기므로 명시성을
+    강제한다 (admin_logic.filter_rooms_for_role 의 동일한 이유).
+    """
+    current = int(in_memory.get("current", 0) or 0)
+    by_lang = in_memory.get("by_lang") or {}
+    by_lang_label = _format_by_lang_label(by_lang)
+
+    if db_metrics is None:
+        total = 0
+        peak = 0
+    else:
+        total = int(db_metrics.get("total_viewers", 0) or 0)
+        peak = int(db_metrics.get("peak_viewers", 0) or 0)
+
+    return {
+        "current": current,
+        "total": total,
+        "peak": peak,
+        "by_lang_label": by_lang_label,
+    }
+
+
 def validate_room_creation_input(
     name: str,
     timeout_minutes: int,

@@ -12,6 +12,7 @@ import pandas as pd
 import streamlit as st
 
 from admin_logic import (
+    build_room_metrics_view_data,
     export_room_logs_csv,
     filter_rooms_for_role,
     get_logs_for_operator,
@@ -612,6 +613,11 @@ def show_room_management(
         st.dataframe(pd.DataFrame(rows), use_container_width=True)
 
     # ------------------------------------------------------------------
+    # ISSUE-33: 룸별 뷰어 지표 (현재/누적/최대 + 언어별)
+    # ------------------------------------------------------------------
+    _render_room_viewer_metrics(visible_rooms, room_model)
+
+    # ------------------------------------------------------------------
     # ISSUE-32: 룸별 QR 코드 다운로드 (admin: 전체 / operator: 자기 룸)
     # ------------------------------------------------------------------
     _render_room_qr_section(visible_rooms)
@@ -896,6 +902,76 @@ def _render_room_qr_section(visible_rooms):
                 mime="image/png",
                 key=f"qr_dl_{room_id}",
             )
+
+
+def _render_room_viewer_metrics(visible_rooms, room_model):
+    """ISSUE-33: 룸별 뷰어 지표 섹션 (현재/누적/최대 + 언어별).
+
+    구성:
+      - 룸이 없으면 섹션 자체를 그리지 않는다 (빈 UI 노이즈 방지).
+      - 각 룸마다 4 개의 ``st.metric`` (현재 / 누적 / 최대 / 언어별 라벨).
+      - 인메모리 current 는 ``BroadcastManager.get_metrics`` 로,
+        DB 누적/peak 는 ``Room.get_viewer_metrics`` 로 조회한다.
+        한쪽이 실패하더라도 다른 쪽 표시가 망가지지 않도록 per-row
+        try/except 로 격리한다 (RL-006: 내부 디테일을 사용자에게 노출 X).
+
+    a11y (RL-010):
+      - 각 ``st.metric`` 의 첫번째 인자는 사람이 읽는 한국어 라벨 — 아이콘만
+        있는 버튼이 아니므로 추가 aria-label 은 필요 없다.
+      - 언어별 요약은 시각/스크린리더 모두 "한국어 45명, 중국어 12명"
+        으로 읽힌다.
+    """
+    if not visible_rooms:
+        return
+
+    # 지연 import — websocket_handler 는 streamlit 환경 변수 등 부수효과가
+    # 있으므로 모듈 import-time 비용을 admin 페이지 진입 시로 미룬다.
+    try:
+        from websocket_handler import get_broadcast_manager
+
+        manager = get_broadcast_manager()
+    except Exception as e:
+        # RL-006: 내부 예외는 server-side 만 로그, 사용자에게는 generic.
+        print(f"[Admin] BroadcastManager 로딩 실패: {e!r}")
+        st.warning("뷰어 지표를 불러올 수 없습니다.")
+        return
+
+    st.divider()
+    st.subheader("📈 뷰어 지표")
+    st.caption(
+        "현재/누적/최대 뷰어 수와 언어별 분포. 현재 값은 새로고침 시 갱신됩니다."
+    )
+
+    for room in visible_rooms:
+        rid = room.get("id")
+        room_name = room.get("name") or rid or "room"
+        if not rid:
+            continue
+
+        try:
+            in_memory = manager.get_metrics(rid)
+            db_metrics = room_model.get_viewer_metrics(rid)
+            view = build_room_metrics_view_data(
+                in_memory=in_memory, db_metrics=db_metrics
+            )
+        except Exception as e:
+            # 한 룸의 실패가 다른 룸의 표시를 깨지 않도록 격리.
+            print(f"[Admin] 룸 지표 조회 실패 (room={rid}): {e!r}")
+            st.warning(f"'{room_name}' 룸의 지표를 불러올 수 없습니다.")
+            continue
+
+        st.markdown(f"**{room_name}** &nbsp; `{rid}`")
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("현재 뷰어", view["current"])
+        with col2:
+            st.metric("누적 뷰어", view["total"])
+        with col3:
+            st.metric("최대 동시", view["peak"])
+        with col4:
+            label = view["by_lang_label"] or "0명"
+            # st.metric 의 value 인자에 텍스트가 들어가도 정상 렌더된다.
+            st.metric("언어별", label)
 
 
 if __name__ == "__main__":
