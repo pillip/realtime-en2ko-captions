@@ -27,9 +27,11 @@ API
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import time
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 from aiohttp import web
@@ -149,12 +151,147 @@ def build_sse_app(
     app["broadcast_manager"] = broadcast_manager
     app["room_repo"] = room_repo
     app.router.add_get("/stream/{room_id}", _handle_stream)
+    app.router.add_get("/view/{room_id}", _handle_view)
     app.router.add_get("/health", _handle_health)
     return app
 
 
 async def _handle_health(_request: web.Request) -> web.Response:
     return web.Response(text="OK")
+
+
+# ---------------------------------------------------------------------------
+# Viewer page (/view/{room_id}) — ISSUE-31
+# ---------------------------------------------------------------------------
+# Path to the viewer template, relative to this module. Resolved once at import
+# so the handler doesn't pay the lookup cost per request.
+_VIEWER_TEMPLATE_PATH = Path(__file__).resolve().parent / "components" / "viewer.html"
+
+# Friendly 404 body — kept as a constant so the same generic message is reused
+# for both "unknown room" and "internal repo error" branches (RL-006: never
+# echo internal exception text to unauthenticated viewers).
+_NOT_FOUND_HTML = """<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>룸을 찾을 수 없습니다</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100vh; height: 100dvh; }
+  body {
+    display: flex; align-items: center; justify-content: center;
+    background: #0f0f23; color: #fff;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+      "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+    text-align: center; padding: 24px;
+  }
+  .box { max-width: 480px; }
+  h1 { font-size: clamp(20px, 4vw, 28px); font-weight: 500; margin: 0 0 12px; }
+  p  { font-size: 15px; color: rgba(255,255,255,0.65); margin: 0; }
+</style>
+</head>
+<body>
+  <div class="box">
+    <h1>룸을 찾을 수 없습니다</h1>
+    <p>QR 코드 또는 링크가 올바른지 다시 확인해 주세요.</p>
+  </div>
+</body>
+</html>
+"""
+
+
+def _coerce_output_langs_list(raw: Any, fallback: str) -> list[str]:
+    """Public-shaped coerce — JSON list[str], with `fallback` as a safety net.
+
+    Mirrors the private :func:`_coerce_output_langs` below but always
+    guarantees the fallback is present in the result so the viewer's language
+    dropdown never renders empty.
+    """
+    langs = _coerce_output_langs(raw, fallback)
+    if fallback and fallback not in langs:
+        langs = [fallback, *langs]
+    return langs
+
+
+def _render_viewer_html(
+    *,
+    room_id: str,
+    room_name: str,
+    output_langs: list[str],
+    primary_lang: str,
+    initial_state: str,
+) -> str:
+    """Render the viewer template with safe substitutions.
+
+    Text fields (room_id/room_name/primary_lang/initial_state) are HTML-
+    escaped so a malicious room name (DB write, not user-facing) cannot
+    inject markup. The output_langs list is rendered as a JSON literal —
+    json.dumps already escapes the dangerous characters for an HTML script
+    context (``<`` / ``>`` / ``&``).
+    """
+    template = _VIEWER_TEMPLATE_PATH.read_text(encoding="utf-8")
+    safe_room_id = html.escape(room_id, quote=True)
+    safe_room_name = html.escape(room_name or room_id, quote=True)
+    safe_primary = html.escape(primary_lang or "ko", quote=True)
+    safe_initial = html.escape(initial_state, quote=True)
+    # json.dumps is sufficient for embedding inside <script>; the output is
+    # a valid JS array literal with no closing-tag risk for our token set.
+    langs_json = json.dumps(output_langs, ensure_ascii=False)
+
+    return (
+        template.replace("{{ROOM_ID}}", safe_room_id)
+        .replace("{{ROOM_NAME}}", safe_room_name)
+        .replace("{{OUTPUT_LANGS_JSON}}", langs_json)
+        .replace("{{PRIMARY_LANG}}", safe_primary)
+        .replace("{{INITIAL_STATE}}", safe_initial)
+    )
+
+
+async def _handle_view(request: web.Request) -> web.Response:
+    """Serve the unauthenticated viewer HTML for a room.
+
+    Branches:
+      1. Unknown room (or repo failure) → 404 + friendly HTML body.
+      2. closed room → 200 + viewer page rendered with initial_state='closed'
+         so the JS bootstrap shows the ended state without opening SSE.
+      3. Otherwise → 200 + viewer page; JS connects to /stream/{room_id}.
+
+    All branches return text/html. RL-006: server-side log keeps the full
+    detail; the response body is generic.
+    """
+    room_id = request.match_info["room_id"]
+    room_repo = request.app["room_repo"]
+
+    try:
+        room = room_repo.get_by_id(room_id)
+    except Exception as e:
+        # RL-006: log internal detail, return generic 404.
+        print(f"[View] room lookup failed: {e!r}")
+        return web.Response(status=404, text=_NOT_FOUND_HTML, content_type="text/html")
+
+    if room is None:
+        return web.Response(status=404, text=_NOT_FOUND_HTML, content_type="text/html")
+
+    primary_lang = room.get("primary_output_lang") or "ko"
+    output_langs = _coerce_output_langs_list(room.get("output_langs"), primary_lang)
+    room_name = room.get("name") or room_id
+    status = room.get("status") or "waiting"
+    initial_state = "closed" if status == "closed" else status
+
+    try:
+        body = _render_viewer_html(
+            room_id=room_id,
+            room_name=room_name,
+            output_langs=output_langs,
+            primary_lang=primary_lang,
+            initial_state=initial_state,
+        )
+    except Exception as e:
+        # Template missing or unreadable — log, do not propagate.
+        print(f"[View] viewer template render failed: {e!r}")
+        return web.Response(status=404, text=_NOT_FOUND_HTML, content_type="text/html")
+
+    return web.Response(status=200, text=body, content_type="text/html")
 
 
 async def _handle_stream(request: web.Request) -> web.StreamResponse:
