@@ -34,7 +34,11 @@ from services import (
     get_aws_access_key_id,
     get_aws_secret_access_key,
 )
-from websocket_handler import start_websocket_server
+from sse_broadcast import run_sse_server
+from websocket_handler import (
+    get_broadcast_manager,
+    start_websocket_server,
+)
 
 # Load environment variables
 load_dotenv()
@@ -232,6 +236,31 @@ if (
     )
     st.session_state["websocket_thread"].start()
     print("[WebSocket] WebSocket 스레드 시작됨")
+
+
+# === SSE 뷰어 브로드캐스트 서버 (ISSUE-30) ===
+# 별도 daemon thread 로 aiohttp 기반 viewer SSE 엔드포인트를 구동한다.
+# 포트는 SSE_PORT 환경변수, 기본 8766.
+if (
+    "sse_thread" not in st.session_state
+    or not st.session_state["sse_thread"].is_alive()
+):
+    print("[SSE] viewer 브로드캐스트 서버 스레드 시작 중...")
+    sse_port = int(os.getenv("SSE_PORT", "8766"))
+    sse_repo = get_room_model()
+    sse_mgr = get_broadcast_manager()
+    st.session_state["sse_thread"] = threading.Thread(
+        target=run_sse_server,
+        kwargs={
+            "broadcast_manager": sse_mgr,
+            "room_repo": sse_repo,
+            "port": sse_port,
+        },
+        daemon=True,
+    )
+    st.session_state["sse_thread"].start()
+    st.session_state["sse_port"] = sse_port
+    print(f"[SSE] viewer 브로드캐스트 서버 스레드 시작됨 (port={sse_port})")
 
 
 # === Session state ===
