@@ -98,14 +98,21 @@ def build_bootstrap_payload(
     websocket_port: int | None,
     user_info: dict[str, Any] | None,
     room_id: str | None,
+    room_name: str | None = None,
 ) -> dict[str, Any]:
     """Build the dict that ``app.py`` injects into ``components/webrtc.html``.
 
     Centralizing this in a pure function lets us unit-test that:
       - ISSUE-27 AC2: ``room_id`` is forwarded to the browser bootstrap
+      - ISSUE-28 AC3: ``room_name`` is forwarded so the browser welcome
+        screen can render "🎙️ {room_name} — 실시간 자막"
       - all required fields are populated for the existing webrtc.html
       - the result stays JSON-serializable (webrtc.html receives this
         via ``json.dumps``)
+
+    ``room_name`` is keyword-only and optional (defaults to ``None``)
+    so existing call sites and tests that only pass ``room_id`` keep
+    working — this preserves backward compat with ISSUE-27.
 
     Use keyword-only args so callers don't accidentally swap argument
     order — this protects the security-sensitive ``user_info`` slot.
@@ -117,4 +124,5 @@ def build_bootstrap_payload(
         "websocket_port": websocket_port,
         "user_info": user_info,
         "room_id": room_id,
+        "room_name": room_name,
     }
