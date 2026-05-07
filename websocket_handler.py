@@ -21,6 +21,7 @@ from services import (
     get_aws_region,
     get_aws_secret_access_key,
 )
+from sse_broadcast import BroadcastManager, broadcast_translation_for_room
 from translation import detect_language, translate_with_llm
 
 # Per-connection rate limit: max messages per minute (sliding window)
@@ -30,10 +31,21 @@ WS_RATE_LIMIT_PER_MINUTE = int(os.getenv("WS_RATE_LIMIT_PER_MINUTE", "30"))
 # Tests substitute this via `patch("websocket_handler._room_manager", ...)`.
 _room_manager: RoomManager = RoomManager()
 
+# Module-level BroadcastManager singleton (ISSUE-30).
+# Shared with the SSE viewer server so transcripts published here reach
+# every viewer subscribed via /stream/{room_id}. Tests can substitute
+# this via `patch("websocket_handler._broadcast_manager", ...)`.
+_broadcast_manager: BroadcastManager = BroadcastManager()
+
 
 def get_room_manager() -> RoomManager:
     """Return the module-level RoomManager singleton."""
     return _room_manager
+
+
+def get_broadcast_manager() -> BroadcastManager:
+    """Return the module-level BroadcastManager singleton (ISSUE-30)."""
+    return _broadcast_manager
 
 
 def find_free_port(start_port=8765, max_port=8800):
@@ -495,6 +507,113 @@ async def _handle_transcript(
             }
         )
     )
+
+    # ISSUE-30: viewer SSE 브로드캐스트 — 메인 언어 publish 즉시 + 추가 언어
+    # 비동기 번역. 룸 식별자는 인증 시 검증된 값 (RL-002) 만 사용한다.
+    # 이 블록은 best-effort 다 — 실패해도 오퍼레이터 자막 송출은 계속된다.
+    await _publish_to_viewers(
+        current_user.get("room_id"),
+        primary_translated=translated_text,
+        source_text=transcript,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        translate_client=translate_client,
+        bedrock_client=bedrock_client,
+        bedrock_available=bedrock_available,
+    )
+
+
+async def _publish_to_viewers(
+    room_id,
+    *,
+    primary_translated,
+    source_text,
+    source_lang,
+    target_lang,
+    translate_client,
+    bedrock_client,
+    bedrock_available,
+):
+    """뷰어 SSE 채널에 자막을 publish (ISSUE-30).
+
+    - primary_output_lang 채널에 즉시 publish (메인 송출과 동일한 텍스트).
+    - 추가 언어는 ``broadcast_translation_for_room`` 이 ``asyncio.create_task``
+      로 백그라운드 번역하므로 이 호출은 즉시 반환한다.
+    - 룸 메타데이터(primary_output_lang, output_langs) 가 없으면 스킵.
+    - RL-006: 모든 예외는 서버 로그로만 흐르고, 오퍼레이터 응답에 영향 없음.
+    """
+    if not room_id:
+        return
+    repo = getattr(_room_manager, "_repo", None)
+    if repo is None:
+        # 메모리 전용 모드 (테스트/기본 룸) — DB 메타데이터가 없어 스킵.
+        return
+    try:
+        room_row = repo.get_by_id(room_id)
+    except Exception as e:
+        print(f"[SSE] 룸 메타 조회 실패: {e!r}")
+        return
+    if room_row is None:
+        return
+
+    # _handle_transcript 가 이미 정한 target_lang 으로 메인 채널을 매핑한다.
+    # rooms.primary_output_lang 은 룸 운영자가 정한 행사장 메인 언어이며,
+    # 일반적으로 target_lang 과 일치한다 (오퍼레이터의 output_lang 설정과 함께
+    # 운영). 만약 양쪽이 다르면 운영자 설정을 우선해 source-of-truth 로 삼는다 —
+    # 행사장 화면에 실제로 송출되는 텍스트가 메인 채널이어야 하기 때문.
+    room_for_publish = {
+        "id": room_id,
+        "primary_output_lang": target_lang,
+        "output_langs": room_row.get("output_langs"),
+    }
+
+    async def _translate_fn(text, src, dst):
+        """Bedrock LLM → AWS Translate fallback (메인 경로와 동일 정책)."""
+        # _translate_text 는 동기 함수다 (boto3 호출). 이벤트 루프에서
+        # 직접 호출하면 짧은 시간이지만 블로킹된다 — to_thread 로 격리.
+        return await asyncio.to_thread(
+            _translate_secondary,
+            text,
+            src,
+            dst,
+            translate_client,
+            bedrock_client,
+            bedrock_available,
+        )
+
+    try:
+        await broadcast_translation_for_room(
+            _broadcast_manager,
+            room_for_publish,
+            primary_translated=primary_translated,
+            source_text=source_text,
+            source_lang=source_lang,
+            translate_fn=_translate_fn,
+        )
+    except Exception as e:
+        # publish 자체는 절대 raise 해서는 안 되지만, 방어적으로 잡는다.
+        print(f"[SSE] publish 실패 (room={room_id}): {e!r}")
+
+
+def _translate_secondary(
+    text, source_lang, target_lang, translate_client, bedrock_client, bedrock_available
+):
+    """추가 언어 번역 워커 (sync) — _translate_text 와 동일 정책.
+
+    별도 함수로 분리한 이유: ``broadcast_translation_for_room`` 의
+    ``translate_fn`` 시그니처(``async (text, src, dst) -> str | None``) 에
+    맞추기 위함. 직접 _translate_text 를 부르면 (translated_text, used_llm)
+    튜플이 돌아와 변환이 필요하다.
+    """
+    translated, _used_llm = _translate_text(
+        text,
+        source_lang,
+        target_lang,
+        translate_client,
+        bedrock_client,
+        bedrock_available,
+    )
+    return translated
 
 
 def _check_rate_limit(message_timestamps, limit=None):

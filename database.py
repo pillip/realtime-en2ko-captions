@@ -155,6 +155,49 @@ class DatabaseManager:
         # to the same final schema.
         self._migrate_add_usage_logs_room_id()
 
+        # ISSUE-30: idempotent ALTER TABLE to add rooms.primary_output_lang
+        # and rooms.output_langs (JSON array). Same pattern as ISSUE-29 —
+        # PRAGMA table_info is the source of truth so a future unrelated
+        # ALTER failure isn't silently swallowed.
+        self._migrate_add_room_output_lang_columns()
+
+    def _migrate_add_room_output_lang_columns(self):
+        """Add rooms.primary_output_lang and rooms.output_langs — idempotent.
+
+        Both columns are non-NULL with sensible defaults so existing rows
+        get a value automatically (SQLite ADD COLUMN populates each pre-
+        existing row with the declared DEFAULT). Detection via PRAGMA
+        table_info matches the ISSUE-29 pattern.
+
+        Schema impact (ISSUE-30):
+          primary_output_lang TEXT NOT NULL DEFAULT 'ko'
+            -- 메인 행사장 스크린에 송출되는 언어
+          output_langs TEXT NOT NULL DEFAULT '["ko"]'
+            -- JSON 배열: 룸이 지원하는 모든 출력 언어 목록
+        """
+        with self.get_connection() as conn:
+            cursor = conn.execute("PRAGMA table_info(rooms)")
+            existing = {row["name"] for row in cursor.fetchall()}
+
+            added = []
+            if "primary_output_lang" not in existing:
+                conn.execute(
+                    "ALTER TABLE rooms "
+                    "ADD COLUMN primary_output_lang TEXT NOT NULL DEFAULT 'ko'"
+                )
+                added.append("primary_output_lang")
+
+            if "output_langs" not in existing:
+                conn.execute(
+                    "ALTER TABLE rooms "
+                    "ADD COLUMN output_langs TEXT NOT NULL DEFAULT '[\"ko\"]'"
+                )
+                added.append("output_langs")
+
+            if added:
+                conn.commit()
+                print(f"[Migration] Added rooms columns: {', '.join(added)}")
+
     def _migrate_add_usage_logs_room_id(self):
         """Add usage_logs.room_id column (NULL allowed) — idempotent.
 

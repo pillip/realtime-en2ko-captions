@@ -13,7 +13,7 @@ Real-time multilingual caption system for conference scenarios. Browser connects
 ```bash
 # Project setup
 uv init --python 3.11
-uv add streamlit boto3 python-dotenv
+uv add streamlit boto3 python-dotenv aiohttp  # aiohttp powers the SSE viewer broadcast server (ISSUE-30)
 
 # Development workflow
 uv sync                           # Install dependencies
@@ -38,6 +38,7 @@ docker run --rm -p 8501:8501 -e OPENAI_API_KEY=sk-... realtime-caption
 - `AWS_ACCESS_KEY_ID`: Required for AWS service authentication (server-side only)
 - `AWS_SECRET_ACCESS_KEY`: Required for AWS service authentication (server-side only)
 - `AWS_REGION`: Optional, defaults to `us-east-1`
+- `SSE_PORT`: Optional, defaults to `8766`. TCP port for the unauthenticated viewer SSE broadcast server (`/stream/{room_id}`, ISSUE-30).
 
 ## Core Architecture
 
