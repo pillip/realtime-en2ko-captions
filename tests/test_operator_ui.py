@@ -229,3 +229,40 @@ class TestBuildBootstrapPayload:
         )
         # raises TypeError if non-serializable
         json.dumps(payload)
+
+    # ------------------------------------------------------------------
+    # ISSUE-28: room_name forwarded so webrtc.html can show "🎙️ 룸 이름 — ..."
+    # ------------------------------------------------------------------
+    def test_includes_room_name_when_provided(self):
+        """ISSUE-28 AC3: webrtc.html이 룸 이름을 표시할 수 있도록 payload에
+        ``room_name``이 포함된다.
+        """
+        from operator_ui import build_bootstrap_payload
+
+        payload = build_bootstrap_payload(
+            action="start",
+            openai_session=None,
+            websocket_port=8765,
+            user_info={"id": 1, "username": "op1"},
+            room_id="r-1",
+            room_name="A홀 기조연설",
+        )
+        assert payload["room_name"] == "A홀 기조연설"
+
+    def test_room_name_optional_defaults_to_none(self):
+        """admin 또는 room 미선택 경로에서는 room_name이 None이어야 한다.
+
+        webrtc.html은 ``BOOT.room_name``의 진위만 보고 분기하므로 None
+        허용. ISSUE-27 호환성을 위해 키워드 인자는 선택적이어야 한다.
+        """
+        from operator_ui import build_bootstrap_payload
+
+        payload = build_bootstrap_payload(
+            action="idle",
+            openai_session=None,
+            websocket_port=None,
+            user_info=None,
+            room_id=None,
+        )
+        # 기본값이 None이거나 키가 없거나 둘 중 하나만 만족해도 무방하다.
+        assert payload.get("room_name") is None

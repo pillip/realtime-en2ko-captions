@@ -1011,6 +1011,12 @@ try {
     } else {
       title = `실시간 ${inputName} → ${outputName} 자막`;
     }
+    // ISSUE-28 AC3: 운영자가 룸을 선택했을 때만 룸 이름을 타이틀에 합성한다.
+    // BOOT.room_name 이 비어있는 경로(관리자/단일 룸)에서는 기존 문구를
+    // 그대로 유지해 회귀를 막는다.
+    if (BOOT.room_name) {
+      title = `🎙️ ${BOOT.room_name} — ${title}`;
+    }
 
     // 설명 동적 변경
     let desc;
@@ -1755,15 +1761,21 @@ try {
         if (BOOT.user_info) {
           const inputLang = selInputLang ? selInputLang.value : 'auto';
           const outputLang = selOutputLang ? selOutputLang.value : 'ko';
+          // ISSUE-28: 서버는 auth.room_id 로 룸 격리를 수행한다.
+          // BOOT.room_id 가 비어 있으면 'default' 룸으로 폴백해 ISSUE-27
+          // 이전 동작 (단일 룸) 과의 하위 호환을 유지한다.
+          const authRoomId = BOOT.room_id || 'default';
           openaiWebSocket.send(JSON.stringify({
             type: 'auth',
             user: BOOT.user_info,
+            room_id: authRoomId,
             language_settings: {
               input_lang: inputLang,
               output_lang: outputLang
             }
           }));
           console.log('[Auth] 사용자 정보 전송:', BOOT.user_info.username,
+                       '룸:', authRoomId,
                        '언어:', inputLang, '->', outputLang);
         }
       };

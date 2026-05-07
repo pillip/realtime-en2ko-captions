@@ -132,8 +132,18 @@ with st.sidebar:
             )
             selected_room_id = ids[labels.index(chosen_label)]
             st.session_state["selected_room_id"] = selected_room_id
+            # ISSUE-28: 웰컴 화면에 룸 이름을 보여주기 위해 함께 보관.
+            # assigned_rooms 는 이미 메모리에 있으므로 추가 DB 조회 없이 매핑.
+            selected_room = next(
+                (r for r in assigned_rooms if r["id"] == selected_room_id),
+                None,
+            )
+            st.session_state["selected_room_name"] = (
+                selected_room.get("name") if selected_room else None
+            )
         else:
             st.info("배정된 룸이 없습니다. 관리자에게 문의하세요.")
+            st.session_state.pop("selected_room_name", None)
 
     # 시스템 제어
     st.subheader("🎛️ 시스템 제어")
@@ -268,6 +278,8 @@ try:
         websocket_port=st.session_state["websocket_port_ref"]["port"],
         user_info=current_user,
         room_id=st.session_state.get("selected_room_id"),
+        # ISSUE-28 AC3: 웰컴 화면에 룸 이름을 보이기 위한 BOOT 필드.
+        room_name=st.session_state.get("selected_room_name"),
     )
 
     html_content = html_template.replace("{{BOOTSTRAP_JSON}}", json.dumps(payload))
