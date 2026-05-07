@@ -623,6 +623,38 @@
       gap: 8px;
     }
 
+    /* ISSUE-32: 행사장 QR 코드 — 시작 전 스크린에 크게 표시. */
+    .qr-code-container {
+      display: none; /* JS 가 BOOT.qr_data_url 있을 때만 보여줌 */
+      margin: 24px auto 0;
+      padding: 16px;
+      background: #ffffff; /* QR 인식률을 위해 흰 배경 강제 */
+      border-radius: 12px;
+      width: max-content;
+      max-width: 90%;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+    }
+    .qr-code-container img {
+      display: block;
+      width: 240px;
+      height: 240px;
+      max-width: 60vmin;
+      max-height: 60vmin;
+    }
+    .qr-code-caption {
+      margin-top: 12px;
+      font-size: 13px;
+      color: rgba(255, 255, 255, 0.65);
+      text-align: center;
+      word-break: break-all;
+      max-width: 360px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+    .qr-code-caption strong {
+      color: rgba(255, 255, 255, 0.85);
+    }
+
     /* 반응형 디자인 - 너비 기준 */
     @media (max-width: 768px) {
       body {
@@ -817,6 +849,18 @@
       </label>
     </div>
 
+    <!-- ISSUE-32 AC4: 설정 패널에서도 QR 코드를 다시 확인할 수 있게 노출. -->
+    <div class="control-group" id="settingsQrGroup" style="display: none;">
+      <label>📱 뷰어 QR 코드</label>
+      <div class="qr-code-container" data-qr-container style="margin: 8px 0 0; padding: 12px;">
+        <img data-qr-img alt="자막을 볼 수 있는 뷰어 페이지로 이동하는 QR 코드"
+             style="width: 160px; height: 160px;">
+        <div class="qr-code-caption" style="font-size: 12px; max-width: 220px;">
+          <strong data-qr-url></strong>
+        </div>
+      </div>
+    </div>
+
     <!-- 🚫 제어 섹션 완전 제거 (일시정지, 자막 지우기 버튼 삭제) -->
   </div>
 
@@ -861,6 +905,14 @@
         <div class="welcome-rules" style="margin-top: 16px; font-size: 14px; color: rgba(255, 255, 255, 0.5);">
           <div>🔄 번역 규칙:</div>
           <div>• 감지된 언어 → 한국어</div>
+        </div>
+        <!-- ISSUE-32: 행사장 QR 코드 — JS 가 BOOT.qr_data_url 있을 때만 보여줌. -->
+        <div class="qr-code-container" data-qr-container>
+          <img data-qr-img alt="자막을 볼 수 있는 뷰어 페이지로 이동하는 QR 코드">
+          <div class="qr-code-caption">
+            📱 카메라로 스캔해 자막을 보세요<br>
+            <strong data-qr-url></strong>
+          </div>
         </div>
       </div>
     </div>
@@ -992,6 +1044,37 @@ try {
       langWarning.classList.add('visible');
     } else {
       langWarning.classList.remove('visible');
+    }
+  }
+
+  // ISSUE-32: 웰컴 화면의 QR 컨테이너에 BOOT.qr_data_url 을 주입한다.
+  // BOOT.qr_data_url 이 없으면 컨테이너를 숨겨 admin/룸 미선택 경로의 회귀를 막는다.
+  // RL-006: BOOT 값이 비정상이어도 try/catch 로 캡션 UI 자체는 절대 깨지지 않게.
+  function applyQrCodeToWelcome() {
+    try {
+      const containers = document.querySelectorAll('[data-qr-container]');
+      const dataUrl = (BOOT && BOOT.qr_data_url) ? BOOT.qr_data_url : '';
+      const viewUrl = (BOOT && BOOT.view_url) ? BOOT.view_url : '';
+      containers.forEach(c => {
+        const img = c.querySelector('[data-qr-img]');
+        const urlEl = c.querySelector('[data-qr-url]');
+        if (dataUrl && img) {
+          img.src = dataUrl;
+          c.style.display = 'block';
+          if (urlEl) urlEl.textContent = viewUrl;
+        } else {
+          c.style.display = 'none';
+          if (img) img.removeAttribute('src');
+          if (urlEl) urlEl.textContent = '';
+        }
+      });
+      // 설정 패널의 QR 그룹은 별도 wrapper(.control-group) 가 있어 따로 토글한다.
+      const settingsQrGroup = document.getElementById('settingsQrGroup');
+      if (settingsQrGroup) {
+        settingsQrGroup.style.display = dataUrl ? 'block' : 'none';
+      }
+    } catch (err) {
+      console.warn('[QR] applyQrCodeToWelcome 실패 — QR 표시를 건너뜁니다.', err);
     }
   }
 
@@ -1550,9 +1633,18 @@ try {
           <div>🔄 번역 규칙:</div>
           <div>• 감지된 언어 → 한국어</div>
         </div>
+        <!-- ISSUE-32: 행사장 QR 코드 — clearViewer 후에도 동일하게 노출. -->
+        <div class="qr-code-container" data-qr-container>
+          <img data-qr-img alt="자막을 볼 수 있는 뷰어 페이지로 이동하는 QR 코드">
+          <div class="qr-code-caption">
+            📱 카메라로 스캔해 자막을 보세요<br>
+            <strong data-qr-url></strong>
+          </div>
+        </div>
       </div>
     `;
     updateWelcomeTranslationRules();
+    applyQrCodeToWelcome();
     currentUnstableLine = null;
     currentTypingLine = null;
     if (backToLiveBtn) {
@@ -2329,6 +2421,10 @@ try {
   (async () => {
     try {
       console.log('Bootstrap starting...', BOOT);
+
+      // ISSUE-32: 정적 welcome-state 의 QR 영역을 부트스트랩 시점에 한 번 주입.
+      // (clearViewer 경로는 자체적으로 applyQrCodeToWelcome 을 호출하므로 별도 처리 불필요.)
+      applyQrCodeToWelcome();
 
       if (BOOT.action === 'start' && BOOT.openai_session) {
         const hasPermission = await ensurePermission();

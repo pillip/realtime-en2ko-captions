@@ -29,6 +29,7 @@ from operator_ui import (
     has_assigned_rooms,
     select_default_room,
 )
+from qr_generator import build_view_url, make_qr_data_url
 from services import (
     create_openai_session,
     get_aws_access_key_id,
@@ -294,6 +295,47 @@ elif stop:
     st.session_state.pop("openai_session", None)
     st.rerun()
 
+
+def _resolve_viewer_base_url() -> str:
+    """``VIEWER_BASE_URL`` 환경변수 → 기본 ``http://localhost:{SSE_PORT}`` 로 fallback.
+
+    ISSUE-32: QR 이 가리킬 viewer 페이지의 base URL 을 결정한다.
+    - 운영 환경에서는 ``VIEWER_BASE_URL`` 을 명시적으로 설정해야 함
+      (예: ``https://captions.example.com``).
+    - 미설정 시 ``http://localhost:{SSE_PORT}`` 로 떨어져 로컬 개발이 동작한다.
+
+    RL-006 관점: 잘못된 환경변수가 들어와도 내부 traceback 이 노출되지
+    않도록 ``str.strip()`` 만 하고 형식 검증은 하지 않는다.
+    빈 문자열일 때는 fallback 으로 사용 — 호출자가 늘 truthy URL 을 받도록 한다.
+    """
+    raw = os.getenv("VIEWER_BASE_URL", "").strip()
+    if raw:
+        return raw
+    sse_port = int(os.getenv("SSE_PORT", "8766"))
+    return f"http://localhost:{sse_port}"
+
+
+def _build_view_url_and_qr(room_id: str | None) -> tuple[str | None, str | None]:
+    """selected room 에 대한 viewer URL + QR data URL 쌍을 만든다.
+
+    ``room_id`` 가 None 이면 ``(None, None)`` — admin / 룸 미선택 경로에서
+    호출되므로 webrtc.html 이 QR 영역을 숨길 수 있도록 한다.
+
+    내부 예외는 RL-006 에 따라 server-side 로그만 남기고 ``(None, None)``
+    을 돌려준다 — QR 생성 실패가 메인 캡션 UI 를 깨뜨리지 않게 한다.
+    """
+    if not room_id:
+        return None, None
+    try:
+        view_url = build_view_url(room_id, _resolve_viewer_base_url())
+        qr_data_url = make_qr_data_url(view_url)
+        return view_url, qr_data_url
+    except Exception as e:
+        # RL-006: QR 생성 실패는 사용자에게 노출하지 않는다.
+        print(f"[QR] view URL/QR 생성 실패 (room={room_id}): {e!r}")
+        return None, None
+
+
 # === 메인 캡션 뷰어 ===
 try:
     with open("components/webrtc.html", encoding="utf-8") as f:
@@ -301,14 +343,21 @@ try:
 
     current_user = get_current_user()
 
+    # ISSUE-32: 오퍼레이터 룸이 선택된 경우에만 QR 데이터 동봉.
+    bootstrap_room_id = st.session_state.get("selected_room_id")
+    view_url, qr_data_url = _build_view_url_and_qr(bootstrap_room_id)
+
     payload = build_bootstrap_payload(
         action=st.session_state["action"],
         openai_session=st.session_state.get("openai_session"),
         websocket_port=st.session_state["websocket_port_ref"]["port"],
         user_info=current_user,
-        room_id=st.session_state.get("selected_room_id"),
+        room_id=bootstrap_room_id,
         # ISSUE-28 AC3: 웰컴 화면에 룸 이름을 보이기 위한 BOOT 필드.
         room_name=st.session_state.get("selected_room_name"),
+        # ISSUE-32: 웰컴 화면에 QR 코드를 표시하기 위한 BOOT 필드.
+        view_url=view_url,
+        qr_data_url=qr_data_url,
     )
 
     html_content = html_template.replace("{{BOOTSTRAP_JSON}}", json.dumps(payload))

@@ -266,3 +266,40 @@ class TestBuildBootstrapPayload:
         )
         # 기본값이 None이거나 키가 없거나 둘 중 하나만 만족해도 무방하다.
         assert payload.get("room_name") is None
+
+    # ------------------------------------------------------------------
+    # ISSUE-32: view_url + qr_data_url forwarded so webrtc.html can show
+    # the QR code on the welcome screen for unauthenticated viewers.
+    # ------------------------------------------------------------------
+    def test_includes_view_url_and_qr_data_url_when_provided(self):
+        """ISSUE-32: payload 에 ``view_url`` 와 ``qr_data_url`` 이 그대로
+        전달되어야 한다 (webrtc.html 인라인 ``<img>`` 가 사용)."""
+        from operator_ui import build_bootstrap_payload
+
+        payload = build_bootstrap_payload(
+            action="idle",
+            openai_session=None,
+            websocket_port=None,
+            user_info={"id": 1, "username": "op1"},
+            room_id="r-1",
+            room_name="A홀",
+            view_url="http://localhost:8766/view/r-1",
+            qr_data_url="data:image/png;base64,AAAA",
+        )
+        assert payload["view_url"] == "http://localhost:8766/view/r-1"
+        assert payload["qr_data_url"] == "data:image/png;base64,AAAA"
+
+    def test_view_url_and_qr_data_url_default_to_none(self):
+        """admin 또는 룸 미선택 경로에서는 두 필드 모두 None — 기존 호출
+        지점이 깨지지 않도록 디폴트가 유지되어야 한다."""
+        from operator_ui import build_bootstrap_payload
+
+        payload = build_bootstrap_payload(
+            action="idle",
+            openai_session=None,
+            websocket_port=None,
+            user_info=None,
+            room_id=None,
+        )
+        assert payload.get("view_url") is None
+        assert payload.get("qr_data_url") is None

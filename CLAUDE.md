@@ -14,6 +14,7 @@ Real-time multilingual caption system for conference scenarios. Browser connects
 # Project setup
 uv init --python 3.11
 uv add streamlit boto3 python-dotenv aiohttp  # aiohttp powers the SSE viewer broadcast server (ISSUE-30)
+uv add 'qrcode[pil]'                            # QR code generation for viewer URLs (ISSUE-32)
 
 # Development workflow
 uv sync                           # Install dependencies
@@ -39,6 +40,7 @@ docker run --rm -p 8501:8501 -e OPENAI_API_KEY=sk-... realtime-caption
 - `AWS_SECRET_ACCESS_KEY`: Required for AWS service authentication (server-side only)
 - `AWS_REGION`: Optional, defaults to `us-east-1`
 - `SSE_PORT`: Optional, defaults to `8766`. TCP port for the unauthenticated viewer SSE broadcast server (`/stream/{room_id}`, ISSUE-30).
+- `VIEWER_BASE_URL`: Optional, defaults to `http://localhost:{SSE_PORT}`. Base URL embedded into QR codes (ISSUE-32) — set to the public viewer host (e.g. `https://captions.example.com`) in production so attendees scan a reachable URL.
 
 ## Core Architecture
 

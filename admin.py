@@ -2,8 +2,10 @@
 관리자 대시보드 페이지
 사용자 계정 생성/관리 및 사용량 통계 조회
 ISSUE-29: 룸 관리 탭 추가, 오퍼레이터 역할 기반 뷰 분기.
+ISSUE-32: 룸별 QR 코드 PNG 다운로드.
 """
 
+import os
 from datetime import datetime, timedelta
 
 import pandas as pd
@@ -27,6 +29,24 @@ from database import (
     get_usage_log_model,
     get_user_model,
 )
+from qr_generator import build_view_url, make_qr_png
+
+
+def _resolve_viewer_base_url() -> str:
+    """``VIEWER_BASE_URL`` 환경변수 → ``http://localhost:{SSE_PORT}`` 로 fallback.
+
+    ISSUE-32: admin.py 의 룸 관리 탭이 룸별 QR PNG 를 만들 때 가리킬
+    뷰어 페이지 base URL 을 결정한다. app.py 와 동일한 규칙으로
+    환경변수가 없거나 비어 있으면 안전하게 로컬 SSE 포트를 사용한다.
+
+    RL-006 관점: 잘못된 환경변수가 들어와도 traceback 누설 없이
+    호출자가 항상 truthy URL 을 받도록 한다.
+    """
+    raw = os.getenv("VIEWER_BASE_URL", "").strip()
+    if raw:
+        return raw
+    sse_port = int(os.getenv("SSE_PORT", "8766"))
+    return f"http://localhost:{sse_port}"
 
 
 @require_admin_or_operator
@@ -592,6 +612,11 @@ def show_room_management(
         st.dataframe(pd.DataFrame(rows), use_container_width=True)
 
     # ------------------------------------------------------------------
+    # ISSUE-32: 룸별 QR 코드 다운로드 (admin: 전체 / operator: 자기 룸)
+    # ------------------------------------------------------------------
+    _render_room_qr_section(visible_rooms)
+
+    # ------------------------------------------------------------------
     # 관리자 전용: 룸 생성 / 배정 / 강제 종료
     # ------------------------------------------------------------------
     if is_role_admin:
@@ -814,6 +839,63 @@ def _render_room_logs_section(
         file_name=f"room_{selected_room_id}_logs_{timestamp}.csv",
         mime="text/csv",
     )
+
+
+def _render_room_qr_section(visible_rooms):
+    """ISSUE-32: 룸별 QR 코드 PNG 다운로드 섹션.
+
+    - 룸이 없으면 섹션 자체를 렌더하지 않는다 (빈 UI 노이즈 방지).
+    - 각 룸마다 ``room_{name}.png`` 파일로 다운로드 가능 — 인쇄/사전 배포용.
+    - QR 생성에 실패해도 다른 룸 처리는 계속되도록 per-row try/except.
+    - RL-001: ``qr_generator`` 는 import-time 부수효과 없는 순수 모듈.
+    - RL-006: 내부 예외는 console 로만 남기고 사용자에게는 generic toast.
+    """
+    if not visible_rooms:
+        return
+
+    st.divider()
+    st.subheader("📱 룸 QR 코드")
+    st.caption(
+        "QR 을 스캔하면 해당 룸의 뷰어 페이지로 이동합니다. "
+        "인쇄해서 행사장에 비치하세요."
+    )
+
+    base_url = _resolve_viewer_base_url()
+
+    for room in visible_rooms:
+        room_id = room.get("id")
+        room_name = room.get("name") or room_id or "room"
+        if not room_id:
+            continue
+
+        try:
+            view_url = build_view_url(room_id, base_url)
+            png_bytes = make_qr_png(view_url)
+        except Exception as e:
+            # RL-006: 내부 예외는 server-side 로그만, 사용자에게는 generic.
+            print(f"[Admin] 룸 QR 생성 실패 (room={room_id}): {e!r}")
+            st.warning(f"'{room_name}' 룸의 QR 코드를 만들 수 없습니다.")
+            continue
+
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.markdown(f"**{room_name}** &nbsp;&nbsp; `{view_url}`")
+        with col2:
+            # 파일명에 사용 불가능한 문자 (예: 슬래시) 가 들어가지 않도록 sanitize.
+            safe_name = (
+                "".join(
+                    ch if ch.isalnum() or ch in ("-", "_") else "_"
+                    for ch in str(room_name)
+                )
+                or "room"
+            )
+            st.download_button(
+                label="📥 QR PNG",
+                data=png_bytes,
+                file_name=f"room_{safe_name}.png",
+                mime="image/png",
+                key=f"qr_dl_{room_id}",
+            )
 
 
 if __name__ == "__main__":
