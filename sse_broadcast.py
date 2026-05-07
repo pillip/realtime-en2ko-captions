@@ -467,19 +467,59 @@ async def _handle_stream(request: web.Request) -> web.StreamResponse:
         await mgr.unregister_viewer(room_id, requested_lang, queue)
         return resp
 
+    # Watcher task: poll the underlying transport so client TCP close
+    # (FIN/RST) is detected within ~0.5s instead of waiting for the next
+    # heartbeat write to fail. Without this the in-memory viewer count
+    # would lag client disconnects by up to one heartbeat cycle, breaking
+    # ISSUE-33 metrics fidelity (#69).
+    disconnect_event = asyncio.Event()
+
+    async def _watch_disconnect() -> None:
+        while not disconnect_event.is_set():
+            transport = request.transport
+            if transport is None or transport.is_closing():
+                disconnect_event.set()
+                return
+            await asyncio.sleep(0.25)
+
+    watcher = asyncio.create_task(_watch_disconnect())
+
     try:
         while True:
+            get_task = asyncio.create_task(queue.get())
+            disc_task = asyncio.create_task(disconnect_event.wait())
             try:
-                # Periodic timeout doubles as a keep-alive heartbeat —
-                # proxies / browsers that idle-kill connections will see
-                # a ":\n\n" comment line every 15s.
-                payload = await asyncio.wait_for(queue.get(), timeout=15.0)
-            except TimeoutError:
+                # Race the queue read against client disconnect; the 5s
+                # ceiling doubles as a keep-alive heartbeat so idle proxies
+                # don't drop the connection.
+                done, pending = await asyncio.wait(
+                    {get_task, disc_task},
+                    timeout=5.0,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            except asyncio.CancelledError:
+                get_task.cancel()
+                disc_task.cancel()
+                break
+
+            for p in pending:
+                p.cancel()
+
+            if disc_task in done:
+                break
+
+            if not done:
+                # Timed out — emit heartbeat. Failure on write reliably
+                # confirms a dead connection even when transport.is_closing
+                # somehow lags.
                 try:
                     await resp.write(b": ping\n\n")
                 except (ConnectionResetError, asyncio.CancelledError):
                     break
                 continue
+
+            try:
+                payload = get_task.result()
             except asyncio.CancelledError:
                 break
 
@@ -494,6 +534,7 @@ async def _handle_stream(request: web.Request) -> web.StreamResponse:
                 )
                 break
     finally:
+        watcher.cancel()
         await mgr.unregister_viewer(room_id, requested_lang, queue)
 
     return resp
