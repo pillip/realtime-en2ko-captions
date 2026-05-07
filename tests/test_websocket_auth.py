@@ -358,3 +358,160 @@ class TestAuthenticateClientLanguageSettings:
         assert result is not None
         assert result["language_settings"]["input_lang"] == "ja"
         assert result["language_settings"]["output_lang"] == "ko"
+
+
+# ============================================================
+# Room handling branches in _authenticate_client (lines 189-228)
+# ============================================================
+class TestAuthenticateClientRoomHandling:
+    """requested_room_id 분기 — repo 예외 / closed / 메모리 race 시나리오 검증."""
+
+    def _make_ws_with_room(self, mock_db, room_id):
+        """testuser 자격으로 특정 room_id 요청하는 auth 메시지를 보내는 ws."""
+        from unittest.mock import AsyncMock
+
+        db_user = mock_db.get_user_by_username("testuser")
+        return (
+            _make_websocket(
+                {
+                    "type": "auth",
+                    "user": {
+                        "id": db_user["id"],
+                        "username": "testuser",
+                        "role": "user",
+                    },
+                    "room_id": room_id,
+                }
+            ),
+            AsyncMock(),
+        )
+
+    def test_unknown_room_id_rejected_with_generic_message(self, mock_db, capsys):
+        """존재하지 않는 room_id → auth_error '요청한 룸을 찾을 수 없습니다.' (RL-006).
+
+        room_repo 가 없는 RoomManager 의 기본 in-memory 모드 → get_room()=None →
+        room_closed 분기로 가서 거절된다.
+        """
+        from room_manager import RoomManager
+        from websocket_handler import _authenticate_client
+
+        ws, _ = self._make_ws_with_room(mock_db, "no-such-room")
+
+        # repo 가 없는 빈 RoomManager.
+        empty_mgr = RoomManager()
+
+        with (
+            patch("websocket_handler.get_user_model", return_value=mock_db),
+            patch("websocket_handler._room_manager", empty_mgr),
+        ):
+            result = asyncio.run(_authenticate_client(ws))
+
+        assert result is None
+        sent = _get_sent_messages(ws)
+        # RL-006: 응답에 내부 디테일 누설 없음.
+        auth_errors = [m for m in sent if m.get("type") == "auth_error"]
+        assert len(auth_errors) == 1
+        assert auth_errors[0]["message"] == "요청한 룸을 찾을 수 없습니다."
+
+    def test_repo_exception_treated_as_room_closed(self, mock_db, capsys):
+        """repo.get_by_id 가 raise → room_closed=True 로 fail-closed 처리."""
+        from room_manager import RoomManager
+        from websocket_handler import _authenticate_client
+
+        ws, _ = self._make_ws_with_room(mock_db, "r1")
+
+        # 메모리에는 룸이 있지만 DB 조회는 실패하는 시나리오.
+        class _ExplodingRepo:
+            def get_by_id(self, room_id):
+                raise RuntimeError("DB internal: locked")
+
+            # RoomManager 의 hydrate_from_db 가 호출하는 다른 메서드는 없어야 함.
+
+        mgr = RoomManager(room_repository=_ExplodingRepo())
+        # 메모리에 r1 을 직접 넣어 get_room("r1") 가 not None 이 되게 한다.
+        from room_manager import RoomState
+
+        mgr._rooms["r1"] = RoomState(room_id="r1")
+
+        with (
+            patch("websocket_handler.get_user_model", return_value=mock_db),
+            patch("websocket_handler._room_manager", mgr),
+        ):
+            result = asyncio.run(_authenticate_client(ws))
+
+        assert result is None
+        captured = capsys.readouterr()
+        # 내부 에러는 서버 로그로 남아야 한다.
+        assert "[Auth] 룸 상태 조회 실패" in captured.out
+
+        sent = _get_sent_messages(ws)
+        auth_errors = [m for m in sent if m.get("type") == "auth_error"]
+        assert len(auth_errors) == 1
+        # RL-006: generic message — 'DB internal' 같은 디테일이 절대 새면 안 됨.
+        assert "DB internal" not in auth_errors[0]["message"]
+        assert auth_errors[0]["message"] == "요청한 룸을 찾을 수 없습니다."
+
+    def test_closed_room_status_rejected(self, mock_db):
+        """persisted.status == 'closed' → auth_error 거절."""
+        from room_manager import RoomManager, RoomState
+        from websocket_handler import _authenticate_client
+
+        ws, _ = self._make_ws_with_room(mock_db, "closed-room")
+
+        class _ClosedRepo:
+            def get_by_id(self, room_id):
+                # 영속화된 상태가 closed 임을 시뮬레이트.
+                return {"id": room_id, "status": "closed"}
+
+        mgr = RoomManager(room_repository=_ClosedRepo())
+        mgr._rooms["closed-room"] = RoomState(room_id="closed-room")
+
+        with (
+            patch("websocket_handler.get_user_model", return_value=mock_db),
+            patch("websocket_handler._room_manager", mgr),
+        ):
+            result = asyncio.run(_authenticate_client(ws))
+
+        assert result is None
+        sent = _get_sent_messages(ws)
+        auth_errors = [m for m in sent if m.get("type") == "auth_error"]
+        assert len(auth_errors) == 1
+        assert auth_errors[0]["message"] == "요청한 룸을 찾을 수 없습니다."
+
+    def test_register_connection_keyerror_race_returns_auth_error(self, mock_db):
+        """register_connection 이 KeyError → race 분기로 generic 거절."""
+        from room_manager import RoomManager, RoomState
+        from websocket_handler import _authenticate_client
+
+        ws, _ = self._make_ws_with_room(mock_db, "r1")
+
+        class _GoodRepo:
+            def get_by_id(self, room_id):
+                return {"id": room_id, "status": "active"}
+
+        mgr = RoomManager(room_repository=_GoodRepo())
+        mgr._rooms["r1"] = RoomState(room_id="r1")
+
+        # register_connection 이 KeyError 를 raise 하도록 패치.
+        original_register = mgr.register_connection
+
+        def _raising_register(room_id, websocket):
+            # 메모리에서 이미 삭제됐다고 가정.
+            raise KeyError(room_id)
+
+        mgr.register_connection = _raising_register
+
+        try:
+            with (
+                patch("websocket_handler.get_user_model", return_value=mock_db),
+                patch("websocket_handler._room_manager", mgr),
+            ):
+                result = asyncio.run(_authenticate_client(ws))
+        finally:
+            mgr.register_connection = original_register
+
+        assert result is None
+        sent = _get_sent_messages(ws)
+        auth_errors = [m for m in sent if m.get("type") == "auth_error"]
+        assert len(auth_errors) == 1
+        assert auth_errors[0]["message"] == "요청한 룸을 찾을 수 없습니다."
