@@ -14,6 +14,7 @@ import websockets
 
 from auth import check_usage_limit, update_user_session
 from database import get_usage_log_model, get_user_model
+from room_manager import DEFAULT_ROOM_ID, RoomManager
 from services import (
     create_openai_session,
     get_aws_access_key_id,
@@ -24,6 +25,15 @@ from translation import detect_language, translate_with_llm
 
 # Per-connection rate limit: max messages per minute (sliding window)
 WS_RATE_LIMIT_PER_MINUTE = int(os.getenv("WS_RATE_LIMIT_PER_MINUTE", "30"))
+
+# Module-level RoomManager singleton.
+# Tests substitute this via `patch("websocket_handler._room_manager", ...)`.
+_room_manager: RoomManager = RoomManager()
+
+
+def get_room_manager() -> RoomManager:
+    """Return the module-level RoomManager singleton."""
+    return _room_manager
 
 
 def find_free_port(start_port=8765, max_port=8800):
@@ -127,9 +137,65 @@ async def _authenticate_client(websocket):
                 "output_lang": language_settings.get("output_lang", "ko"),
             }
 
-            print(f"[Auth] 사용자 인증 성공: {validated_user['username']}")
+            # Resolve target room (ISSUE-25).
+            # - If room_id supplied: it MUST already exist (created server-
+            #   side); unknown ids are rejected with a generic auth_error
+            #   to avoid leaking room enumeration (RL-006).
+            # - If absent: route to the default room, auto-creating it.
+            requested_room_id = data.get("room_id")
+            room_manager = _room_manager
+            if requested_room_id:
+                room = room_manager.get_room(requested_room_id)
+                if room is None:
+                    print(
+                        f"[Auth] 인증 실패: 존재하지 않는 룸 ID "
+                        f"(user={validated_user['username']})"
+                    )
+                    await websocket.send(
+                        json.dumps(
+                            {
+                                "type": "auth_error",
+                                "message": "요청한 룸을 찾을 수 없습니다.",
+                            }
+                        )
+                    )
+                    return None
+                resolved_room_id = requested_room_id
+            else:
+                room_manager.get_or_create_room(DEFAULT_ROOM_ID)
+                resolved_room_id = DEFAULT_ROOM_ID
+
+            # Register the connection to its room before signaling success.
+            try:
+                room_manager.register_connection(resolved_room_id, websocket)
+            except KeyError:
+                # Race: room deleted between get_room and register.
+                # Treat as unknown.
+                print(f"[Auth] 인증 실패: 룸 등록 실패 (room={resolved_room_id})")
+                await websocket.send(
+                    json.dumps(
+                        {
+                            "type": "auth_error",
+                            "message": "요청한 룸을 찾을 수 없습니다.",
+                        }
+                    )
+                )
+                return None
+
+            validated_user["room_id"] = resolved_room_id
+
+            print(
+                f"[Auth] 사용자 인증 성공: {validated_user['username']} "
+                f"(room={resolved_room_id})"
+            )
             await websocket.send(
-                json.dumps({"type": "auth_success", "message": "인증 완료"})
+                json.dumps(
+                    {
+                        "type": "auth_success",
+                        "message": "인증 완료",
+                        "room_id": resolved_room_id,
+                    }
+                )
             )
             return validated_user
     except TimeoutError:
@@ -543,12 +609,27 @@ async def handle_openai_websocket(websocket):
                     )
                 )
             except Exception as e:
-                print(f"[WebSocket] 메시지 처리 오류: {e}")
-                await websocket.send(json.dumps({"type": "error", "message": str(e)}))
+                # RL-006: log internal error server-side, return generic
+                # message to the client.
+                print(f"[WebSocket] 메시지 처리 오류: {e!r}")
+                await websocket.send(
+                    json.dumps(
+                        {
+                            "type": "error",
+                            "message": "메시지 처리 중 오류가 발생했습니다.",
+                        }
+                    )
+                )
 
     except Exception as e:
-        print(f"[WebSocket] 연결 오류: {e}")
+        print(f"[WebSocket] 연결 오류: {e!r}")
     finally:
+        # Unregister from the room (no-op if user_info is None / unset).
+        try:
+            if user_info and user_info.get("room_id"):
+                _room_manager.unregister_connection(user_info["room_id"], websocket)
+        except Exception as cleanup_err:
+            print(f"[Room] 연결 해제 실패: {cleanup_err!r}")
         print("[WebSocket] 클라이언트 연결 종료")
 
 
