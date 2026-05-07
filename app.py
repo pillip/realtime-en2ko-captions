@@ -4,6 +4,7 @@
 - translation.py: 번역 서비스
 - services.py: OpenAI/AWS 세션 관리
 - websocket_handler.py: WebSocket 서버/핸들러
+- operator_ui.py: 사이드바 룸 선택 순수 로직 (ISSUE-27)
 """
 
 import asyncio
@@ -20,6 +21,13 @@ from auth import (
     get_current_user,
     init_session_state,
     is_authenticated,
+)
+from database import get_room_model
+from operator_ui import (
+    build_bootstrap_payload,
+    build_room_dropdown_options,
+    has_assigned_rooms,
+    select_default_room,
 )
 from services import (
     create_openai_session,
@@ -70,6 +78,24 @@ try:
 except FileNotFoundError:
     pass
 
+
+def _load_assigned_rooms_for_user(user):
+    """배정된 룸 목록을 안전하게 조회한다 (ISSUE-27).
+
+    - admin은 룸 배정 개념이 없으므로 빈 리스트로 처리해 사이드바에서 룸
+      드롭다운 자체가 노출되지 않도록 한다 (관리자 전용 룸 관리는 ISSUE-29).
+    - DB 조회 실패 시 RL-006 (내부 에러 누설 방지) 에 따라 서버 로그만
+      남기고 빈 리스트를 반환한다.
+    """
+    if not user or user.get("role") == "admin":
+        return []
+    try:
+        return get_room_model().list_by_operator(user["id"])
+    except Exception as e:
+        print(f"[Sidebar] 배정된 룸 조회 실패: {e!r}")
+        return []
+
+
 # === 사이드바 ===
 with st.sidebar:
     st.header("🧑‍💻 유저 정보")
@@ -80,22 +106,61 @@ with st.sidebar:
         st.info("💡 .env 파일에 AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY를 설정하세요")
         st.stop()
 
+    # 룸 선택 (오퍼레이터 전용, ISSUE-27) ----------------------------
+    sidebar_user = get_current_user()
+    assigned_rooms = _load_assigned_rooms_for_user(sidebar_user)
+    selected_room_id = None
+    show_room_section = sidebar_user is not None and sidebar_user.get("role") != "admin"
+
+    if show_room_section:
+        st.markdown("---")
+        st.subheader("🏛️ 배정된 룸")
+        if has_assigned_rooms(assigned_rooms):
+            options = build_room_dropdown_options(assigned_rooms)
+            labels = [opt["label"] for opt in options]
+            ids = [opt["id"] for opt in options]
+            default_id = select_default_room(
+                assigned_rooms, st.session_state.get("selected_room_id")
+            )
+            default_index = ids.index(default_id) if default_id in ids else 0
+            chosen_label = st.selectbox(
+                "룸 선택",
+                options=labels,
+                index=default_index,
+                key="operator_room_selector",
+                help="자막을 송출할 룸을 선택하세요",
+            )
+            selected_room_id = ids[labels.index(chosen_label)]
+            st.session_state["selected_room_id"] = selected_room_id
+        else:
+            st.info("배정된 룸이 없습니다. 관리자에게 문의하세요.")
+
     # 시스템 제어
     st.subheader("🎛️ 시스템 제어")
     col1, col2 = st.columns([1, 1])
 
     current_status = st.session_state.get("action", "idle")
+    # 룸 선택 UI가 노출되는데 룸이 없으면 "시작"을 차단해
+    # 의미 없는 세션 생성을 막는다 (AC2 invariant: 시작 시 room_id 필요).
+    no_room_for_operator = show_room_section and selected_room_id is None
 
     with col1:
-        start_disabled = current_status in [
-            "start",
-            "starting",
-        ]
+        start_disabled = (
+            current_status
+            in [
+                "start",
+                "starting",
+            ]
+            or no_room_for_operator
+        )
         start = st.button(
             "🎯 시작",
             type="primary",
             use_container_width=True,
             disabled=start_disabled,
+            help=(
+                "배정된 룸이 없어 시작할 수 없습니다." if no_room_for_operator else None
+            ),
         )
 
     with col2:
@@ -197,13 +262,13 @@ try:
 
     current_user = get_current_user()
 
-    payload = {
-        "action": st.session_state["action"],
-        "openai_session": st.session_state.get("openai_session"),
-        "service": "openai_realtime",
-        "websocket_port": st.session_state["websocket_port_ref"]["port"],
-        "user_info": current_user,
-    }
+    payload = build_bootstrap_payload(
+        action=st.session_state["action"],
+        openai_session=st.session_state.get("openai_session"),
+        websocket_port=st.session_state["websocket_port_ref"]["port"],
+        user_info=current_user,
+        room_id=st.session_state.get("selected_room_id"),
+    )
 
     html_content = html_template.replace("{{BOOTSTRAP_JSON}}", json.dumps(payload))
     st.components.v1.html(html_content, height=900, scrolling=False)
