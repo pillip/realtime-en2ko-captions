@@ -146,9 +146,26 @@ async def _authenticate_client(websocket):
             room_manager = _room_manager
             if requested_room_id:
                 room = room_manager.get_room(requested_room_id)
-                if room is None:
+                # ISSUE-26: even if memory still holds the room (e.g.
+                # cleanup_stale_rooms updated DB only), reject when the
+                # persisted status is 'closed'. We share the same
+                # generic message used for unknown rooms (RL-006) to
+                # avoid leaking lifecycle information to clients.
+                room_closed = False
+                repo = getattr(room_manager, "_repo", None)
+                if repo is not None:
+                    try:
+                        persisted = repo.get_by_id(requested_room_id)
+                        if persisted is None or persisted["status"] == "closed":
+                            room_closed = True
+                    except Exception as e:
+                        # Server-side log only (RL-006). Treat repo
+                        # errors as fail-open=False — refuse the room.
+                        print(f"[Auth] 룸 상태 조회 실패: {e!r}")
+                        room_closed = True
+                if room is None or room_closed:
                     print(
-                        f"[Auth] 인증 실패: 존재하지 않는 룸 ID "
+                        f"[Auth] 인증 실패: 룸 사용 불가 "
                         f"(user={validated_user['username']})"
                     )
                     await websocket.send(
@@ -633,6 +650,36 @@ async def handle_openai_websocket(websocket):
         print("[WebSocket] 클라이언트 연결 종료")
 
 
+# Interval (seconds) between stale-room scans. Override via env var
+# for tests / staging. Default 60s gives O(timeout_minutes) latency
+# for closing zombie rooms without spamming the DB.
+ROOM_CLEANUP_INTERVAL_SECONDS = int(os.getenv("ROOM_CLEANUP_INTERVAL_SECONDS", "60"))
+
+
+async def _periodic_room_cleanup_loop() -> None:
+    """Run Room.cleanup_stale_rooms() at a fixed interval.
+
+    Errors are logged and swallowed so the loop never dies silently.
+    Cancellation (server shutdown) is propagated cleanly.
+    """
+    while True:
+        try:
+            await asyncio.sleep(ROOM_CLEANUP_INTERVAL_SECONDS)
+            repo = getattr(_room_manager, "_repo", None)
+            if repo is None:
+                continue
+            closed = repo.cleanup_stale_rooms()
+            if closed:
+                # Sync memory: drop closed rooms so future auths fail.
+                for rid in closed:
+                    _room_manager.delete_room(rid)
+                print(f"[Room] 좀비 룸 정리: {len(closed)}개 closed")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"[Room] cleanup loop error: {e!r}")
+
+
 def start_websocket_server(port_ref):
     """WebSocket 서버 시작 (동적 포트 할당)
 
@@ -643,6 +690,24 @@ def start_websocket_server(port_ref):
         free_port = find_free_port()
         print(f"[WebSocket] 할당된 포트: {free_port}")
         port_ref["port"] = free_port
+
+        # ISSUE-26: attach the persistent Room repository, hydrate
+        # waiting/active/inactive rooms from DB, and start the periodic
+        # stale-room cleanup. Best-effort: any failure here only
+        # downgrades to in-memory mode — server continues to start.
+        try:
+            from database import get_room_model
+
+            global _room_manager
+            repo = get_room_model()
+            _room_manager = RoomManager(room_repository=repo)
+            loaded = _room_manager.hydrate_from_db()
+            if loaded:
+                print(f"[Room] DB 복원: {loaded}개 룸")
+        except Exception as e:
+            # Fall back to in-memory mode; never block server start
+            # on persistence wiring.
+            print(f"[Room] 영속 저장소 연결 실패 — 메모리 전용 모드: {e!r}")
 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -658,7 +723,13 @@ def start_websocket_server(port_ref):
                     f"[WebSocket] 서버 시작 완료 (OpenAI 모드): "
                     f"ws://0.0.0.0:{free_port}"
                 )
-                await server.wait_closed()
+                # Background task: scan for stale rooms every minute and
+                # close them. Cancelled when wait_closed returns.
+                cleanup_task = asyncio.create_task(_periodic_room_cleanup_loop())
+                try:
+                    await server.wait_closed()
+                finally:
+                    cleanup_task.cancel()
             except Exception as e:
                 print(f"[WebSocket] 서버 실행 오류: {e}")
                 raise e

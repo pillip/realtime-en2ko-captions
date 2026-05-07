@@ -7,10 +7,32 @@ import json
 import os
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import bcrypt
+
+
+class InvalidRoomTransition(ValueError):
+    """Raised when a room status transition violates the lifecycle diagram.
+
+    Diagram (ISSUE-26):
+        waiting  → active | closed
+        active   → inactive | closed
+        inactive → active | closed
+        closed   → (terminal)
+    """
+
+
+# Allowed status transitions for rooms (ISSUE-26).
+# Source: issues.md ISSUE-26 state-transition diagram.
+_ROOM_VALID_STATUSES: tuple[str, ...] = ("waiting", "active", "inactive", "closed")
+_ROOM_TRANSITIONS: dict[str, set[str]] = {
+    "waiting": {"active", "closed"},
+    "active": {"inactive", "closed"},
+    "inactive": {"active", "closed"},
+    "closed": set(),  # terminal
+}
 
 
 class DatabaseManager:
@@ -83,6 +105,39 @@ class DatabaseManager:
                 """
                 CREATE INDEX IF NOT EXISTS idx_usage_logs_created_at
                 ON usage_logs(created_at)
+            """
+            )
+
+            # rooms 테이블 생성 (ISSUE-26)
+            # 룸 라이프사이클을 DB에 영속화한다. 상태 전이는 application
+            # 레이어 (Room.transition_status) 에서 강제하며, DB 레벨의
+            # CHECK 제약은 검증된 application path 우회를 막기 위한
+            # 방어선 역할이다.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS rooms (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'waiting'
+                        CHECK (status IN ('waiting','active','inactive','closed')),
+                    input_lang TEXT NOT NULL DEFAULT 'auto',
+                    output_lang TEXT NOT NULL DEFAULT 'ko',
+                    created_by INTEGER NOT NULL,
+                    operator_id INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_activity TIMESTAMP,
+                    timeout_minutes INTEGER NOT NULL DEFAULT 30,
+                    closed_at TIMESTAMP,
+                    FOREIGN KEY (created_by) REFERENCES users(id),
+                    FOREIGN KEY (operator_id) REFERENCES users(id)
+                )
+            """
+            )
+            # status 필터 (cleanup_stale_rooms, list_by_status, hydrate)
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_rooms_status
+                ON rooms(status)
             """
             )
 
@@ -534,6 +589,219 @@ class UsageLog:
             return stats
 
 
+class Room:
+    """rooms 테이블에 대한 CRUD + 상태 전이 (ISSUE-26).
+
+    - 상태 전이는 _ROOM_TRANSITIONS 다이어그램에 따라 application
+      레이어에서 강제한다 (CHECK 제약은 fallback 방어선).
+    - cleanup_stale_rooms() 는 timeout_minutes 를 초과한 active/inactive
+      룸을 closed 처리한다 (좀비 룸 정리).
+    - 모든 메서드는 외부에서 SQLite tmp_path 로 격리 가능하도록
+      DatabaseManager 인스턴스 주입을 받는다.
+    """
+
+    # Statuses that should be re-loaded into RoomManager on server restart.
+    # Closed rooms are terminal and stay only in the audit trail.
+    HYDRATABLE_STATUSES: tuple[str, ...] = ("waiting", "active", "inactive")
+
+    def __init__(self, db_manager: DatabaseManager):
+        self.db = db_manager
+
+    # ------------------------------------------------------------------
+    # CRUD
+    # ------------------------------------------------------------------
+    def create(
+        self,
+        room_id: str,
+        name: str,
+        created_by: int,
+        input_lang: str = "auto",
+        output_lang: str = "ko",
+        timeout_minutes: int = 30,
+        operator_id: int | None = None,
+    ) -> dict[str, Any] | None:
+        """룸 행을 생성하고 created row 를 dict 로 반환한다.
+
+        Returns None on PK collision (mirrors User.create_user semantics).
+        Raises sqlite3.IntegrityError when FK references are invalid —
+        callers that pass user-provided created_by/operator_id should
+        handle this explicitly so that the failure is not silent.
+        """
+        try:
+            with self.db.get_connection() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO rooms (
+                        id, name, status, input_lang, output_lang,
+                        created_by, operator_id, last_activity,
+                        timeout_minutes
+                    ) VALUES (?, ?, 'waiting', ?, ?, ?, ?,
+                              CURRENT_TIMESTAMP, ?)
+                    """,
+                    (
+                        room_id,
+                        name,
+                        input_lang,
+                        output_lang,
+                        created_by,
+                        operator_id,
+                        timeout_minutes,
+                    ),
+                )
+                conn.commit()
+        except sqlite3.IntegrityError as e:
+            # PK 충돌은 None, FK 위반은 그대로 전파
+            msg = str(e).lower()
+            if "unique" in msg or "primary key" in msg:
+                return None
+            raise
+
+        return self.get_by_id(room_id)
+
+    def get_by_id(self, room_id: str) -> dict[str, Any] | None:
+        with self.db.get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM rooms WHERE id = ?", (room_id,)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def list_all(self) -> list[dict[str, Any]]:
+        with self.db.get_connection() as conn:
+            cursor = conn.execute("SELECT * FROM rooms ORDER BY created_at DESC")
+            return [dict(r) for r in cursor.fetchall()]
+
+    def list_by_status(self, statuses: list[str]) -> list[dict[str, Any]]:
+        if not statuses:
+            return []
+        # Validate to prevent unknown status values from confusing callers.
+        unknown = set(statuses) - set(_ROOM_VALID_STATUSES)
+        if unknown:
+            raise ValueError(f"Unknown status(es): {sorted(unknown)}")
+        placeholders = ",".join("?" for _ in statuses)
+        with self.db.get_connection() as conn:
+            cursor = conn.execute(
+                f"SELECT * FROM rooms WHERE status IN ({placeholders}) "
+                f"ORDER BY created_at DESC",
+                statuses,
+            )
+            return [dict(r) for r in cursor.fetchall()]
+
+    def assign_operator(self, room_id: str, operator_id: int) -> bool:
+        with self.db.get_connection() as conn:
+            cursor = conn.execute(
+                "UPDATE rooms SET operator_id = ? WHERE id = ?",
+                (operator_id, room_id),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    # ------------------------------------------------------------------
+    # State transitions
+    # ------------------------------------------------------------------
+    def transition_status(self, room_id: str, target_status: str) -> bool:
+        """Transition the room to target_status.
+
+        Returns False if the room does not exist.
+        Raises InvalidRoomTransition when the target status is unknown
+        OR the source→target edge is not in _ROOM_TRANSITIONS.
+
+        Side effects on success:
+          - status updated
+          - last_activity = CURRENT_TIMESTAMP
+          - closed_at = CURRENT_TIMESTAMP iff target_status == 'closed'
+        """
+        if target_status not in _ROOM_VALID_STATUSES:
+            raise InvalidRoomTransition(f"Unknown room status: {target_status!r}")
+
+        room = self.get_by_id(room_id)
+        if room is None:
+            return False
+
+        current = room["status"]
+        if target_status not in _ROOM_TRANSITIONS.get(current, set()):
+            raise InvalidRoomTransition(
+                f"Invalid transition: {current} → {target_status}"
+            )
+
+        with self.db.get_connection() as conn:
+            if target_status == "closed":
+                conn.execute(
+                    "UPDATE rooms SET status = ?, "
+                    "last_activity = CURRENT_TIMESTAMP, "
+                    "closed_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (target_status, room_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE rooms SET status = ?, "
+                    "last_activity = CURRENT_TIMESTAMP WHERE id = ?",
+                    (target_status, room_id),
+                )
+            conn.commit()
+        return True
+
+    def touch(self, room_id: str) -> bool:
+        """Update last_activity = CURRENT_TIMESTAMP. No status change."""
+        with self.db.get_connection() as conn:
+            cursor = conn.execute(
+                "UPDATE rooms SET last_activity = CURRENT_TIMESTAMP WHERE id = ?",
+                (room_id,),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    # ------------------------------------------------------------------
+    # Cleanup
+    # ------------------------------------------------------------------
+    def cleanup_stale_rooms(self, now: datetime | None = None) -> list[str]:
+        """Close active/inactive rooms whose last_activity is older than
+        their per-row timeout_minutes.
+
+        Returns the list of room ids that were closed.
+
+        The check is performed in Python (not a single UPDATE) so we can:
+          - Apply per-row timeout_minutes accurately
+          - Run the same transition_status path used by the rest of the
+            code, keeping closed_at + audit semantics consistent
+          - Be unit-testable without monkey-patching SQLite NOW().
+        """
+        now = now or datetime.utcnow()
+        closed_ids: list[str] = []
+        with self.db.get_connection() as conn:
+            cursor = conn.execute(
+                "SELECT id, last_activity, timeout_minutes, status "
+                "FROM rooms WHERE status IN ('active', 'inactive')"
+            )
+            candidates = [dict(r) for r in cursor.fetchall()]
+
+        for room in candidates:
+            last_activity = room.get("last_activity")
+            if not last_activity:
+                # No activity recorded yet — leave alone, will be cleaned
+                # up on the next touch/transition.
+                continue
+            if isinstance(last_activity, str):
+                try:
+                    last_dt = datetime.strptime(last_activity, "%Y-%m-%d %H:%M:%S")
+                except ValueError:
+                    # Unknown timestamp shape; skip rather than crash.
+                    continue
+            elif isinstance(last_activity, datetime):
+                last_dt = last_activity
+            else:
+                continue
+
+            timeout = timedelta(minutes=room["timeout_minutes"])
+            if now - last_dt >= timeout:
+                try:
+                    self.transition_status(room["id"], "closed")
+                    closed_ids.append(room["id"])
+                except InvalidRoomTransition:
+                    # Race: another caller closed it first; skip.
+                    continue
+        return closed_ids
+
+
 def init_admin_from_env(db_manager: DatabaseManager) -> bool:
     """환경변수에서 초기 관리자 계정 생성"""
     admin_username = os.getenv("ADMIN_USERNAME")
@@ -568,6 +836,7 @@ def init_admin_from_env(db_manager: DatabaseManager) -> bool:
 _db_manager = None
 _user_model = None
 _usage_log_model = None
+_room_model = None
 
 
 def get_db_manager() -> DatabaseManager:
@@ -595,3 +864,11 @@ def get_usage_log_model() -> UsageLog:
     if _usage_log_model is None:
         _usage_log_model = UsageLog(get_db_manager())
     return _usage_log_model
+
+
+def get_room_model() -> "Room":
+    """Room 모델 싱글톤 (ISSUE-26)."""
+    global _room_model
+    if _room_model is None:
+        _room_model = Room(get_db_manager())
+    return _room_model
