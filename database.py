@@ -150,6 +150,37 @@ class DatabaseManager:
         # Migrate existing databases: drop legacy columns (ISSUE-20)
         self._migrate_drop_legacy_columns()
 
+        # ISSUE-29: idempotent ALTER TABLE to add usage_logs.room_id.
+        # Run after the CREATE TABLE so fresh DBs and legacy DBs converge
+        # to the same final schema.
+        self._migrate_add_usage_logs_room_id()
+
+    def _migrate_add_usage_logs_room_id(self):
+        """Add usage_logs.room_id column (NULL allowed) — idempotent.
+
+        Detection uses PRAGMA table_info rather than try/except so a future
+        unrelated ALTER failure isn't silently swallowed. NULL-able by
+        design: pre-existing rows have no room association.
+        """
+        with self.get_connection() as conn:
+            cursor = conn.execute("PRAGMA table_info(usage_logs)")
+            existing = {row["name"] for row in cursor.fetchall()}
+            if "room_id" not in existing:
+                conn.execute("ALTER TABLE usage_logs ADD COLUMN room_id TEXT")
+                # Optional index for room-scoped queries (operator dashboard).
+                # Best-effort: index creation should not fail the boot path.
+                try:
+                    conn.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_usage_logs_room_id "
+                        "ON usage_logs(room_id)"
+                    )
+                except sqlite3.OperationalError as e:
+                    # Server-side log only (RL-006). The column itself is
+                    # what matters for correctness; the index is perf only.
+                    print(f"[Migration] room_id index skipped: {e!r}")
+                conn.commit()
+                print("[Migration] Added usage_logs.room_id column")
+
     def _migrate_drop_legacy_columns(self):
         """Drop unused salt and hash_type columns from users table.
 
@@ -426,8 +457,15 @@ class UsageLog:
         source_language: str | None = None,
         target_language: str | None = None,
         metadata: dict[str, Any] | None = None,
+        room_id: str | None = None,
     ) -> int | None:
-        """사용량 기록"""
+        """사용량 기록.
+
+        room_id 는 선택적이다 (ISSUE-29). pre-existing 호출자(레거시 경로)
+        는 room_id 없이 계속 동작하고, WebSocket 트랜스크립트 처리는
+        room_id 를 함께 기록해 오퍼레이터/관리자 대시보드의 룸별 필터링을
+        가능하게 한다.
+        """
         metadata_json = json.dumps(metadata) if metadata else None
 
         with self.db.get_connection() as conn:
@@ -435,8 +473,8 @@ class UsageLog:
                 """
                 INSERT INTO usage_logs (
                     user_id, action, duration_seconds, source_language,
-                    target_language, metadata
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    target_language, metadata, room_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
                 (
                     user_id,
@@ -445,6 +483,7 @@ class UsageLog:
                     source_language,
                     target_language,
                     metadata_json,
+                    room_id,
                 ),
             )
             conn.commit()
@@ -459,7 +498,7 @@ class UsageLog:
             cursor = conn.execute(
                 """
                 SELECT id, user_id, action, duration_seconds, source_language,
-                       target_language, created_at, metadata
+                       target_language, created_at, metadata, room_id
                 FROM usage_logs
                 WHERE user_id = ?
                 ORDER BY created_at DESC
@@ -483,7 +522,7 @@ class UsageLog:
             cursor = conn.execute(
                 """
                 SELECT id, user_id, action, duration_seconds, source_language,
-                       target_language, created_at, metadata
+                       target_language, created_at, metadata, room_id
                 FROM usage_logs
                 WHERE user_id = ?
                 ORDER BY created_at DESC
@@ -508,7 +547,7 @@ class UsageLog:
                 SELECT ul.id, ul.user_id, u.username,
                        ul.action, ul.duration_seconds,
                        ul.source_language, ul.target_language,
-                       ul.created_at, ul.metadata
+                       ul.created_at, ul.metadata, ul.room_id
                 FROM usage_logs ul
                 JOIN users u ON ul.user_id = u.id
                 ORDER BY ul.created_at DESC
@@ -516,6 +555,56 @@ class UsageLog:
             """,
                 (limit, offset),
             )
+
+            logs = []
+            for row in cursor.fetchall():
+                log_dict = dict(row)
+                if log_dict["metadata"]:
+                    log_dict["metadata"] = json.loads(log_dict["metadata"])
+                logs.append(log_dict)
+
+            return logs
+
+    def get_logs_by_room(
+        self, room_id: str, limit: int | None = None
+    ) -> list[dict[str, Any]]:
+        """룸별 사용량 로그 조회 (ISSUE-29).
+
+        오퍼레이터/관리자 대시보드의 룸별 기록 보기에 사용된다. 호출자가
+        역할 검증을 우회하지 못하도록, ``admin_logic.get_logs_for_operator``
+        에서 한 번 더 server-side role 체크를 적용한 뒤 이 함수를 호출한다
+        (RL-002 — 신뢰 경계는 admin_logic 에 둔다).
+        """
+        with self.db.get_connection() as conn:
+            if limit is None:
+                cursor = conn.execute(
+                    """
+                    SELECT ul.id, ul.user_id, u.username,
+                           ul.action, ul.duration_seconds,
+                           ul.source_language, ul.target_language,
+                           ul.created_at, ul.metadata, ul.room_id
+                    FROM usage_logs ul
+                    JOIN users u ON ul.user_id = u.id
+                    WHERE ul.room_id = ?
+                    ORDER BY ul.created_at DESC
+                    """,
+                    (room_id,),
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    SELECT ul.id, ul.user_id, u.username,
+                           ul.action, ul.duration_seconds,
+                           ul.source_language, ul.target_language,
+                           ul.created_at, ul.metadata, ul.room_id
+                    FROM usage_logs ul
+                    JOIN users u ON ul.user_id = u.id
+                    WHERE ul.room_id = ?
+                    ORDER BY ul.created_at DESC
+                    LIMIT ?
+                    """,
+                    (room_id, limit),
+                )
 
             logs = []
             for row in cursor.fetchall():
@@ -694,6 +783,28 @@ class Room:
             )
             conn.commit()
             return cursor.rowcount > 0
+
+    def force_close(self, room_id: str) -> bool:
+        """Admin-driven force-close (ISSUE-29).
+
+        Unlike :meth:`transition_status`, this method is idempotent for the
+        already-closed case (admins must be able to retry without seeing an
+        InvalidRoomTransition). Returns True iff the room exists; False if
+        the room id is unknown.
+
+        Side effects on success: status='closed', last_activity=now,
+        closed_at=now (when not already closed).
+        """
+        room = self.get_by_id(room_id)
+        if room is None:
+            return False
+        if room["status"] == "closed":
+            # Idempotent — admin pressed "force close" twice, or the cleanup
+            # loop got there first. Both are normal.
+            return True
+        # Use the same transition path so audit semantics (closed_at) and
+        # invariants (CHECK constraint) hold.
+        return self.transition_status(room_id, "closed")
 
     def list_by_operator(self, operator_id: int) -> list[dict[str, Any]]:
         """Return non-closed rooms assigned to the given operator (ISSUE-27).

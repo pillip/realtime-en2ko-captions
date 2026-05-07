@@ -1,6 +1,7 @@
 """
 관리자 대시보드 페이지
 사용자 계정 생성/관리 및 사용량 통계 조회
+ISSUE-29: 룸 관리 탭 추가, 오퍼레이터 역할 기반 뷰 분기.
 """
 
 from datetime import datetime, timedelta
@@ -8,41 +9,92 @@ from datetime import datetime, timedelta
 import pandas as pd
 import streamlit as st
 
-from auth import display_user_info, require_admin
-from database import get_usage_log_model, get_user_model
+from admin_logic import (
+    export_room_logs_csv,
+    filter_rooms_for_role,
+    get_logs_for_operator,
+    prepare_room_table_data,
+    validate_room_creation_input,
+)
+from auth import (
+    display_user_info,
+    get_current_user,
+    require_admin_or_operator,
+)
+from database import (
+    InvalidRoomTransition,
+    get_room_model,
+    get_usage_log_model,
+    get_user_model,
+)
 
 
-@require_admin
+@require_admin_or_operator
 def show_admin_dashboard():
-    """관리자 대시보드 메인"""
-    st.title("🔧 관리자 대시보드")
+    """관리자/오퍼레이터 대시보드 메인 (ISSUE-29).
+
+    role="user" 와 비인증 사용자는 데코레이터에서 차단된다 (RL-002 —
+    페이지 진입은 server-side session 만 신뢰). 표시 콘텐츠는 추가로
+    각 탭 내부에서 역할별로 좁힌다 — 데코레이터 통과 ≠ 모든 데이터 접근.
+    """
+    current_user = get_current_user() or {}
+    role = current_user.get("role", "")
+    is_role_admin = role == "admin"
+
+    if is_role_admin:
+        st.title("🔧 관리자 대시보드")
+    else:
+        st.title("🎧 오퍼레이터 대시보드")
 
     display_user_info(show_divider=False)  # 구분선 제거
 
     user_model = get_user_model()
     usage_log_model = get_usage_log_model()
+    room_model = get_room_model()
 
     # 세션 상태에서 선택된 탭 관리
     if "selected_tab" not in st.session_state:
         st.session_state.selected_tab = 0
 
-    # 메뉴 탭
-    tabs = st.tabs(["사용자 관리", "신규 사용자 생성", "사용량 통계", "로그 조회"])
-
-    with tabs[0]:  # 사용자 관리
-        show_user_management(user_model)
-
-    with tabs[1]:  # 신규 사용자 생성
-        success = show_create_user_form(user_model)
-        if success:
-            st.session_state.selected_tab = 0  # 사용자 관리 탭으로 이동
-            st.rerun()
-
-    with tabs[2]:  # 사용량 통계
-        show_usage_statistics(usage_log_model, user_model)
-
-    with tabs[3]:  # 로그 조회
-        show_usage_logs(usage_log_model, user_model)
+    # 메뉴 탭 (오퍼레이터는 사용자 관리/생성 탭 비표시 — 자기 룸과 기록만)
+    if is_role_admin:
+        tabs = st.tabs(
+            [
+                "사용자 관리",
+                "신규 사용자 생성",
+                "사용량 통계",
+                "로그 조회",
+                "룸 관리",
+            ]
+        )
+        with tabs[0]:
+            show_user_management(user_model)
+        with tabs[1]:
+            success = show_create_user_form(user_model)
+            if success:
+                st.session_state.selected_tab = 0
+                st.rerun()
+        with tabs[2]:
+            show_usage_statistics(usage_log_model, user_model)
+        with tabs[3]:
+            show_usage_logs(usage_log_model, user_model)
+        with tabs[4]:
+            show_room_management(
+                room_model=room_model,
+                user_model=user_model,
+                usage_log_model=usage_log_model,
+                current_user=current_user,
+            )
+    else:
+        # 오퍼레이터: 룸 관리 (자기 룸 보기/기록 다운로드) 만 노출
+        tabs = st.tabs(["내 룸"])
+        with tabs[0]:
+            show_room_management(
+                room_model=room_model,
+                user_model=user_model,
+                usage_log_model=usage_log_model,
+                current_user=current_user,
+            )
 
 
 def show_user_management(user_model):
@@ -91,7 +143,9 @@ def show_user_management(user_model):
         selected_user_id = st.selectbox(
             "수정할 사용자 선택",
             options=[user["id"] for user in users],
-            format_func=lambda x: f"{next(u['username'] for u in users if u['id'] == x)} (ID: {x})",
+            format_func=lambda x: (
+                f"{next(u['username'] for u in users if u['id'] == x)} (ID: {x})"
+            ),
         )
 
     if selected_user_id:
@@ -163,7 +217,8 @@ def show_user_management(user_model):
                 f"⚠️ 사용자 '{selected_user['username']}'을(를) 삭제하시겠습니까?"
             )
             st.write(
-                "이 작업은 되돌릴 수 없으며, 해당 사용자의 모든 사용량 로그도 함께 삭제됩니다."
+                "이 작업은 되돌릴 수 없으며, 해당 사용자의 "
+                "모든 사용량 로그도 함께 삭제됩니다."
             )
 
             col1, col2, col3 = st.columns([1, 1, 2])
@@ -173,7 +228,8 @@ def show_user_management(user_model):
                     success = user_model.delete_user(selected_user_id)
                     if success:
                         st.success(
-                            f"사용자 '{selected_user['username']}'이(가) 삭제되었습니다."
+                            f"사용자 '{selected_user['username']}'이(가) "
+                            "삭제되었습니다."
                         )
                         st.rerun()
                     else:
@@ -190,11 +246,15 @@ def show_create_user_form(user_model):
 
     # 폼 외부에서 성공 메시지 표시
     if st.session_state.get("user_creation_success"):
+        _success = st.session_state.user_creation_success
         st.success(
-            f"✅ 사용자 '{st.session_state.user_creation_success['username']}'이 성공적으로 생성되었습니다! (ID: {st.session_state.user_creation_success['user_id']})"
+            f"✅ 사용자 '{_success['username']}'이 성공적으로 "
+            f"생성되었습니다! (ID: {_success['user_id']})"
         )
         st.info(
-            f"**로그인 정보**\n\n사용자명: `{st.session_state.user_creation_success['username']}`\n비밀번호: `{st.session_state.user_creation_success['password']}`"
+            "**로그인 정보**\n\n"
+            f"사용자명: `{_success['username']}`\n"
+            f"비밀번호: `{_success['password']}`"
         )
         # 다음 폼 제출을 위해 성공 상태 초기화
         st.session_state.user_creation_success = None
@@ -477,6 +537,283 @@ def show_usage_logs(usage_log_model, user_model):
 
     # 페이지 정보
     st.write(f"페이지 {page_number + 1} (항목 {offset + 1}-{offset + len(logs)})")
+
+
+# ============================================================
+# ISSUE-29: 룸 관리 탭 (admin: 전체 / operator: 자기 룸만)
+# ============================================================
+def show_room_management(
+    *,
+    room_model,
+    user_model,
+    usage_log_model,
+    current_user,
+):
+    """룸 관리 탭 진입점.
+
+    server-side 분기 (RL-002):
+      - admin: 룸 CRUD/배정/강제종료, 모든 룸의 기록 조회/CSV
+      - operator: 본인에게 배정된 룸만 표시, 그 룸의 기록만 조회/CSV
+
+    UI 가 어떤 room_id 를 보내든, ``filter_rooms_for_role`` 와
+    ``get_logs_for_operator`` 가 admin_logic 레벨에서 다시 검증하므로
+    클라이언트가 다른 룸의 데이터에 접근할 수 없다.
+    """
+    role = current_user.get("role", "")
+    user_id = current_user.get("id")
+    is_role_admin = role == "admin"
+
+    # ------------------------------------------------------------------
+    # 데이터 로드 — server-side 화이트리스트 적용
+    # ------------------------------------------------------------------
+    all_rooms = room_model.list_all()
+    visible_rooms = filter_rooms_for_role(all_rooms, user_role=role, user_id=user_id)
+    users = user_model.get_all_users() if is_role_admin else []
+    user_id_to_username = {u["id"]: u["username"] for u in users}
+    if not is_role_admin:
+        # 오퍼레이터는 사용자 목록 권한이 없으므로 자기 username 만 매핑.
+        user_id_to_username = {user_id: current_user.get("username", "-")}
+
+    # ------------------------------------------------------------------
+    # 룸 목록 표시
+    # ------------------------------------------------------------------
+    if is_role_admin:
+        st.subheader("🏠 활성 룸 목록")
+    else:
+        st.subheader("🏠 내 룸 목록")
+
+    if not visible_rooms:
+        if is_role_admin:
+            st.info("등록된 룸이 없습니다. 아래에서 새 룸을 생성하세요.")
+        else:
+            st.info("배정된 룸이 없습니다. 관리자에게 문의하세요.")
+    else:
+        rows = prepare_room_table_data(visible_rooms, user_id_to_username)
+        st.dataframe(pd.DataFrame(rows), use_container_width=True)
+
+    # ------------------------------------------------------------------
+    # 관리자 전용: 룸 생성 / 배정 / 강제 종료
+    # ------------------------------------------------------------------
+    if is_role_admin:
+        _render_admin_room_create(room_model, user_model, current_user)
+        _render_admin_assign_operator(room_model, user_model, visible_rooms)
+        _render_admin_force_close(room_model, visible_rooms)
+
+    # ------------------------------------------------------------------
+    # 룸별 기록 조회 / CSV 다운로드 (admin 전체 / operator 자기 룸)
+    # ------------------------------------------------------------------
+    _render_room_logs_section(
+        room_model=room_model,
+        usage_log_model=usage_log_model,
+        visible_rooms=visible_rooms,
+        role=role,
+        user_id=user_id,
+    )
+
+
+def _render_admin_room_create(room_model, user_model, current_user):
+    """관리자 룸 생성 폼."""
+    st.divider()
+    st.subheader("➕ 새 룸 생성")
+    with st.form("create_room_form"):
+        col1, col2 = st.columns(2)
+        with col1:
+            name = st.text_input("룸 이름 *", help="회의 이름 (예: A홀 기조연설)")
+            input_lang = st.selectbox(
+                "입력 언어",
+                options=["auto", "en", "ko", "ja", "zh"],
+                index=0,
+                help="auto = 자동 감지",
+            )
+        with col2:
+            output_lang = st.selectbox(
+                "출력 언어",
+                options=["ko", "en", "ja", "zh"],
+                index=0,
+            )
+            timeout_minutes = st.number_input(
+                "타임아웃 (분)",
+                min_value=1,
+                max_value=1440,
+                value=30,
+                step=5,
+                help="이 시간 동안 활동 없으면 룸 자동 종료",
+            )
+
+        submitted = st.form_submit_button("룸 생성")
+        if submitted:
+            valid, error = validate_room_creation_input(name, int(timeout_minutes))
+            if not valid:
+                st.error(error)
+                return
+            try:
+                from room_manager import _new_room_id
+
+                room_id = _new_room_id()
+                room_model.create(
+                    room_id=room_id,
+                    name=name.strip(),
+                    created_by=current_user["id"],
+                    input_lang=input_lang,
+                    output_lang=output_lang,
+                    timeout_minutes=int(timeout_minutes),
+                )
+                st.success(f"룸 '{name}' 생성됨 (ID: {room_id})")
+                st.rerun()
+            except Exception as e:
+                # RL-006: 내부 예외는 server-side 만 로그, 사용자에게는 일반 메시지.
+                print(f"[Admin] 룸 생성 실패: {e!r}")
+                st.error("룸 생성에 실패했습니다.")
+
+
+def _render_admin_assign_operator(room_model, user_model, visible_rooms):
+    """관리자 오퍼레이터 배정 폼."""
+    st.divider()
+    st.subheader("👤 오퍼레이터 배정")
+
+    if not visible_rooms:
+        st.caption("배정할 룸이 없습니다.")
+        return
+
+    # 오퍼레이터 후보: role in ('operator', 'admin')
+    all_users = user_model.get_all_users()
+    operator_candidates = [
+        u for u in all_users if u.get("role") in ("operator", "admin")
+    ]
+    if not operator_candidates:
+        st.caption("오퍼레이터로 배정 가능한 사용자가 없습니다.")
+        return
+
+    col1, col2 = st.columns(2)
+    with col1:
+        room_choice = st.selectbox(
+            "룸 선택",
+            options=[r["id"] for r in visible_rooms],
+            format_func=lambda rid: next(
+                f"{r['name']} ({rid})" for r in visible_rooms if r["id"] == rid
+            ),
+            key="assign_room_select",
+        )
+    with col2:
+        op_choice = st.selectbox(
+            "오퍼레이터 선택",
+            options=[u["id"] for u in operator_candidates],
+            format_func=lambda uid: next(
+                f"{u['username']} ({u['role']})"
+                for u in operator_candidates
+                if u["id"] == uid
+            ),
+            key="assign_op_select",
+        )
+
+    if st.button("배정", key="assign_op_button"):
+        ok = room_model.assign_operator(room_choice, op_choice)
+        if ok:
+            st.success("오퍼레이터가 배정되었습니다.")
+            st.rerun()
+        else:
+            st.error("배정에 실패했습니다.")
+
+
+def _render_admin_force_close(room_model, visible_rooms):
+    """관리자 룸 강제 종료."""
+    st.divider()
+    st.subheader("🛑 룸 강제 종료")
+    closeable = [r for r in visible_rooms if r.get("status") != "closed"]
+    if not closeable:
+        st.caption("종료 대상 룸이 없습니다.")
+        return
+
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        target_room = st.selectbox(
+            "종료할 룸",
+            options=[r["id"] for r in closeable],
+            format_func=lambda rid: next(
+                f"{r['name']} ({r.get('status', '')})"
+                for r in closeable
+                if r["id"] == rid
+            ),
+            key="force_close_select",
+        )
+    with col2:
+        if st.button("강제 종료", type="primary", key="force_close_button"):
+            try:
+                ok = room_model.force_close(target_room)
+                if ok:
+                    st.success("룸이 종료되었습니다.")
+                    st.rerun()
+                else:
+                    st.error("종료할 룸을 찾을 수 없습니다.")
+            except InvalidRoomTransition as e:
+                # 이론상 force_close 는 idempotent — 도달 시에도 generic.
+                print(f"[Admin] 룸 종료 전이 오류: {e!r}")
+                st.error("룸 종료에 실패했습니다.")
+
+
+def _render_room_logs_section(
+    *,
+    room_model,
+    usage_log_model,
+    visible_rooms,
+    role,
+    user_id,
+):
+    """역할별 룸 로그 조회/CSV 다운로드."""
+    st.divider()
+    st.subheader("📋 룸별 대화 기록")
+
+    if not visible_rooms:
+        st.caption("조회 가능한 룸이 없습니다.")
+        return
+
+    selected_room_id = st.selectbox(
+        "기록을 조회할 룸",
+        options=[r["id"] for r in visible_rooms],
+        format_func=lambda rid: next(
+            f"{r['name']} ({r['id']})" for r in visible_rooms if r["id"] == rid
+        ),
+        key="logs_room_select",
+    )
+
+    # admin_logic 가 다시 한 번 server-side 권한 검증 (RL-002 방어 레이어).
+    logs = get_logs_for_operator(
+        usage_log_model=usage_log_model,
+        room_model=room_model,
+        requested_room_id=selected_room_id,
+        user_role=role,
+        user_id=user_id,
+    )
+
+    if not logs:
+        st.info("해당 룸의 대화 기록이 없습니다.")
+        return
+
+    # 표 표시 (간략)
+    df_rows = []
+    for log in logs[:200]:  # 화면 표시는 최근 200개
+        metadata = log.get("metadata") or {}
+        df_rows.append(
+            {
+                "ID": log["id"],
+                "사용자": log.get("username", log.get("user_id", "-")),
+                "원문": metadata.get("source_text", "") if metadata else "",
+                "번역문": metadata.get("target_text", "") if metadata else "",
+                "시간(초)": log["duration_seconds"],
+                "생성일시": log.get("created_at", ""),
+            }
+        )
+    st.dataframe(pd.DataFrame(df_rows), use_container_width=True)
+
+    # CSV 다운로드 — 전체 룸 로그 (200 limit 무시)
+    csv_bytes = export_room_logs_csv(logs, selected_room_id)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    st.download_button(
+        label="📥 CSV 다운로드",
+        data=csv_bytes,
+        file_name=f"room_{selected_room_id}_logs_{timestamp}.csv",
+        mime="text/csv",
+    )
 
 
 if __name__ == "__main__":
