@@ -40,7 +40,7 @@
         overflow: hidden !important;
     }
 
-    /* iframe을 전체 화면에 정확히 맞춤 */
+    /* iframe과 Streamlit wrapper를 전체 화면에 맞춤 */
     .main iframe {
         width: 100% !important;
         height: 100vh !important;
@@ -48,6 +48,16 @@
         border: none !important;
         margin: 0 !important;
         padding: 0 !important;
+    }
+
+    /* Streamlit이 iframe wrapper에 고정 높이를 설정하므로 덮어씀 */
+    .main .stHtml,
+    .main [data-testid="stHtml"],
+    .main .element-container,
+    .main .stComponentV1 {
+        height: 100vh !important;
+        height: 100dvh !important;
+        max-height: 100vh !important;
     }
 
     /* 모든 컨테이너 패딩/마진 제거 */
@@ -104,6 +114,24 @@
         window.scrollTo(0, 0);
         document.body.scrollTop = 0;
         document.documentElement.scrollTop = 0;
+
+        // iframe과 모든 부모 wrapper의 높이를 뷰포트에 맞춤
+        function resizeIframeWrappers() {
+            var iframes = document.querySelectorAll('.main iframe');
+            iframes.forEach(function(iframe) {
+                var el = iframe.parentElement;
+                while (el && !el.classList.contains('main')) {
+                    el.style.setProperty('height', '100vh', 'important');
+                    el.style.setProperty('max-height', '100vh', 'important');
+                    el = el.parentElement;
+                }
+            });
+        }
+        resizeIframeWrappers();
+        new MutationObserver(resizeIframeWrappers).observe(
+            document.querySelector('.main') || document.body,
+            { childList: true, subtree: true }
+        );
 
         // 사용량 업데이트 메시지 리스너 추가
         window.addEventListener('message', function(event) {

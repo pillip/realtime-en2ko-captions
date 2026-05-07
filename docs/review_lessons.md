@@ -102,3 +102,30 @@ Preventable patterns identified during code reviews. Each entry includes when th
 - **Description**: CSS `100vh` on iOS Safari includes the space behind the browser's address bar, so elements sized to `100vh` extend beyond the visible viewport when the address bar is shown. This is a well-documented browser inconsistency affecting all iOS Safari versions. The fix is to use `100dvh` (dynamic viewport height, supported since Safari 15.4 / iOS 15.4, March 2022) with `100vh` as a fallback for older browsers.
 - **Prevention**: At implementation time, whenever `100vh` is used for full-viewport sizing, also declare `100dvh` as a progressive enhancement on the next line. The property cascade means older browsers ignore the unknown `dvh` unit and use the `vh` fallback.
 - **Recommended action**: Establish a project CSS convention: always pair `height: 100vh` with `height: 100dvh` when the intent is to fill the visible viewport. Apply retroactively to `scroll_lock.html` which uses `100vh` in multiple rules.
+
+## [RL-012] CSS `margin` vs `padding` confusion with `height: 100%` and `box-sizing: border-box`
+
+- **Category**: Code Quality
+- **Frequency**: 1
+- **Observed-In**: PR #58 (ISSUE-36 hotfix)
+- **Description**: `box-sizing: border-box` makes `padding` and `border` included in the element's declared `height`/`width`, but `margin` is always outside the content box regardless of `box-sizing`. Setting `body { height: 100%; margin-top: 5%; box-sizing: border-box }` results in the element occupying 105% of its container. This was caught in PR #57 review (CR-1) but shipped and required a hotfix.
+- **Prevention**: At implementation time, when using `height: 100%` or `height: 100vh`, verify that `margin` is zero on the same element. If top/bottom spacing is needed, use `padding` (which respects `border-box`) or adjust height to `calc(100% - margin)`. Include this check in CSS review checklists.
+- **Recommended action**: Add to project CSS conventions: "Never combine `height: 100%`/`100vh` with non-zero vertical `margin`. Use `padding` instead."
+
+## [RL-013] Streamlit inline styles require both CSS `!important` and JS DOM manipulation to override
+
+- **Category**: Architecture
+- **Frequency**: 1
+- **Observed-In**: PR #58 (ISSUE-36 hotfix)
+- **Description**: Streamlit sets inline `style="height: 900px"` on wrapper `<div>` elements around `st.components.v1.html()` iframes. Inline styles have higher specificity than external/embedded CSS rules, so even `!important` in a `<style>` block may not reliably override them across all Streamlit versions. PR #58 correctly uses a dual approach: CSS `!important` for known class selectors, plus a JS `MutationObserver` that walks the DOM and sets inline styles directly. The need for this dual approach was not anticipated during ISSUE-36 planning.
+- **Prevention**: When embedding content in Streamlit via `st.components.v1.html()` or `st.markdown(unsafe_allow_html=True)`, inspect the generated DOM (DevTools) to identify all inline styles that Streamlit applies. Plan CSS override strategies accordingly at design time, not as hotfixes.
+- **Recommended action**: Document the known Streamlit wrapper DOM structure and inline style patterns in the project architecture docs. Include the JS DOM walker pattern as a standard approach for full-viewport Streamlit components.
+
+## [RL-014] Hotfix PRs without regression tests for the specific fix
+
+- **Category**: Testing
+- **Frequency**: 1
+- **Observed-In**: PR #58 (ISSUE-36 hotfix)
+- **Description**: A hotfix changed `margin` to `padding` and added wrapper div selectors, but no tests were added to verify these specific changes. The existing tests (from PR #57) check for `height: 100%` and absence of `90vh`, which still pass, but would not catch a regression that reintroduces `margin-top`. Hotfixes are especially prone to this because time pressure encourages skipping tests.
+- **Prevention**: Even for hotfixes, add at least one test per fix that would fail if the fix were reverted. For CSS-based fixes, a simple string-presence test (`assert "margin: 0" in body_css`) takes under 5 minutes to write and prevents the exact regression the hotfix addresses.
+- **Recommended action**: Establish a team rule: every hotfix commit must include at least one regression test. Block merge if the hotfix-specific test is missing.

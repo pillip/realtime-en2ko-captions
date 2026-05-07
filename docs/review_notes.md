@@ -1,22 +1,21 @@
-# Review Notes -- PR #57 (ISSUE-36: webrtc.html viewport responsive height)
+# Review Notes -- PR #58 (fix(ui): ISSUE-36 viewport height overflow hotfix)
 
 **Reviewer**: Claude Opus 4.6 (automated)
 **Date**: 2026-05-06
-**PR Size**: +105 -6 lines across 3 files (2 HTML, 1 test)
-**Test Results**: 9/9 passing
-**Confidence Rating**: High -- all changed files, existing layout files, and the full issue AC were reviewed.
+**PR Size**: +50 -8 lines across 2 files (both HTML)
+**Test Results**: 322/322 passing (9 viewport-specific tests passing)
+**Confidence Rating**: High -- all changed files reviewed, CSS box model behavior verified analytically, pre-existing tests confirm no regressions.
 
 ---
 
 ## Summary
 
-PR #57 fixes the viewport-height mismatch in the caption iframe. Previously, the iframe was fixed at 900px (via `st.components.v1.html(height=900)`) and the body used `90vh` (= 810px of 900px), ignoring the actual browser viewport. This PR:
+PR #58 is a hotfix for PR #57 (ISSUE-36), addressing two issues that PR #57's review (CR-1 and CR-2) already identified:
 
-1. Adds `height: 100vh !important` to `.main iframe` in `scroll_lock.html` (overrides inline 900px)
-2. Changes `body` height from `90vh` to `100%` in `webrtc.html` (3 occurrences: main rule + 2 media queries)
-3. Adds 9 regression tests validating the CSS changes
+1. **webrtc.html**: `body { margin: 5% 0 0 0; height: 100% }` caused 105% total height (margin is outside the content box even with `box-sizing: border-box`). Fixed by converting `margin` to `padding`, which stays inside the box with `border-box`.
+2. **scroll_lock.html**: Streamlit injects inline `height: 900px` on wrapper `<div>`s around the iframe (not just the iframe itself). Added CSS selectors and a JS DOM-walking function to override these wrappers to `100vh`.
 
-The approach is sound: the parent page's `scroll_lock.html` (where `vh` refers to the browser viewport) sets the iframe to `100vh`, and the iframe content uses `100%` (which correctly resolves to the iframe's dimensions rather than defining its own viewport unit).
+Both fixes address real, visible bugs. The approach is correct.
 
 ---
 
@@ -24,47 +23,75 @@ The approach is sound: the parent page's `scroll_lock.html` (where `vh` refers t
 
 ### Code Review
 
-### [Info] CR-1: Body `margin-top: 5%` causes slight overflow with `height: 100%`
+#### [Low] CR-1: `padding-top: 5%` resolves against width, not height
 
-- **File**: `components/webrtc.html:13` (`margin: 5% 0 0 0`)
-- **Issue**: The body has `height: 100%` and `margin-top: 5%`, so the total space occupied is 105% of the containing block. The `overflow: hidden !important` on body clips the overflow, so content is not visibly broken. However, the effective visible area for body content is 95% of the viewport, not 100%. This was the same behavior before the change (90vh + 5% margin = also overflow), so this is not a regression.
-- **Blocking**: No. Pre-existing behavior, not introduced by this PR.
-- **Suggestion**: Consider using `padding-top` instead of `margin-top` (which stays inside the content box) or adjusting height to `calc(100% - 5%)` in a follow-up.
+- **File**: `components/webrtc.html:20` (`padding: 5% 10px 10px 10px`)
+- **Issue**: In CSS, percentage values for `padding-top` (and `padding-bottom`) resolve against the **width** of the containing block, not the height. This means the top padding will vary with the iframe width, not its height. On a 1920px-wide viewport, `5%` = 96px of top padding. On a 768px-wide viewport, `5%` = ~38px. On a 375px phone, `5%` = ~19px. This is different from the original `margin-top: 5%` which also resolves against the containing block's width (same CSS rule), so the visual spacing is actually preserved.
+- **Blocking**: No. The behavior matches the original intent, and the percentage-of-width rule applies identically to the old `margin-top: 5%`. But developers should be aware this is not "5% of height."
+- **Suggestion**: If the intent is a fixed visual spacing, consider using `padding-top: clamp(16px, 3vh, 48px)` for height-relative spacing. Low priority.
 
-### [Medium] CR-2: Mobile Safari `100vh` includes address bar, causing content clipping
+#### [Low] CR-2: MutationObserver may fire excessively on Streamlit re-renders
 
-- **File**: `components/scroll_lock.html:46` (`height: 100vh !important`)
-- **Issue**: On iOS Safari, `100vh` includes the space behind the browser's address/navigation bar. When the address bar is visible (e.g., after page load, before scrolling), `100vh` is taller than the visible viewport, causing the bottom ~70-90px of the iframe to be hidden behind the browser chrome. This is the well-known "iOS 100vh bug." The fix is to use `100dvh` (dynamic viewport height, supported since iOS 15.4 / Safari 15.4, 2022) with a `100vh` fallback.
-- **Blocking**: No -- the target browsers listed in CLAUDE.md are "Chrome/Edge/Safari latest," and this is an improvement over the previous fixed-900px approach even on mobile Safari. However, this is a meaningful UX issue for mobile users.
-- **Suggested fix** (follow-up):
-  ```css
-  .main iframe {
-      height: 100vh !important;  /* fallback */
-      height: 100dvh !important; /* modern browsers */
-  }
+- **File**: `components/scroll_lock.html:131-134`
+- **Issue**: The MutationObserver watches `{ childList: true, subtree: true }` on `.main` (or `document.body` as fallback). `resizeIframeWrappers()` modifies `style` attributes on observed elements. Importantly, the observer only watches `childList` (not `attributes`), so setting `style` on existing elements does NOT trigger re-observation -- this is correct and avoids an infinite loop. However, Streamlit frequently re-renders its DOM (adding/removing child nodes), which will trigger `resizeIframeWrappers()` on every such mutation. The function queries and iterates all iframes and walks up the DOM tree each time.
+- **Blocking**: No. The function is lightweight (a few DOM queries and property sets), and Streamlit mutations are infrequent enough that this will not cause performance issues in practice. The observer correctly limits scope to `childList` only.
+- **Suggestion**: For extra safety, consider debouncing the callback with `requestAnimationFrame` to batch rapid mutations:
+  ```js
+  var pending = false;
+  new MutationObserver(function() {
+      if (!pending) {
+          pending = true;
+          requestAnimationFrame(function() {
+              resizeIframeWrappers();
+              pending = false;
+          });
+      }
+  }).observe(...);
   ```
-  Apply the same pattern to all `100vh` usages in `scroll_lock.html`.
 
-### [Low] CR-3: Test regex patterns are fragile against whitespace/formatting changes
+#### [Low] CR-3: DOM walk terminates correctly but could add a depth guard
 
-- **File**: `tests/test_viewport_responsive.py:55-56, 63-64`
-- **Issue**: The media query tests use `\n\s*\n` as the end delimiter for the media query block. If someone reformats the CSS (e.g., removes the blank line between rules, or a minifier strips whitespace), the regex will fail to match and the test will error with "media query not found" rather than testing the actual content. The `_get_body_css()` helper uses `[^}]*}` which is more robust.
-- **Mitigating factors**: These are static HTML files unlikely to be minified, and the error messages are descriptive enough to debug.
+- **File**: `components/scroll_lock.html:122-127`
+- **Issue**: The `while (el && !el.classList.contains('main'))` loop walks from iframe parent up to `.main`. The two termination conditions are: (1) `el` becomes `null` (reached document root), or (2) `el.classList.contains('main')` (reached the target container). Both are correct. In Streamlit's DOM structure, the `.main` element is typically 3-5 levels above the iframe, so this loop iterates at most ~5 times. There is no risk of infinite loop since `el = el.parentElement` always moves toward the root.
+- **Blocking**: No. The implementation is safe.
+- **Suggestion (optional)**: For defensive coding, a depth limit (e.g., `maxDepth = 20`) could prevent theoretical issues if the DOM structure is unexpectedly deep, but this is not practically necessary.
+
+#### [Medium] CR-4: No tests for the new hotfix behaviors
+
+- **File**: N/A (no test files changed)
+- **Issue**: This hotfix changes two behaviors: (1) body uses padding instead of margin, and (2) scroll_lock targets Streamlit wrapper divs. The existing 9 viewport tests still pass, but they test for the presence of `height: 100%` and absence of `90vh` -- they do not verify the margin-to-padding change or the new wrapper selectors. A regression could reintroduce `margin-top` without failing any test.
+- **Blocking**: No, for a hotfix. But tests should be added promptly.
+- **Suggested tests**:
+  ```python
+  def test_body_uses_zero_margin():
+      """body should have margin: 0 (no margin overflow)"""
+      body_css = _get_body_css()
+      assert "margin: 0" in body_css
+
+  def test_body_uses_padding_top_for_spacing():
+      """body should use padding (not margin) for top spacing"""
+      body_css = _get_body_css()
+      assert re.search(r"padding:\s*5%", body_css)
+
+  def test_scroll_lock_targets_wrapper_divs():
+      """scroll_lock.html should target .stHtml wrapper for height override"""
+      css = _read_scroll_lock()
+      assert ".stHtml" in css
+      assert "element-container" in css
+  ```
+
+#### [Info] CR-5: Selector `.stComponentV1` targets `st.components.v1.html`, `.stHtml` targets `st.html`
+
+- **File**: `components/scroll_lock.html:54-57`
+- **Issue**: The wrapper selectors cover two different Streamlit embedding mechanisms: `.stHtml` / `[data-testid="stHtml"]` (for `st.html()`, which `scroll_lock.html` itself is rendered via `st.markdown`) and `.stComponentV1` / `.element-container` (for `st.components.v1.html()`, which `webrtc.html` is rendered via). Both are needed since `scroll_lock.html` CSS applies to the parent page affecting both its own rendering and the iframe's wrappers.
+- **Blocking**: No. The selectors are correct for the current Streamlit version.
+- **Risk**: Streamlit has a history of renaming internal CSS classes between versions. The `[data-testid="stHtml"]` attribute selector is more stable than the class-based `.stHtml` since Streamlit explicitly maintains `data-testid` for testing. However, `.element-container` and `.stComponentV1` are internal class names that may change. The JS DOM walker (`resizeIframeWrappers`) serves as a robust fallback since it operates on actual DOM structure rather than class names.
+
+#### [Info] CR-6: `html` added to `*` selector is redundant but harmless
+
+- **File**: `components/webrtc.html:8` (`*, html { box-sizing: border-box; }`)
+- **Issue**: The universal selector `*` already matches all elements including `html`. Adding `, html` to the selector is redundant. This appears to have been done when the `html` rule was added, perhaps to emphasize the intent. It has zero functional impact.
 - **Blocking**: No.
-- **Suggestion**: Use a more robust end delimiter, such as matching the closing brace at the correct nesting level, or extract the full media query block using a brace-counting approach.
-
-### [Low] CR-4: Tests read HTML files from disk on every test method invocation
-
-- **File**: `tests/test_viewport_responsive.py:15-21`
-- **Issue**: Each of the 9 tests calls `_read_webrtc()` or `_read_scroll_lock()`, performing file I/O on every invocation. For a file this size (~25K tokens), this is negligible in absolute terms but could be avoided by reading once at class or module level.
-- **Blocking**: No. Performance impact is trivial.
-- **Suggestion**: Use a `@pytest.fixture(scope="module")` or class-level `setup_class` to read the file once.
-
-### [Info] CR-5: `app.py:209` still has `height=900` -- intentional per issue scope
-
-- **File**: `app.py:209` (`st.components.v1.html(html_content, height=900, scrolling=False)`)
-- **Issue**: The `height=900` parameter remains. Per the issue scope: "app.py의 height=900 파라미터 제거 (CSS가 덮어쓰므로 폴백으로 유지)." This is intentional -- `scroll_lock.html`'s `!important` overrides Streamlit's inline `style="height: 900px"`, but keeping the value ensures Streamlit's component API receives a valid height (some Streamlit versions require a numeric height).
-- **Blocking**: No. This is correctly scoped out.
 
 ---
 
@@ -72,39 +99,47 @@ The approach is sound: the parent page's `scroll_lock.html` (where `vh` refers t
 
 No security issues identified.
 
-- The CSS changes are in static HTML files served from the server filesystem. No user input reaches these files.
-- `scroll_lock.html` is injected via `st.markdown(unsafe_allow_html=True)`, but its content is a static file read from disk, not constructed from user input.
-- No new JavaScript is introduced.
-- No authentication, authorization, or data handling changes.
+**Analysis**:
+- The CSS and JS changes are in static HTML files served from the server filesystem. No user input flows into these files.
+- `scroll_lock.html` is injected via `st.markdown(unsafe_allow_html=True)` -- this is a pre-existing pattern where the HTML content is read from a static file on disk, not constructed from user input. The `unsafe_allow_html` flag is necessary for the CSS/JS injection into Streamlit's DOM and is not a vulnerability in this context.
+- The new `resizeIframeWrappers()` JS function only reads DOM structure (`.querySelectorAll`, `.parentElement`, `.classList.contains`) and sets inline styles. It does not process any external input, does not use `innerHTML`, and does not execute dynamic code.
+- The `MutationObserver` only observes DOM tree changes (child additions/removals) and calls the safe `resizeIframeWrappers` function. It does not observe or react to attribute changes from external sources.
+- No new network calls, no new data handling, no credential changes.
 
 ---
 
 ## AC Verification
 
-| AC | Status | Notes |
-|----|--------|-------|
-| 1080p display fills viewport | Pass | `100vh` on iframe + `100%` on body = full viewport coverage |
-| 768px laptop no clipping | Pass | Media query updated to `100%`, status chip/button use `position: fixed` with bottom offsets |
-| 4K monitor no empty space | Pass | `100vh` scales to any viewport height |
-| Fullscreen round-trip unchanged | Pass | `#viewer:fullscreen` CSS untouched, 2 regression tests confirm `100vh` remains |
-| FAB/settings positions correct | Pass | All positioned elements use `fixed`/`absolute` with `top`/`right`/`bottom` offsets, unaffected by body height |
+Based on the problem statement in the PR description:
+
+| Issue | Fixed | How |
+|-------|-------|-----|
+| `margin: 5%` + `height: 100%` = 105% overflow | Yes | Margin converted to padding; with `box-sizing: border-box`, padding stays inside the 100% height |
+| `html` element has no explicit height for `body { height: 100% }` reference | Yes | `html { height: 100%; margin: 0; padding: 0; }` added |
+| Streamlit wrapper divs have inline `height: 900px` | Yes | CSS selectors + JS DOM walker override all wrapper heights to `100vh` |
+| Media queries maintain top spacing | Yes | `padding: 5% 5px 5px 5px` (768px) and `padding: 2% 5px 5px 5px` (600px) updated consistently |
 
 ---
 
 ## Verdict
 
-**APPROVE**
+**APPROVE** -- with suggestions.
 
-The PR is clean, minimal, and correctly solves the stated problem. All 9 tests pass. The CSS approach (parent sets iframe to `100vh`, child uses `100%`) is the correct way to handle iframe-within-viewport sizing. No blocking issues found.
+The hotfix correctly addresses all three viewport overflow issues identified in the PR description. The CSS box model reasoning is sound: converting `margin-top` to `padding-top` with `box-sizing: border-box` eliminates the 105% overflow, and the Streamlit wrapper height overrides (via both CSS selectors and JS DOM walker) provide a robust dual approach.
 
-**Non-blocking suggestions for follow-up:**
-- CR-2: Add `100dvh` for mobile Safari compatibility
-- CR-3: Harden media query test regex patterns
+**Blocking issues**: None.
+
+**Non-blocking suggestions**:
+- CR-4 (Medium): Add tests for the margin-to-padding change and wrapper selector presence to prevent regressions.
+- CR-2 (Low): Consider debouncing the MutationObserver callback.
+- CR-1 (Low): Be aware that `padding-top: 5%` resolves against width, not height.
 
 ---
 
 ## Follow-ups
 
-1. **[Follow-up] Add `100dvh` fallback for iOS Safari** -- Apply `height: 100dvh !important` as a progressive enhancement after `height: 100vh !important` in `scroll_lock.html`. This eliminates the iOS Safari address-bar-overlap issue for all `100vh` usages. Estimated: 15 minutes. (CR-2)
+1. **[Follow-up] Add regression tests for margin-to-padding fix** -- Add tests verifying `body { margin: 0 }` and `padding-top: 5%` to prevent reintroduction of margin-based spacing. Also test that `scroll_lock.html` contains the wrapper div selectors (`.stHtml`, `.element-container`). Estimated: 15 minutes. (CR-4)
 
-2. **[Follow-up] Address `body margin-top: 5%` + `height: 100%` interaction** -- Consider whether the 5% top margin should be converted to `padding-top` or the height adjusted to `calc(100% - 5%)` to avoid the silent overflow clip. Estimated: 10 minutes. (CR-1)
+2. **[Follow-up] Debounce MutationObserver callback** -- Wrap `resizeIframeWrappers` in a `requestAnimationFrame` debounce to batch rapid Streamlit DOM mutations. Low priority since the current implementation has no measured performance issue. (CR-2)
+
+3. **[Follow-up] Evaluate Streamlit selector stability** -- Document which Streamlit CSS classes are used and monitor for breakage across Streamlit version upgrades. The `data-testid` attribute selectors are more stable than class-based ones. (CR-5)
