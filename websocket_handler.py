@@ -322,7 +322,13 @@ def _record_usage(
     source_lang,
     target_lang,
 ):
-    """사용량 기록"""
+    """사용량 기록 (ISSUE-29: room_id 컬럼 동시 기록).
+
+    room_id 는 _authenticate_client 가 검증/주입한 값이다 (RL-002).
+    클라이언트가 transcript payload 에 보낸 room_id 는 무시하고, 인증 시점
+    에 server-side 에서 결정된 ``current_user["room_id"]`` 만 사용한다 —
+    이 분기로 클라이언트가 다른 룸의 로그를 위조할 수 없다.
+    """
     try:
         user_model = get_user_model()
         usage_log_model = get_usage_log_model()
@@ -347,6 +353,7 @@ def _record_usage(
                 "source_text": transcript,
                 "target_text": translated_text,
             },
+            room_id=current_user.get("room_id"),
         )
 
         update_user_session(current_user["id"])

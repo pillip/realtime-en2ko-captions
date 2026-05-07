@@ -192,6 +192,30 @@ def is_admin() -> bool:
     return user is not None and user.get("role") == "admin"
 
 
+def is_operator() -> bool:
+    """오퍼레이터 권한 확인 (ISSUE-29).
+
+    "operator" 는 별도 역할이며 admin 과 겹치지 않는다. admin 도 허용해야
+    하는 경우 :func:`is_admin_or_operator` 를 사용한다 — 이 분리로 호출자가
+    각각의 권한 의미를 명시적으로 표현할 수 있다 (RL-002 — 역할 신뢰는
+    server-side session 에서만).
+    """
+    user = get_current_user()
+    return user is not None and user.get("role") == "operator"
+
+
+def is_admin_or_operator() -> bool:
+    """admin 또는 operator 역할 보유 여부 (ISSUE-29).
+
+    관리자 대시보드는 두 역할 모두 진입 가능하지만 보여줄 데이터는
+    호출지점에서 별도로 좁힌다 (admin_logic.filter_rooms_for_role).
+    """
+    user = get_current_user()
+    if user is None:
+        return False
+    return user.get("role") in ("admin", "operator")
+
+
 def is_user_active() -> bool:
     """사용자 활성 상태 확인"""
     user = get_current_user()
@@ -271,6 +295,33 @@ def require_admin(func: Callable) -> Callable:
 
         if not is_admin():
             st.error("관리자 권한이 필요합니다.")
+            st.stop()
+
+        return func(*args, **kwargs)
+
+    return wrapper
+
+
+def require_admin_or_operator(func: Callable) -> Callable:
+    """admin 또는 operator 권한 필요 데코레이터 (ISSUE-29).
+
+    관리자 대시보드 진입 시 두 역할 모두 통과시키되, role="user" 와
+    비인증 사용자는 차단한다. 표시 가능한 데이터는 호출자가
+    :func:`admin_logic.filter_rooms_for_role` 등을 통해 다시 좁힌다 —
+    데코레이터는 페이지 진입 검증만 책임지고, 콘텐츠 가시성은 별도로
+    server-side 에서 검증한다 (RL-002).
+    """
+
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        init_session_state()
+
+        if not is_authenticated():
+            st.warning("로그인이 필요합니다.")
+            st.stop()
+
+        if not is_admin_or_operator():
+            st.error("관리자 또는 오퍼레이터 권한이 필요합니다.")
             st.stop()
 
         return func(*args, **kwargs)
