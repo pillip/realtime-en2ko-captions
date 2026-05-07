@@ -42,7 +42,7 @@ async def create_openai_session() -> dict:
                     "OpenAI-Beta": "realtime=v1",
                 },
                 json={
-                    "model": "gpt-4o-realtime-preview-2024-12-17",
+                    "model": "gpt-4o-realtime-preview",
                     "voice": "alloy",
                     "instructions": (
                         "You are a helpful assistant that "
@@ -51,7 +51,7 @@ async def create_openai_session() -> dict:
                         "English speech, technical terms, and "
                         "code-switching scenarios."
                     ),
-                    "input_audio_transcription": {"model": "whisper-1"},
+                    "input_audio_transcription": {"model": "gpt-4o-transcribe"},
                     "turn_detection": {
                         "type": "server_vad",
                         "threshold": 0.5,
@@ -77,7 +77,7 @@ async def create_openai_session() -> dict:
                 "expires_at": expires_at.isoformat(),
                 "model": session_data.get(
                     "model",
-                    "gpt-4o-realtime-preview-2024-12-17",
+                    "gpt-4o-realtime-preview",
                 ),
             }
 

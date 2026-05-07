@@ -35,7 +35,7 @@ class TestCreateOpenaiSession:
         mock_response.json.return_value = {
             "id": "sess_abc123",
             "client_secret": {"value": "secret_token_xyz"},
-            "model": "gpt-4o-realtime-preview-2024-12-17",
+            "model": "gpt-4o-realtime-preview",
         }
 
         async def mock_post(*args, **kwargs):
@@ -55,7 +55,7 @@ class TestCreateOpenaiSession:
         assert result["id"] == "sess_abc123"
         assert result["client_secret"] == "secret_token_xyz"
         assert "expires_at" in result
-        assert result["model"] == "gpt-4o-realtime-preview-2024-12-17"
+        assert result["model"] == "gpt-4o-realtime-preview"
 
     def test_api_returns_401_raises_exception(self, monkeypatch):
         """API가 401 반환 시 Exception 발생"""
@@ -147,7 +147,7 @@ class TestCreateOpenaiSession:
         assert result["id"] is None
         assert result["client_secret"] is None
         assert "expires_at" in result
-        assert result["model"] == "gpt-4o-realtime-preview-2024-12-17"
+        assert result["model"] == "gpt-4o-realtime-preview"
 
 
 # ---------------------------------------------------------------------------

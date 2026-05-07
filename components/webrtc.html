@@ -1954,7 +1954,7 @@ try {
       console.log('📤 SDP Offer 생성됨');
 
       // OpenAI Realtime API에 연결 요청
-      const response = await fetch(`https://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01`, {
+      const response = await fetch(`https://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${openaiSession.client_secret}`,
