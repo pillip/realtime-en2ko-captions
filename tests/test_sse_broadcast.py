@@ -601,3 +601,477 @@ class _StubRoomRepo:
 
     def get_by_id(self, room_id: str) -> dict[str, Any] | None:
         return self._rows.get(room_id)
+
+
+# ---------------------------------------------------------------------------
+# publish queue-saturation paths (lines 221-231)
+# ---------------------------------------------------------------------------
+class TestPublishSaturationPaths:
+    """publish 의 QueueFull 처리 분기 — 가장 오래된 메시지 제거 / 더블 saturation."""
+
+    @pytest.mark.asyncio
+    async def test_publish_drops_oldest_when_queue_full_and_delivers_new(self):
+        """큐가 가득 차면 oldest 1건 삭제 후 새 payload 가 들어간다."""
+        from sse_broadcast import BroadcastManager
+
+        # maxsize=1 으로 만들어서 두 번째 publish 가 saturation 분기를 타게 함.
+        mgr = BroadcastManager(queue_maxsize=1)
+        q = await mgr.register_viewer("r1", "ko")
+
+        first = {"text": "first", "lang": "ko", "timestamp": 1.0}
+        second = {"text": "second", "lang": "ko", "timestamp": 2.0}
+
+        await mgr.publish("r1", "ko", first)
+        # 두 번째 publish 는 큐 가득 → get_nowait 후 put.
+        await mgr.publish("r1", "ko", second)
+
+        # get_nowait 의 결과는 second (oldest 인 first 가 빠진 뒤 second 가 들어감).
+        got = q.get_nowait()
+        assert got == second
+        # 큐는 다시 비어 있어야 한다.
+        assert q.qsize() == 0
+
+        await mgr.unregister_viewer("r1", "ko", q)
+
+    @pytest.mark.asyncio
+    async def test_publish_double_saturation_drops_message_and_logs(self, capsys):
+        """두 번째 put_nowait 도 QueueFull → 메시지 drop + 서버 로그."""
+        from sse_broadcast import BroadcastManager
+
+        mgr = BroadcastManager(queue_maxsize=1)
+        q = await mgr.register_viewer("r1", "ko")
+        # 큐를 미리 채워둠.
+        q.put_nowait({"text": "preexisting"})
+
+        # put_nowait 를 항상 QueueFull raise — 동시 producer 시뮬레이션.
+        original_put = q.put_nowait
+
+        def _always_full(_payload):
+            raise asyncio.QueueFull()
+
+        q.put_nowait = _always_full
+        # get_nowait 도 QueueEmpty 를 raise 하도록 만들어 swallow 분기를 친다.
+        original_get = q.get_nowait
+
+        def _empty(_=None):
+            raise asyncio.QueueEmpty()
+
+        q.get_nowait = _empty
+
+        try:
+            await mgr.publish("r1", "ko", {"text": "drop-me"})
+        finally:
+            q.put_nowait = original_put
+            q.get_nowait = original_get
+
+        captured = capsys.readouterr()
+        # drop 로그가 남아야 한다.
+        assert "[SSE] dropping payload" in captured.out
+        assert "viewer queue saturated" in captured.out
+
+        await mgr.unregister_viewer("r1", "ko", q)
+
+    @pytest.mark.asyncio
+    async def test_publish_recovers_when_get_raises_queue_empty(self):
+        """QueueFull 직후 get_nowait 가 QueueEmpty (race) → swallow 후 retry put."""
+        from sse_broadcast import BroadcastManager
+
+        mgr = BroadcastManager(queue_maxsize=1)
+        q = await mgr.register_viewer("r1", "ko")
+
+        # put_nowait 를 첫 호출에서만 QueueFull 을 raise, 그 다음엔 정상 동작.
+        original_put = q.put_nowait
+        call_count = {"n": 0}
+        captured_payloads = []
+
+        def _put(payload):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise asyncio.QueueFull()
+            captured_payloads.append(payload)
+            return original_put(payload)
+
+        # get_nowait 는 항상 QueueEmpty (race 시뮬레이션).
+        original_get = q.get_nowait
+
+        def _empty(_=None):
+            raise asyncio.QueueEmpty()
+
+        q.put_nowait = _put
+        q.get_nowait = _empty
+
+        try:
+            await mgr.publish("r1", "ko", {"text": "racy"})
+        finally:
+            q.put_nowait = original_put
+            q.get_nowait = original_get
+
+        # 두 번째 put 시도가 성공해 payload 가 들어갔어야 한다.
+        assert captured_payloads == [{"text": "racy"}]
+
+        await mgr.unregister_viewer("r1", "ko", q)
+
+
+# ---------------------------------------------------------------------------
+# _coerce_output_langs (lines 681-683 + parsing edges)
+# ---------------------------------------------------------------------------
+class TestCoerceOutputLangs:
+    """_coerce_output_langs — JSON / 잘못된 형식 / 빈 입력에 대한 강건성."""
+
+    def test_invalid_json_returns_fallback(self):
+        from sse_broadcast import _coerce_output_langs
+
+        assert _coerce_output_langs("not-json", "ko") == ["ko"]
+        # 잘못된 JSON 텍스트도 fallback.
+        assert _coerce_output_langs("{not-valid", "en") == ["en"]
+
+    def test_json_but_not_list_returns_fallback(self):
+        """JSON 으로 디코딩되지만 리스트가 아닌 경우 → fallback."""
+        from sse_broadcast import _coerce_output_langs
+
+        assert _coerce_output_langs('"ko"', "ko") == ["ko"]  # 문자열
+        assert _coerce_output_langs('{"key": "ko"}', "ko") == ["ko"]  # 객체
+        assert _coerce_output_langs("123", "ja") == ["ja"]  # 숫자
+
+    def test_none_returns_fallback(self):
+        from sse_broadcast import _coerce_output_langs
+
+        assert _coerce_output_langs(None, "ko") == ["ko"]
+
+    def test_empty_string_returns_fallback(self):
+        from sse_broadcast import _coerce_output_langs
+
+        # 빈 문자열은 falsy 이므로 isinstance(raw, str) and raw 를 통과 못함 →
+        # 아래 fallback 분기로 떨어진다.
+        assert _coerce_output_langs("", "ko") == ["ko"]
+
+    def test_empty_list_returns_empty_list_passthrough(self):
+        """빈 list 입력은 list 분기에서 그대로 빈 list 반환 (fallback 미사용).
+
+        주의: _coerce_output_langs 자체는 빈 list 도 그대로 통과시킨다 —
+        이는 _coerce_output_langs_list 가 fallback 을 prepend 하는 위쪽 wrapper
+        의 역할이다. 이 테스트는 두 함수의 책임 분리를 명확히 한다.
+        """
+        from sse_broadcast import _coerce_output_langs
+
+        assert _coerce_output_langs([], "ko") == []
+
+    def test_valid_json_list_returns_parsed(self):
+        from sse_broadcast import _coerce_output_langs
+
+        assert _coerce_output_langs('["ko","en","ja"]', "ko") == ["ko", "en", "ja"]
+
+    def test_filters_non_string_items(self):
+        """list 의 비-문자열 요소는 제외된다 (방어)."""
+        from sse_broadcast import _coerce_output_langs
+
+        # JSON 안에 숫자/None 이 섞여 있어도 string 만 추려낸다.
+        assert _coerce_output_langs('["ko",1,null,"en"]', "ko") == ["ko", "en"]
+
+
+class TestCoerceOutputLangsListWithFallback:
+    """_coerce_output_langs_list — fallback 을 항상 결과 안에 보존한다."""
+
+    def test_fallback_prepended_when_missing(self):
+        from sse_broadcast import _coerce_output_langs_list
+
+        # fallback 'ja' 가 결과에 없으면 맨 앞에 prepend 돼야 한다.
+        result = _coerce_output_langs_list('["ko","en"]', "ja")
+        assert result == ["ja", "ko", "en"]
+
+    def test_fallback_already_present_not_duplicated(self):
+        from sse_broadcast import _coerce_output_langs_list
+
+        result = _coerce_output_langs_list('["ko","en"]', "ko")
+        assert result == ["ko", "en"]
+
+    def test_invalid_input_returns_just_fallback(self):
+        from sse_broadcast import _coerce_output_langs_list
+
+        assert _coerce_output_langs_list(None, "ko") == ["ko"]
+        assert _coerce_output_langs_list("not-json", "ko") == ["ko"]
+
+
+# ---------------------------------------------------------------------------
+# /view/{room_id} (lines 367-399, 394-397)
+# ---------------------------------------------------------------------------
+class TestHandleView:
+    """_handle_view — repo 예외 / 룸 미존재 / 템플릿 렌더 실패 분기."""
+
+    @pytest.mark.asyncio
+    async def test_unknown_room_returns_404_html(self):
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from sse_broadcast import BroadcastManager, build_sse_app
+
+        repo = _StubRoomRepo({})
+        mgr = BroadcastManager()
+        app = build_sse_app(broadcast_manager=mgr, room_repo=repo)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/view/no-such-room")
+            assert resp.status == 404
+            text = await resp.text()
+            # RL-006: generic friendly body, no internal detail.
+            assert "Traceback" not in text
+            assert "룸을 찾을 수 없습니다" in text
+
+    @pytest.mark.asyncio
+    async def test_repo_exception_returns_404_no_leak(self):
+        """repo.get_by_id 가 raise → 404 + generic body (RL-006)."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from sse_broadcast import BroadcastManager, build_sse_app
+
+        class ExplodingRepo:
+            def get_by_id(self, room_id):
+                raise RuntimeError("DB internal: secret/path/to/db.sqlite locked")
+
+        mgr = BroadcastManager()
+        app = build_sse_app(broadcast_manager=mgr, room_repo=ExplodingRepo())
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/view/whatever")
+            assert resp.status == 404
+            text = await resp.text()
+            # 디테일 누설 없음.
+            assert "secret/path" not in text
+            assert "RuntimeError" not in text
+            assert "Traceback" not in text
+
+    @pytest.mark.asyncio
+    async def test_template_render_failure_returns_404(self, monkeypatch):
+        """_render_viewer_html 이 raise → 404 with generic body, no traceback."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from sse_broadcast import BroadcastManager, build_sse_app
+
+        repo = _StubRoomRepo(
+            {
+                "r1": {
+                    "id": "r1",
+                    "status": "active",
+                    "primary_output_lang": "ko",
+                    "output_langs": '["ko","en"]',
+                    "name": "Room 1",
+                }
+            }
+        )
+
+        mgr = BroadcastManager()
+        app = build_sse_app(broadcast_manager=mgr, room_repo=repo)
+
+        # _render_viewer_html 만 패치해 raise 시킴.
+        import sse_broadcast as _sb
+
+        def _explode(**_kwargs):
+            raise FileNotFoundError("template missing /secret/path/to/viewer.html")
+
+        monkeypatch.setattr(_sb, "_render_viewer_html", _explode)
+
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/view/r1")
+            assert resp.status == 404
+            text = await resp.text()
+            assert "Traceback" not in text
+            assert "secret/path" not in text
+            # generic body 가 그대로 나가야 한다.
+            assert "룸을 찾을 수 없습니다" in text
+
+
+# ---------------------------------------------------------------------------
+# _handle_health (line 265)
+# ---------------------------------------------------------------------------
+class TestHandleHealth:
+    @pytest.mark.asyncio
+    async def test_health_returns_ok(self):
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from sse_broadcast import BroadcastManager, build_sse_app
+
+        repo = _StubRoomRepo({})
+        mgr = BroadcastManager()
+        app = build_sse_app(broadcast_manager=mgr, room_repo=repo)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/health")
+            assert resp.status == 200
+            text = await resp.text()
+            assert text == "OK"
+
+
+# ---------------------------------------------------------------------------
+# channel_count (line 238)
+# ---------------------------------------------------------------------------
+class TestChannelCount:
+    @pytest.mark.asyncio
+    async def test_channel_count_reflects_registered_channels(self):
+        from sse_broadcast import BroadcastManager
+
+        mgr = BroadcastManager()
+        assert mgr.channel_count() == 0
+
+        q1 = await mgr.register_viewer("r1", "ko")
+        q2 = await mgr.register_viewer("r1", "en")
+        # 같은 room+lang 에 두 번째 viewer — channel_count 는 변하지 않음.
+        q3 = await mgr.register_viewer("r1", "ko")
+
+        assert mgr.channel_count() == 2
+
+        await mgr.unregister_viewer("r1", "ko", q1)
+        # 아직 q3 가 ko 채널에 남아 있음.
+        assert mgr.channel_count() == 2
+
+        await mgr.unregister_viewer("r1", "ko", q3)
+        # ko 채널 비어서 drop.
+        assert mgr.channel_count() == 1
+
+        await mgr.unregister_viewer("r1", "en", q2)
+        assert mgr.channel_count() == 0
+
+
+# ---------------------------------------------------------------------------
+# run_sse_server exception handling (lines 702-720)
+# ---------------------------------------------------------------------------
+class TestRunSseServer:
+    """run_sse_server 가 모든 startup 예외를 삼키고 로그만 남기는지 검증."""
+
+    def test_app_runner_raises_does_not_propagate(self, capsys, monkeypatch):
+        """web.AppRunner 가 raise → 함수는 return, 서버 로그에 에러 기록."""
+        # web.AppRunner 자체를 패치해 인스턴스화 시 raise 하도록.
+        import sse_broadcast as _sb
+        from sse_broadcast import BroadcastManager, run_sse_server
+
+        class _ExplodingRunner:
+            def __init__(self, _app):
+                raise RuntimeError("runner cannot be created in this env")
+
+        monkeypatch.setattr(_sb.web, "AppRunner", _ExplodingRunner)
+
+        mgr = BroadcastManager()
+        repo = _StubRoomRepo({})
+
+        # 절대 raise 하면 안 됨.
+        run_sse_server(broadcast_manager=mgr, room_repo=repo, port=0)
+
+        captured = capsys.readouterr()
+        assert "[SSE] server failed to start" in captured.out
+
+    def test_event_loop_creation_failure_swallowed(self, capsys, monkeypatch):
+        """asyncio.new_event_loop 자체가 raise → 그래도 함수가 return."""
+        import sse_broadcast as _sb
+        from sse_broadcast import BroadcastManager, run_sse_server
+
+        def _fail_loop():
+            raise OSError("no event loop available")
+
+        monkeypatch.setattr(_sb.asyncio, "new_event_loop", _fail_loop)
+
+        mgr = BroadcastManager()
+        repo = _StubRoomRepo({})
+
+        run_sse_server(broadcast_manager=mgr, room_repo=repo, port=0)
+
+        captured = capsys.readouterr()
+        assert "[SSE] server failed to start" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# _translate_and_publish_secondary error paths (lines 641-661)
+# ---------------------------------------------------------------------------
+class TestTranslateAndPublishSecondary:
+    """_translate_and_publish_secondary — translate_fn / publish 예외 격리 검증."""
+
+    @pytest.mark.asyncio
+    async def test_translate_fn_raises_swallowed_no_publish(self, capsys):
+        """translate_fn 이 raise → 로그 후 publish 미호출, 함수는 return."""
+        from sse_broadcast import BroadcastManager, _translate_and_publish_secondary
+
+        mgr = BroadcastManager()
+        q = await mgr.register_viewer("r1", "en")
+
+        async def _failing_translate(text, src, dst):
+            raise RuntimeError("bedrock down")
+
+        # 절대 raise 하면 안 됨.
+        await _translate_and_publish_secondary(
+            mgr,
+            "r1",
+            source_text="hi",
+            source_lang="en",
+            target_lang="en",
+            translate_fn=_failing_translate,
+        )
+
+        captured = capsys.readouterr()
+        assert "[SSE] secondary translate failed" in captured.out
+        # 큐에는 아무것도 들어가지 않았어야 한다.
+        assert q.qsize() == 0
+        await mgr.unregister_viewer("r1", "en", q)
+
+    @pytest.mark.asyncio
+    async def test_translate_fn_returns_falsy_skips_publish(self):
+        """translate_fn 이 None / 빈 문자열 → publish 미호출."""
+        from sse_broadcast import BroadcastManager, _translate_and_publish_secondary
+
+        mgr = BroadcastManager()
+        q = await mgr.register_viewer("r1", "en")
+
+        async def _translate_returns_none(text, src, dst):
+            return None
+
+        await _translate_and_publish_secondary(
+            mgr,
+            "r1",
+            source_text="hi",
+            source_lang="en",
+            target_lang="en",
+            translate_fn=_translate_returns_none,
+        )
+
+        # publish 가 호출되지 않았으므로 큐는 비어 있다.
+        assert q.qsize() == 0
+
+        # 빈 문자열 케이스도 동일.
+        async def _translate_returns_empty(text, src, dst):
+            return ""
+
+        await _translate_and_publish_secondary(
+            mgr,
+            "r1",
+            source_text="hi",
+            source_lang="en",
+            target_lang="en",
+            translate_fn=_translate_returns_empty,
+        )
+        assert q.qsize() == 0
+
+        await mgr.unregister_viewer("r1", "en", q)
+
+    @pytest.mark.asyncio
+    async def test_publish_raises_swallowed_in_background_task(
+        self, capsys, monkeypatch
+    ):
+        """manager.publish 가 raise → 로그만, 함수는 raise 하지 않음."""
+        from sse_broadcast import BroadcastManager, _translate_and_publish_secondary
+
+        mgr = BroadcastManager()
+
+        async def _publish_explodes(*_args, **_kwargs):
+            raise RuntimeError("publish boom")
+
+        # publish 만 패치.
+        monkeypatch.setattr(mgr, "publish", _publish_explodes)
+
+        async def _translate_ok(text, src, dst):
+            return f"[{dst}]{text}"
+
+        # 절대 raise 하면 안 됨.
+        await _translate_and_publish_secondary(
+            mgr,
+            "r1",
+            source_text="hi",
+            source_lang="en",
+            target_lang="ja",
+            translate_fn=_translate_ok,
+        )
+
+        captured = capsys.readouterr()
+        assert "[SSE] secondary publish failed" in captured.out
