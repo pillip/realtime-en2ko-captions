@@ -230,6 +230,96 @@ class TestRoomCrud:
         room = room_model.get_by_id("r-op")
         assert room["operator_id"] == operator_user_id
 
+    # ------------------------------------------------------------------
+    # ISSUE-27: list_by_operator (배정된 룸 조회)
+    # ------------------------------------------------------------------
+    def test_list_by_operator_returns_assigned_rooms(
+        self, room_model, admin_user_id, operator_user_id
+    ):
+        """오퍼레이터에게 배정된 룸만 반환된다 (AC1)."""
+        room_model.create(
+            room_id="r-mine-1",
+            name="MyRoomA",
+            created_by=admin_user_id,
+            operator_id=operator_user_id,
+        )
+        room_model.create(
+            room_id="r-mine-2",
+            name="MyRoomB",
+            created_by=admin_user_id,
+            operator_id=operator_user_id,
+        )
+        # 다른 오퍼레이터에게 배정된 룸 (필터링되어야 함)
+        room_model.create(
+            room_id="r-other",
+            name="OtherRoom",
+            created_by=admin_user_id,
+            operator_id=admin_user_id,
+        )
+        # 배정되지 않은 룸 (필터링되어야 함)
+        room_model.create(
+            room_id="r-unassigned",
+            name="Unassigned",
+            created_by=admin_user_id,
+        )
+
+        rooms = room_model.list_by_operator(operator_user_id)
+        ids = {r["id"] for r in rooms}
+        assert ids == {"r-mine-1", "r-mine-2"}
+
+    def test_list_by_operator_empty_for_unassigned(
+        self, room_model, admin_user_id, operator_user_id
+    ):
+        """배정된 룸이 없는 오퍼레이터는 빈 리스트를 받는다.
+
+        AC3 (배정된 룸이 없습니다 안내 메시지) 분기 진입 조건.
+        """
+        room_model.create(
+            room_id="r-noop",
+            name="No Op",
+            created_by=admin_user_id,
+        )
+        rooms = room_model.list_by_operator(operator_user_id)
+        assert rooms == []
+
+    def test_list_by_operator_excludes_closed_rooms(
+        self, room_model, admin_user_id, operator_user_id
+    ):
+        """종료된 룸은 시작/정지 대상이 아니므로 결과에서 제외한다."""
+        room_model.create(
+            room_id="r-active",
+            name="Active",
+            created_by=admin_user_id,
+            operator_id=operator_user_id,
+        )
+        room_model.create(
+            room_id="r-closed",
+            name="Closed",
+            created_by=admin_user_id,
+            operator_id=operator_user_id,
+        )
+        room_model.transition_status("r-closed", "closed")
+
+        rooms = room_model.list_by_operator(operator_user_id)
+        ids = {r["id"] for r in rooms}
+        assert ids == {"r-active"}
+
+    def test_list_by_operator_includes_status_field(
+        self, room_model, admin_user_id, operator_user_id
+    ):
+        """반환 dict는 UI 라벨링에 필요한 status 필드를 포함한다 (AC4)."""
+        room_model.create(
+            room_id="r-st",
+            name="With Status",
+            created_by=admin_user_id,
+            operator_id=operator_user_id,
+        )
+        rooms = room_model.list_by_operator(operator_user_id)
+        assert len(rooms) == 1
+        assert "status" in rooms[0]
+        assert "name" in rooms[0]
+        assert "id" in rooms[0]
+
 
 # ---------------------------------------------------------------------------
 # State transitions

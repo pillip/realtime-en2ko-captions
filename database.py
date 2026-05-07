@@ -695,6 +695,23 @@ class Room:
             conn.commit()
             return cursor.rowcount > 0
 
+    def list_by_operator(self, operator_id: int) -> list[dict[str, Any]]:
+        """Return non-closed rooms assigned to the given operator (ISSUE-27).
+
+        - Filters out closed rooms (terminal state, not actionable from the
+          operator UI's start/stop buttons).
+        - Ordered by created_at DESC for deterministic dropdown ordering.
+        - Read-only helper; admin assignment logic lives in ISSUE-29.
+        """
+        with self.db.get_connection() as conn:
+            cursor = conn.execute(
+                "SELECT * FROM rooms WHERE operator_id = ? "
+                "AND status != 'closed' "
+                "ORDER BY created_at DESC",
+                (operator_id,),
+            )
+            return [dict(r) for r in cursor.fetchall()]
+
     # ------------------------------------------------------------------
     # State transitions
     # ------------------------------------------------------------------
