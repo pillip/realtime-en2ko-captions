@@ -1,0 +1,456 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>{{ROOM_NAME}} — 자막 뷰어</title>
+  <style>
+    /* RL-011: 100vh + 100dvh fallback for iOS Safari (declared in this order
+       so dvh wins via cascade on supporting browsers, vh remains the fallback
+       for older Safari < 15.4). */
+    *, *::before, *::after { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100vh;
+      height: 100dvh;
+      width: 100%;
+      overflow: hidden;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+        "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+      background: linear-gradient(135deg, #0f0f23 0%, #1a1a2e 50%, #16213e 100%);
+      color: #ffffff;
+      -webkit-font-smoothing: antialiased;
+      word-break: keep-all;
+      line-height: 1.6;
+    }
+
+    /* App shell — full viewport flex column */
+    .app {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      height: 100dvh;
+      width: 100%;
+      max-width: 100%;
+    }
+
+    /* Header — language selector + room name */
+    .topbar {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 14px 20px;
+      background: rgba(15, 15, 35, 0.7);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      backdrop-filter: blur(8px);
+    }
+
+    .room-name {
+      font-size: 14px;
+      font-weight: 500;
+      color: rgba(255, 255, 255, 0.7);
+      letter-spacing: 0.02em;
+      max-width: 60%;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .lang-control {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .lang-control label {
+      font-size: 13px;
+      color: rgba(255, 255, 255, 0.6);
+    }
+
+    #lang-select {
+      min-height: 44px; /* WCAG 2.1 touch target — RL-010 */
+      padding: 8px 14px;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.08);
+      color: #ffffff;
+      font-size: 15px;
+      cursor: pointer;
+    }
+
+    #lang-select:focus-visible {
+      outline: 2px solid #10b981;
+      outline-offset: 2px;
+    }
+
+    /* Main content — viewer scrolls inside */
+    .main {
+      flex: 1 1 auto;
+      position: relative;
+      overflow: hidden;
+    }
+
+    /* Three states share the same area; hidden by default until JS toggles. */
+    .state {
+      position: absolute;
+      inset: 0;
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px 20px;
+      text-align: center;
+    }
+
+    .state.active {
+      display: flex;
+    }
+
+    /* Waiting state */
+    .state-message {
+      font-size: clamp(20px, 4vw, 32px);
+      font-weight: 300;
+      color: rgba(255, 255, 255, 0.85);
+      max-width: 720px;
+      letter-spacing: -0.01em;
+    }
+
+    .state-room {
+      margin-top: 18px;
+      font-size: clamp(14px, 2vw, 18px);
+      color: rgba(255, 255, 255, 0.45);
+    }
+
+    .state-spinner {
+      width: 36px;
+      height: 36px;
+      margin-top: 24px;
+      border: 3px solid rgba(255, 255, 255, 0.15);
+      border-top-color: #10b981;
+      border-radius: 50%;
+      animation: spin 1.1s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Active state — credit roll viewer (reuses webrtc.html caption styles) */
+    #state-active {
+      align-items: stretch;
+      justify-content: stretch;
+      padding: 0;
+    }
+
+    #viewer {
+      width: 100%;
+      height: 100%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      scroll-behavior: smooth;
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+    }
+
+    #viewer::-webkit-scrollbar { display: none; }
+
+    .caption-container {
+      width: 100%;
+      max-width: 1100px;
+      padding: 24px 20px 80px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .caption-line {
+      padding: 16px 22px;
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-left: 4px solid #10b981;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+      font-size: clamp(20px, 3.6vw, 30px);
+      font-weight: 500;
+      line-height: 1.45;
+      color: #ffffff;
+      max-width: 92%;
+      word-break: keep-all;
+      overflow-wrap: break-word;
+      animation: fade-in 0.35s ease-out;
+    }
+
+    @keyframes fade-in {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .caption-empty {
+      color: rgba(255, 255, 255, 0.45);
+      font-size: clamp(16px, 2.5vw, 20px);
+      text-align: center;
+      padding: 40px 20px;
+    }
+
+    /* Ended state */
+    #state-ended .state-message { color: rgba(255, 255, 255, 0.7); }
+
+    .conn-error {
+      position: absolute;
+      bottom: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 8px 14px;
+      border-radius: 10px;
+      background: rgba(245, 158, 11, 0.15);
+      border: 1px solid rgba(245, 158, 11, 0.4);
+      color: #fbbf24;
+      font-size: 13px;
+      display: none;
+    }
+
+    .conn-error.visible { display: block; }
+
+    /* Mobile tweaks */
+    @media (max-width: 600px) {
+      .topbar { padding: 10px 14px; }
+      .room-name { font-size: 13px; max-width: 50%; }
+      #lang-select { font-size: 14px; padding: 8px 10px; min-height: 44px; }
+      .caption-container { padding: 16px 14px 60px; }
+      .caption-line { padding: 12px 16px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="app" role="main">
+    <header class="topbar">
+      <div class="room-name" id="room-name">{{ROOM_NAME}}</div>
+      <div class="lang-control">
+        <label for="lang-select">언어</label>
+        <select id="lang-select" aria-label="자막 언어 선택"></select>
+      </div>
+    </header>
+
+    <div class="main">
+      <section id="state-waiting" class="state" aria-live="polite">
+        <div class="state-message">잠시 후 자막이 시작됩니다</div>
+        <div class="state-room" id="waiting-room"></div>
+        <div class="state-spinner" aria-hidden="true"></div>
+      </section>
+
+      <section id="state-active" class="state">
+        <div id="viewer">
+          <div class="caption-container" id="captionContainer">
+            <div class="caption-empty" id="caption-empty">자막을 기다리는 중…</div>
+          </div>
+        </div>
+      </section>
+
+      <section id="state-ended" class="state" aria-live="polite">
+        <div class="state-message">세션이 종료되었습니다</div>
+      </section>
+
+      <div class="conn-error" id="conn-error" role="status">
+        연결이 끊어졌습니다. 재연결 중…
+      </div>
+    </div>
+  </main>
+
+  <script>
+    // ---------------------------------------------------------------------
+    // Bootstrap config — server injects via template substitution.
+    // ---------------------------------------------------------------------
+    const CONFIG = {
+      room_id: "{{ROOM_ID}}",
+      room_name: "{{ROOM_NAME}}",
+      output_langs: {{OUTPUT_LANGS_JSON}},
+      primary_lang: "{{PRIMARY_LANG}}",
+      initial_state: "{{INITIAL_STATE}}", // 'waiting' | 'active' | 'closed'
+    };
+
+    // ---------------------------------------------------------------------
+    // DOM refs
+    // ---------------------------------------------------------------------
+    const $ = (id) => document.getElementById(id);
+    const stateNodes = {
+      waiting: $("state-waiting"),
+      active: $("state-active"),
+      ended: $("state-ended"),
+    };
+    const langSelect = $("lang-select");
+    const captionContainer = $("captionContainer");
+    const captionEmpty = $("caption-empty");
+    const connError = $("conn-error");
+    const waitingRoom = $("waiting-room");
+
+    waitingRoom.textContent = CONFIG.room_name || "";
+
+    // ---------------------------------------------------------------------
+    // Language selector — populated from CONFIG.output_langs.
+    // ---------------------------------------------------------------------
+    const LANG_LABEL = {
+      ko: "한국어",
+      en: "English",
+      ja: "日本語",
+      zh: "中文",
+      vi: "Tiếng Việt",
+    };
+
+    (function buildLangOptions() {
+      const langs = Array.isArray(CONFIG.output_langs) ? CONFIG.output_langs : [];
+      // Defensive: always include the primary lang.
+      if (CONFIG.primary_lang && !langs.includes(CONFIG.primary_lang)) {
+        langs.unshift(CONFIG.primary_lang);
+      }
+      langSelect.innerHTML = "";
+      for (const code of langs) {
+        const opt = document.createElement("option");
+        opt.value = code;
+        opt.textContent = LANG_LABEL[code] || code;
+        if (code === CONFIG.primary_lang) opt.selected = true;
+        langSelect.appendChild(opt);
+      }
+    })();
+
+    // ---------------------------------------------------------------------
+    // State controller
+    // ---------------------------------------------------------------------
+    function setState(name) {
+      for (const [key, node] of Object.entries(stateNodes)) {
+        node.classList.toggle("active", key === name);
+      }
+    }
+
+    // ---------------------------------------------------------------------
+    // Caption rendering — credit roll, append + auto-scroll-on-bottom.
+    // ---------------------------------------------------------------------
+    const viewer = $("state-active").querySelector("#viewer");
+    const MAX_LINES = 200; // Bound DOM growth on long sessions.
+
+    function isUserAtBottom() {
+      const slack = 80;
+      return viewer.scrollHeight - viewer.scrollTop - viewer.clientHeight <= slack;
+    }
+
+    function appendCaption(text) {
+      if (!text) return;
+      if (captionEmpty && captionEmpty.parentNode) {
+        captionEmpty.remove();
+      }
+      const div = document.createElement("div");
+      div.className = "caption-line";
+      div.textContent = text;
+      captionContainer.appendChild(div);
+
+      while (captionContainer.children.length > MAX_LINES) {
+        captionContainer.removeChild(captionContainer.firstChild);
+      }
+
+      if (isUserAtBottom()) {
+        // Defer scroll to next frame so layout reflects new node first.
+        requestAnimationFrame(() => {
+          viewer.scrollTop = viewer.scrollHeight;
+        });
+      }
+    }
+
+    function clearCaptions() {
+      captionContainer.innerHTML = "";
+      const empty = document.createElement("div");
+      empty.id = "caption-empty";
+      empty.className = "caption-empty";
+      empty.textContent = "자막을 기다리는 중…";
+      captionContainer.appendChild(empty);
+    }
+
+    // ---------------------------------------------------------------------
+    // SSE connection — EventSource per (room, lang). Reconnect on lang change.
+    // ---------------------------------------------------------------------
+    let es = null;
+    let currentLang = CONFIG.primary_lang || "ko";
+
+    function showError(visible) {
+      connError.classList.toggle("visible", !!visible);
+    }
+
+    function connect(lang) {
+      if (es) {
+        try { es.close(); } catch (_) { /* noop */ }
+        es = null;
+      }
+      currentLang = lang;
+      const url = `/stream/${encodeURIComponent(CONFIG.room_id)}` +
+                  `?lang=${encodeURIComponent(lang)}`;
+      try {
+        es = new EventSource(url);
+      } catch (e) {
+        // EventSource constructor throws synchronously only on bad URL.
+        // Show a generic error and let the user retry by changing language.
+        showError(true);
+        return;
+      }
+
+      es.addEventListener("open", () => showError(false));
+
+      // The server emits explicit `event: message` and `event: session_end`.
+      es.addEventListener("message", (ev) => {
+        showError(false);
+        try {
+          const payload = JSON.parse(ev.data);
+          if (payload && typeof payload.text === "string") {
+            // Transition from waiting -> active on the first real payload.
+            if (!stateNodes.active.classList.contains("active")) {
+              setState("active");
+            }
+            appendCaption(payload.text);
+          }
+        } catch (_) {
+          /* malformed payload — ignore (RL-006: do not echo to UI). */
+        }
+      });
+
+      es.addEventListener("session_end", () => {
+        setState("ended");
+        if (es) {
+          try { es.close(); } catch (_) { /* noop */ }
+          es = null;
+        }
+      });
+
+      es.addEventListener("error", () => {
+        // EventSource auto-reconnects on its own; just show a transient hint.
+        showError(true);
+      });
+    }
+
+    // ---------------------------------------------------------------------
+    // Language switch — close + reopen EventSource with new ?lang=.
+    // ---------------------------------------------------------------------
+    langSelect.addEventListener("change", (ev) => {
+      const next = ev.target.value;
+      if (!next || next === currentLang) return;
+      clearCaptions();
+      connect(next);
+    });
+
+    // ---------------------------------------------------------------------
+    // Bootstrap — pick initial UI state based on server-provided room status.
+    // ---------------------------------------------------------------------
+    if (CONFIG.initial_state === "closed") {
+      setState("ended");
+      // Do NOT open EventSource — room is terminal.
+    } else {
+      setState("waiting");
+      connect(currentLang);
+    }
+  </script>
+</body>
+</html>
