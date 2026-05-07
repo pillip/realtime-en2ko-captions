@@ -35,6 +35,10 @@ _room_manager: RoomManager = RoomManager()
 # Shared with the SSE viewer server so transcripts published here reach
 # every viewer subscribed via /stream/{room_id}. Tests can substitute
 # this via `patch("websocket_handler._broadcast_manager", ...)`.
+#
+# ISSUE-33: the metrics_repo (database.Room) is attached lazily by app.py
+# at startup via attach_broadcast_metrics_repo() so tests that import this
+# module without a DB still work.
 _broadcast_manager: BroadcastManager = BroadcastManager()
 
 
@@ -46,6 +50,18 @@ def get_room_manager() -> RoomManager:
 def get_broadcast_manager() -> BroadcastManager:
     """Return the module-level BroadcastManager singleton (ISSUE-30)."""
     return _broadcast_manager
+
+
+def attach_broadcast_metrics_repo(metrics_repo: object) -> None:
+    """Wire a metrics_repo (database.Room) into the singleton BroadcastManager.
+
+    Called once at app startup (ISSUE-33). Idempotent — calling twice with
+    the same repo is a no-op. Kept off the constructor so that the many
+    tests which import this module without a DB continue to work.
+    """
+    # Direct attribute access by intent — the manager owns this slot and we
+    # don't expose a setter to keep the public surface small.
+    _broadcast_manager._metrics_repo = metrics_repo  # noqa: SLF001
 
 
 def find_free_port(start_port=8765, max_port=8800):

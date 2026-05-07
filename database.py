@@ -161,6 +161,50 @@ class DatabaseManager:
         # ALTER failure isn't silently swallowed.
         self._migrate_add_room_output_lang_columns()
 
+        # ISSUE-33: idempotent ALTER TABLE to add rooms.total_viewers and
+        # rooms.peak_viewers. Same PRAGMA table_info pattern. These columns
+        # persist viewer-engagement metrics across server restarts so the
+        # admin dashboard can show cumulative/peak viewer counts even after
+        # the in-memory BroadcastManager has been reset to zero.
+        self._migrate_add_room_viewer_metric_columns()
+
+    def _migrate_add_room_viewer_metric_columns(self):
+        """Add rooms.total_viewers and rooms.peak_viewers — idempotent.
+
+        Schema impact (ISSUE-33):
+          total_viewers INTEGER NOT NULL DEFAULT 0
+            -- 누적 SSE viewer connect 횟수 (단조 증가)
+          peak_viewers  INTEGER NOT NULL DEFAULT 0
+            -- 최대 동시 viewer 수 (단조 증가, max() 갱신)
+
+        Both columns are NOT NULL with default 0 so legacy rows get a
+        sensible starting value automatically. PRAGMA table_info gating is
+        intentional: blindly running ALTER TABLE twice raises 'duplicate
+        column name' on SQLite, breaking the boot path.
+        """
+        with self.get_connection() as conn:
+            cursor = conn.execute("PRAGMA table_info(rooms)")
+            existing = {row["name"] for row in cursor.fetchall()}
+
+            added = []
+            if "total_viewers" not in existing:
+                conn.execute(
+                    "ALTER TABLE rooms "
+                    "ADD COLUMN total_viewers INTEGER NOT NULL DEFAULT 0"
+                )
+                added.append("total_viewers")
+
+            if "peak_viewers" not in existing:
+                conn.execute(
+                    "ALTER TABLE rooms "
+                    "ADD COLUMN peak_viewers INTEGER NOT NULL DEFAULT 0"
+                )
+                added.append("peak_viewers")
+
+            if added:
+                conn.commit()
+                print(f"[Migration] Added rooms columns: {', '.join(added)}")
+
     def _migrate_add_room_output_lang_columns(self):
         """Add rooms.primary_output_lang and rooms.output_langs — idempotent.
 
@@ -910,6 +954,70 @@ class Room:
                 )
             conn.commit()
         return True
+
+    # ------------------------------------------------------------------
+    # Viewer metrics (ISSUE-33)
+    # ------------------------------------------------------------------
+    def update_viewer_metrics(
+        self,
+        room_id: str,
+        *,
+        total_delta: int,
+        current: int,
+    ) -> bool:
+        """Bump cumulative + peak viewer counts for a room (ISSUE-33).
+
+        Semantics:
+          total_viewers = total_viewers + total_delta  (단조 증가)
+          peak_viewers  = MAX(peak_viewers, current)   (단조 증가)
+
+        Why this shape:
+          - SSE register fires (delta=+1, current=N) where N is the new
+            in-memory current. A simple UPDATE expression gets us race-
+            tolerant peak tracking without a SELECT-then-UPDATE round trip
+            (max() is idempotent under concurrent calls).
+          - SSE unregister fires (delta=0, current=N-1) — total stays put
+            (we never undo a connect for cumulative counting), peak does
+            not retreat (already max'd above the new current).
+
+        keyword-only `total_delta` / `current` because confusing the two
+        could silently understate cumulative numbers — make the call site
+        read like a metric, not like positional arithmetic.
+
+        Returns True if the row exists, False otherwise. Unknown rooms do
+        NOT raise — the SSE hook should never break a viewer connection
+        because of a stale id in the URL (RL-006: log + degrade).
+        """
+        with self.db.get_connection() as conn:
+            cursor = conn.execute(
+                "UPDATE rooms SET "
+                "total_viewers = total_viewers + ?, "
+                "peak_viewers = MAX(peak_viewers, ?) "
+                "WHERE id = ?",
+                (total_delta, current, room_id),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def get_viewer_metrics(self, room_id: str) -> dict[str, int] | None:
+        """Return {total_viewers, peak_viewers} for a room.
+
+        Returns None for unknown rooms so the admin dashboard can render
+        an explicit zero-state row rather than silently aggregating with
+        a phantom 0/0. The in-memory current count is owned by
+        BroadcastManager — it is intentionally NOT stored on the row.
+        """
+        with self.db.get_connection() as conn:
+            row = conn.execute(
+                "SELECT total_viewers, peak_viewers FROM rooms WHERE id = ?",
+                (room_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "total_viewers": row["total_viewers"] or 0,
+            "peak_viewers": row["peak_viewers"] or 0,
+        }
 
     def touch(self, room_id: str) -> bool:
         """Update last_activity = CURRENT_TIMESTAMP. No status change."""
