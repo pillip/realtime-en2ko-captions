@@ -1,12 +1,15 @@
 """
-RoomManager 모듈 (ISSUE-25)
+RoomManager 모듈 (ISSUE-25, ISSUE-26)
 
 여러 오퍼레이터가 동시에 독립적인 자막 세션을 운영할 수 있도록
 WebSocket 연결을 룸 단위로 격리한다.
 
 Design notes:
 - 인메모리 dict로 `room_id → RoomState`를 관리한다.
-- DB 영속화는 ISSUE-26에서 다룬다.
+- ISSUE-26: 옵션으로 `room_repository`(database.Room)을 주입받아 룸
+  생성/종료를 DB에 영속화하며, `hydrate_from_db()` 로 서버 재시작 시
+  waiting/active/inactive 룸을 복원한다. 레거시 호출자(테스트, 기본
+  룸)와 호환을 위해 repository 가 None 인 경우 메모리 전용으로 동작한다.
 - 모든 클라이언트-노출 에러 메시지는 generic하게 유지한다 (RL-006).
 - 서버는 client-supplied identity를 신뢰하지 않는다 (RL-002):
   room_id는 RoomManager에 사전 등록된 것만 허용하며 실제 연결 등록은
@@ -60,19 +63,42 @@ class RoomState:
 
 
 class RoomManager:
-    """In-memory registry of active rooms keyed by room_id."""
+    """In-memory registry of active rooms keyed by room_id.
 
-    def __init__(self) -> None:
+    When a `room_repository` (database.Room) is supplied, create_room and
+    close_room also persist to DB and hydrate_from_db() restores rooms
+    on server start (ISSUE-26).
+    """
+
+    def __init__(self, room_repository: Any | None = None) -> None:
         self._rooms: dict[str, RoomState] = {}
+        # database.Room | None  — optional persistence layer.
+        # Typed as Any to avoid an import cycle with database.py.
+        self._repo = room_repository
 
     # ------------------------------------------------------------------
     # CRUD
     # ------------------------------------------------------------------
-    def create_room(self, room_id: str | None = None) -> RoomState:
+    def create_room(
+        self,
+        room_id: str | None = None,
+        *,
+        name: str | None = None,
+        created_by: int | None = None,
+        input_lang: str = "auto",
+        output_lang: str = "ko",
+        timeout_minutes: int = 30,
+    ) -> RoomState:
         """Create a new room. Generates a unique id when none supplied.
 
+        When a repository is attached, the room is persisted with the
+        supplied `name`/`created_by`. Without a repository these fields
+        are ignored (legacy in-memory mode for tests + the default room).
+
         Raises:
-            ValueError: if the supplied room_id already exists.
+            ValueError: if the supplied room_id already exists in memory.
+            ValueError: if persistence is requested but `name` or
+                `created_by` is missing.
         """
         if room_id is None:
             # Generate a unique id; retry on the (vanishingly rare) collision.
@@ -87,7 +113,33 @@ class RoomManager:
         if room_id in self._rooms:
             raise ValueError(f"Room id already exists: {room_id}")
 
+        if self._repo is not None:
+            # Persist first so that we never put a room into memory that
+            # is not durable. Required fields enforced here so the caller
+            # gets a clear error rather than a deferred IntegrityError.
+            if name is None or created_by is None:
+                raise ValueError(
+                    "create_room with persistence requires `name` and `created_by`"
+                )
+            persisted = self._repo.create(
+                room_id=room_id,
+                name=name,
+                created_by=created_by,
+                input_lang=input_lang,
+                output_lang=output_lang,
+                timeout_minutes=timeout_minutes,
+            )
+            if persisted is None:
+                # PK collision in DB but not in memory — extremely rare,
+                # surfaces as ValueError to match the in-memory branch.
+                raise ValueError(f"Room id already exists: {room_id}")
+
         state = RoomState(room_id=room_id)
+        if name is not None:
+            state.language_settings = {
+                "input_lang": input_lang,
+                "output_lang": output_lang,
+            }
         self._rooms[room_id] = state
         return state
 
@@ -99,7 +151,9 @@ class RoomManager:
         """Return the room for room_id, creating it if missing.
 
         Used for the default-room fallback so that a brand-new server
-        accepts connections without explicit room provisioning.
+        accepts connections without explicit room provisioning. This
+        path NEVER touches the repository — the default room is an
+        in-memory convenience and not a managed conference room.
         """
         room = self._rooms.get(room_id)
         if room is None:
@@ -108,12 +162,74 @@ class RoomManager:
         return room
 
     def delete_room(self, room_id: str) -> bool:
-        """Remove a room. Returns True if it existed, False otherwise."""
+        """Remove a room from memory. Returns True if it existed.
+
+        This is the legacy in-memory-only operation kept for the
+        default room and unit tests. For the managed-room lifecycle
+        use `close_room()` which also persists the closed status.
+        """
         return self._rooms.pop(room_id, None) is not None
+
+    def close_room(self, room_id: str) -> bool:
+        """Transition the room to 'closed' (DB) and remove from memory.
+
+        Idempotent: returns False if the room is unknown both in memory
+        and in the repository.
+        """
+        existed = self._rooms.pop(room_id, None) is not None
+        if self._repo is not None:
+            try:
+                # transition_status returns False for unknown rooms and
+                # raises InvalidRoomTransition only for impossible edges
+                # (e.g. closed → closed). Closed→closed is idempotent.
+                self._repo.transition_status(room_id, "closed")
+            except Exception as e:  # InvalidRoomTransition or DB error
+                # Already-closed rooms hit this branch; treat as success.
+                if existed:
+                    return True
+                # Otherwise, surface as a no-op false but keep the
+                # exception detail server-side (RL-006: never propagate
+                # raw text to clients; this is a server-side print).
+                print(f"[Room] close_room: ignoring repo error: {e!r}")
+        return existed
 
     def list_rooms(self) -> list[str]:
         """Snapshot of registered room ids."""
         return list(self._rooms.keys())
+
+    # ------------------------------------------------------------------
+    # Persistence integration (ISSUE-26)
+    # ------------------------------------------------------------------
+    def hydrate_from_db(self) -> int:
+        """Re-load DB rooms with hydratable status into memory.
+
+        Called once at server start so that operators can resume sessions
+        after a restart without manual intervention. Closed rooms are
+        terminal and intentionally NOT hydrated.
+
+        Returns the number of rooms loaded. No-op if repository missing.
+        """
+        if self._repo is None:
+            return 0
+        loaded = 0
+        # Source of truth — Room.HYDRATABLE_STATUSES.
+        statuses = list(
+            getattr(
+                self._repo, "HYDRATABLE_STATUSES", ("waiting", "active", "inactive")
+            )
+        )
+        for row in self._repo.list_by_status(statuses):
+            rid = row["id"]
+            if rid in self._rooms:
+                continue
+            state = RoomState(room_id=rid)
+            state.language_settings = {
+                "input_lang": row.get("input_lang") or "auto",
+                "output_lang": row.get("output_lang") or "ko",
+            }
+            self._rooms[rid] = state
+            loaded += 1
+        return loaded
 
     # ------------------------------------------------------------------
     # Connection registration
