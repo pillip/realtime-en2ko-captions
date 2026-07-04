@@ -27,15 +27,21 @@ class TestCreateOpenaiSession:
             asyncio.run(create_openai_session())
 
     def test_successful_session_creation(self, monkeypatch):
-        """정상 세션 생성 시 id, client_secret, expires_at, model 키 반환"""
+        """정상 세션 생성 시 id, client_secret, expires_at, model 키 반환.
+
+        GA 응답: 최상위 `value` 에 ek_-prefixed 토큰, `session.id/model` 에
+        effective session config.
+        """
         monkeypatch.setenv("OPENAI_KEY", "sk-test-key")
 
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {
-            "id": "sess_abc123",
-            "client_secret": {"value": "secret_token_xyz"},
-            "model": "gpt-4o-realtime-preview",
+            "value": "ek_test_token_xyz",
+            "session": {
+                "id": "sess_abc123",
+                "model": "gpt-realtime",
+            },
         }
 
         async def mock_post(*args, **kwargs):
@@ -53,9 +59,9 @@ class TestCreateOpenaiSession:
             result = asyncio.run(create_openai_session())
 
         assert result["id"] == "sess_abc123"
-        assert result["client_secret"] == "secret_token_xyz"
+        assert result["client_secret"] == "ek_test_token_xyz"
         assert "expires_at" in result
-        assert result["model"] == "gpt-4o-realtime-preview"
+        assert result["model"] == "gpt-realtime"
 
     def test_api_returns_401_raises_exception(self, monkeypatch):
         """API가 401 반환 시 Exception 발생"""
@@ -182,7 +188,7 @@ class TestCreateOpenaiSession:
         assert result["id"] is None
         assert result["client_secret"] is None
         assert "expires_at" in result
-        assert result["model"] == "gpt-4o-realtime-preview"
+        assert result["model"] == "gpt-realtime"
 
 
 # ---------------------------------------------------------------------------
