@@ -103,6 +103,41 @@ class TestCreateOpenaiSession:
             with pytest.raises(Exception, match="OpenAI 세션 생성 실패"):
                 asyncio.run(create_openai_session())
 
+    def test_api_error_message_includes_response_body(self, monkeypatch):
+        """API 4xx/5xx 시 raise 되는 메시지에 status code 와 응답 body 가 포함된다.
+
+        stdout 접근이 없는 배포 환경 (e.g. Streamlit UI toast) 에서도 실제
+        OpenAI 응답 (`invalid model`, `unauthorized`, ...) 을 볼 수 있어야
+        진단이 가능하다.
+        """
+        monkeypatch.setenv("OPENAI_KEY", "sk-test-key")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 404
+        mock_response.text = (
+            '{"error":{"message":"model gpt-4o-realtime-preview '
+            'has been deprecated","type":"invalid_request_error"}}'
+        )
+
+        async def mock_post(*args, **kwargs):
+            return mock_response
+
+        with patch("services.httpx.AsyncClient") as mock_client_cls:
+            mock_client_instance = MagicMock()
+            mock_client_instance.post = mock_post
+            mock_client_instance.__aenter__ = AsyncMock(
+                return_value=mock_client_instance
+            )
+            mock_client_instance.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_client_instance
+
+            with pytest.raises(Exception) as exc_info:
+                asyncio.run(create_openai_session())
+
+        msg = str(exc_info.value)
+        assert "404" in msg
+        assert "deprecated" in msg
+
     def test_http_error_raises_exception(self, monkeypatch):
         """httpx.HTTPError 발생 시 Exception 으로 래핑"""
         monkeypatch.setenv("OPENAI_KEY", "sk-test-key")

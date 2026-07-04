@@ -66,7 +66,10 @@ async def create_openai_session() -> dict:
             if response.status_code != 200:
                 error_text = response.text
                 print(f"[OpenAI] API 오류: {response.status_code} - {error_text}")
-                raise Exception(f"OpenAI API 오류: {response.status_code}")
+                # Body in message so callers w/o stdout access see the cause.
+                raise Exception(
+                    f"OpenAI API 오류 {response.status_code}: {error_text[:500]}"
+                )
 
             session_data = response.json()
             expires_at = datetime.now() + timedelta(minutes=1)
