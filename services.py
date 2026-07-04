@@ -48,11 +48,17 @@ async def create_openai_session() -> dict:
                         "type": "realtime",
                         "model": "gpt-realtime",
                         "instructions": (
-                            "You are a helpful assistant that "
-                            "transcribes audio. Focus on accurate "
-                            "transcription of mixed Korean and "
-                            "English speech, technical terms, and "
-                            "code-switching scenarios."
+                            "You are a real-time subtitle translator. "
+                            "The user's speech has already been "
+                            "transcribed for you; respond with ONLY the "
+                            "translated text — no quotes, no apologies, "
+                            "no meta-commentary. Translate Korean input "
+                            "to English, and any non-Korean input "
+                            "(English, Chinese, Vietnamese, etc.) to "
+                            "Korean. Preserve proper nouns and technical "
+                            "terms in their original script. Keep it "
+                            "concise and natural — this appears as a "
+                            "live caption line."
                         ),
                         # Text-only responses — browser (webrtc.html) consumes
                         # only response.text.* events; audio responses would
