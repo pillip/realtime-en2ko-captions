@@ -54,7 +54,10 @@ async def create_openai_session() -> dict:
                             "English speech, technical terms, and "
                             "code-switching scenarios."
                         ),
-                        # GA schema: audio config nested under audio.{input,output}
+                        # Text-only responses — browser (webrtc.html) consumes
+                        # only response.text.* events; audio responses would
+                        # be silently dropped AND rack up audio-output tokens.
+                        # Voice config intentionally omitted (unused).
                         "audio": {
                             "input": {
                                 "transcription": {"model": "gpt-4o-transcribe"},
@@ -65,9 +68,8 @@ async def create_openai_session() -> dict:
                                     "silence_duration_ms": 500,
                                 },
                             },
-                            "output": {"voice": "alloy"},
                         },
-                        "output_modalities": ["audio"],
+                        "output_modalities": ["text"],
                     },
                 },
             )
