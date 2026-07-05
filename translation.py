@@ -18,11 +18,19 @@ SOURCE_LANG_NAMES = {
     "de": "독일어",
 }
 
-# Bedrock 모델 ID (안정성 순서)
+# Bedrock 모델 ID (품질 → 속도 순, 앞이 실패하면 뒤로 폴백)
+#
+# 이전 목록(claude-3-5-sonnet-20240620, claude-3-haiku-20240307,
+# claude-3-sonnet-20240229) 은 전부 Anthropic 직접 API 에서 이미 은퇴
+# (2025-10~2026-04) 했고 Bedrock 도 2026-03-01 부터 순차 종료. 지금 호출은
+# 조용히 실패해서 Amazon Translate 폴백만 남는다.
+#
+# 리전 프리픽스 `us.` 는 US 크로스 리전 inference profile. AWS_REGION 이
+# us-* 가 아닌 배포에서는 `eu.` 등 로컬 프리픽스로 교체하거나 프리픽스
+# 없는 direct model ID 를 시도하도록 오퍼레이터가 조정해야 한다.
 BEDROCK_MODEL_IDS = [
-    "anthropic.claude-3-5-sonnet-20240620-v1:0",
-    "anthropic.claude-3-haiku-20240307-v1:0",
-    "anthropic.claude-3-sonnet-20240229-v1:0",
+    "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "us.anthropic.claude-haiku-4-5-20251001-v1:0",
 ]
 
 
