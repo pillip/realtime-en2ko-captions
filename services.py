@@ -34,51 +34,69 @@ async def create_openai_session() -> dict:
 
     try:
         async with httpx.AsyncClient() as client:
+            # GA endpoint (2026-05-12: preview /v1/realtime/sessions removed).
+            # Payload is nested under `session` with type=realtime; response's
+            # ephemeral token is at top-level `value` (ek_... prefix).
             response = await client.post(
-                "https://api.openai.com/v1/realtime/sessions",
+                "https://api.openai.com/v1/realtime/client_secrets",
                 headers={
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
-                    "OpenAI-Beta": "realtime=v1",
                 },
                 json={
-                    "model": "gpt-4o-realtime-preview",
-                    "voice": "alloy",
-                    "instructions": (
-                        "You are a helpful assistant that "
-                        "transcribes audio. Focus on accurate "
-                        "transcription of mixed Korean and "
-                        "English speech, technical terms, and "
-                        "code-switching scenarios."
-                    ),
-                    "input_audio_transcription": {"model": "gpt-4o-transcribe"},
-                    "turn_detection": {
-                        "type": "server_vad",
-                        "threshold": 0.5,
-                        "prefix_padding_ms": 300,
-                        "silence_duration_ms": 500,
+                    "session": {
+                        "type": "realtime",
+                        "model": "gpt-realtime",
+                        "instructions": (
+                            "You are a real-time subtitle translator. "
+                            "The user's speech has already been "
+                            "transcribed for you; respond with ONLY the "
+                            "translated text — no quotes, no apologies, "
+                            "no meta-commentary. Translate Korean input "
+                            "to English, and any non-Korean input "
+                            "(English, Chinese, Vietnamese, etc.) to "
+                            "Korean. Preserve proper nouns and technical "
+                            "terms in their original script. Keep it "
+                            "concise and natural — this appears as a "
+                            "live caption line."
+                        ),
+                        # Text-only responses — browser (webrtc.html) consumes
+                        # only response.text.* events; audio responses would
+                        # be silently dropped AND rack up audio-output tokens.
+                        # Voice config intentionally omitted (unused).
+                        "audio": {
+                            "input": {
+                                "transcription": {"model": "gpt-4o-transcribe"},
+                                "turn_detection": {
+                                    "type": "server_vad",
+                                    "threshold": 0.5,
+                                    "prefix_padding_ms": 300,
+                                    "silence_duration_ms": 500,
+                                },
+                            },
+                        },
+                        "output_modalities": ["text"],
                     },
-                    "modalities": ["audio", "text"],
-                    "temperature": 0.8,
                 },
             )
 
-            if response.status_code != 200:
+            if response.status_code not in (200, 201):
                 error_text = response.text
                 print(f"[OpenAI] API 오류: {response.status_code} - {error_text}")
-                raise Exception(f"OpenAI API 오류: {response.status_code}")
+                # Body in message so callers w/o stdout access see the cause.
+                raise Exception(
+                    f"OpenAI API 오류 {response.status_code}: {error_text[:500]}"
+                )
 
             session_data = response.json()
+            effective_session = session_data.get("session") or {}
             expires_at = datetime.now() + timedelta(minutes=1)
 
             return {
-                "id": session_data.get("id"),
-                "client_secret": session_data.get("client_secret", {}).get("value"),
+                "id": effective_session.get("id") or session_data.get("id"),
+                "client_secret": session_data.get("value"),
                 "expires_at": expires_at.isoformat(),
-                "model": session_data.get(
-                    "model",
-                    "gpt-4o-realtime-preview",
-                ),
+                "model": effective_session.get("model", "gpt-realtime"),
             }
 
     except httpx.HTTPError as e:
