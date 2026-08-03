@@ -14,7 +14,7 @@ services:
       - OPENAI_KEY=${OPENAI_KEY}
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - AWS_REGION=${AWS_REGION:-ap-northeast-2}
       - SSE_PORT=${SSE_PORT:-8766}
       # QR 코드에 들어갈 뷰어 base URL — 미설정 시 http://localhost:{SSE_PORT} (로컬 전용)
       - VIEWER_BASE_URL=${VIEWER_BASE_URL:-}

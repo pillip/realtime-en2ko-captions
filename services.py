@@ -11,7 +11,7 @@ import httpx
 
 # AWS 설정 — 함수로 읽어야 load_dotenv() 이후 값을 가져올 수 있음
 def get_aws_region():
-    return os.getenv("AWS_REGION", "us-east-1")
+    return os.getenv("AWS_REGION", "ap-northeast-2")
 
 
 def get_aws_access_key_id():
