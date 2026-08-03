@@ -70,7 +70,7 @@ OPENAI_KEY=your_openai_api_key_here
 # AWS 설정 (번역 서비스용)
 AWS_ACCESS_KEY_ID=your_aws_access_key_id
 AWS_SECRET_ACCESS_KEY=your_aws_secret_access_key
-AWS_REGION=us-east-1
+AWS_REGION=ap-northeast-2
 
 # 관리자 계정 설정 (초기 설정용)
 ADMIN_USERNAME=admin

@@ -25,12 +25,12 @@ SOURCE_LANG_NAMES = {
 # (2025-10~2026-04) 했고 Bedrock 도 2026-03-01 부터 순차 종료. 지금 호출은
 # 조용히 실패해서 Amazon Translate 폴백만 남는다.
 #
-# 리전 프리픽스 `us.` 는 US 크로스 리전 inference profile. AWS_REGION 이
-# us-* 가 아닌 배포에서는 `eu.` 등 로컬 프리픽스로 교체하거나 프리픽스
-# 없는 direct model ID 를 시도하도록 오퍼레이터가 조정해야 한다.
+# 프리픽스 `global.` 은 global 크로스 리전 inference profile — US/EU/APAC
+# 어느 소스 리전에서든 호출 가능. 서울(ap-northeast-2) 은 4.5 세대 모델에
+# `apac.` 지역 프로파일이 없고 global 만 지원하므로 이 프리픽스가 필수다.
 BEDROCK_MODEL_IDS = [
-    "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-    "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "global.anthropic.claude-haiku-4-5-20251001-v1:0",
 ]
 
 

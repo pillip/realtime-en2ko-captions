@@ -8,11 +8,16 @@ services:
     ports:
       - "8501:8501"
       - "8765:8765"
+      # 뷰어 SSE 브로드캐스트 서버 (ISSUE-30) — QR 스캔한 기기가 접속하는 포트
+      - "${SSE_PORT:-8766}:${SSE_PORT:-8766}"
     environment:
       - OPENAI_KEY=${OPENAI_KEY}
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - AWS_REGION=${AWS_REGION:-ap-northeast-2}
+      - SSE_PORT=${SSE_PORT:-8766}
+      # QR 코드에 들어갈 뷰어 base URL — 미설정 시 http://localhost:{SSE_PORT} (로컬 전용)
+      - VIEWER_BASE_URL=${VIEWER_BASE_URL:-}
     volumes:
       # 로그 파일을 호스트에 저장
       - ./logs:/app/logs
