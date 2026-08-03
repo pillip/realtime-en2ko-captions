@@ -29,16 +29,21 @@ uv run pre-commit run --all-files # Run all pre-commit hooks
 uv run pre-commit install         # Install pre-commit hooks (one-time)
 
 # Docker deployment
-uv export -o requirements.txt     # Export for container
+uv export -o requirements.txt     # Export for container (aiohttp/qrcode 포함 — 의존성 변경 시 재실행)
 docker build -t realtime-caption .
-docker run --rm -p 8501:8501 -e OPENAI_API_KEY=sk-... realtime-caption
+docker run --rm -p 8501:8501 -p 8765:8765 -p 8766:8766 \
+  -e OPENAI_KEY=sk-... \
+  -e AWS_ACCESS_KEY_ID=... -e AWS_SECRET_ACCESS_KEY=... \
+  -e VIEWER_BASE_URL=http://<host>:8766 \
+  realtime-caption
+# 권장: docker-compose up -d --build  (.env 자동 로드, 포트/볼륨 일괄 구성)
 ```
 
 ## Essential Environment Variables
 
 - `AWS_ACCESS_KEY_ID`: Required for AWS service authentication (server-side only)
 - `AWS_SECRET_ACCESS_KEY`: Required for AWS service authentication (server-side only)
-- `AWS_REGION`: Optional, defaults to `us-east-1`
+- `AWS_REGION`: Optional, defaults to `ap-northeast-2` (Seoul). Bedrock translation uses `global.` cross-region inference profiles (translation.py), which are callable from any commercial region — Seoul has no `apac.` profile for the Claude 4.5 generation, so the `global.` prefix is required there.
 - `SSE_PORT`: Optional, defaults to `8766`. TCP port for the unauthenticated viewer SSE broadcast server (`/stream/{room_id}`, ISSUE-30).
 - `VIEWER_BASE_URL`: Optional, defaults to `http://localhost:{SSE_PORT}`. Base URL embedded into QR codes (ISSUE-32) — set to the public viewer host (e.g. `https://captions.example.com`) in production so attendees scan a reachable URL.
 
