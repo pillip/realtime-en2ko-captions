@@ -44,6 +44,7 @@ docker run --rm -p 8501:8501 -p 8765:8765 -p 8766:8766 \
 - `AWS_ACCESS_KEY_ID`: Required for AWS service authentication (server-side only)
 - `AWS_SECRET_ACCESS_KEY`: Required for AWS service authentication (server-side only)
 - `AWS_REGION`: Optional, defaults to `ap-northeast-2` (Seoul). Bedrock translation uses `global.` cross-region inference profiles (translation.py), which are callable from any commercial region — Seoul has no `apac.` profile for the Claude 4.5 generation, so the `global.` prefix is required there.
+- `WS_PORT`: Optional, defaults to `8765`. Fixed TCP port for the translation-pipeline WebSocket server (process-wide singleton). Must match the Docker port mapping — dynamic per-session allocation leaked past the mapping (#84).
 - `SSE_PORT`: Optional, defaults to `8766`. TCP port for the unauthenticated viewer SSE broadcast server (`/stream/{room_id}`, ISSUE-30).
 - `VIEWER_BASE_URL`: Optional, defaults to `http://localhost:{SSE_PORT}`. Base URL embedded into QR codes (ISSUE-32) — set to the public viewer host (e.g. `https://captions.example.com`) in production so attendees scan a reachable URL.
 
@@ -64,10 +65,10 @@ docker run --rm -p 8501:8501 -p 8765:8765 -p 8766:8766 \
 - Line input optimization: `echoCancellation:false, noiseSuppression:false, autoGainControl:false`
 - Device switching requires stream recreation with new `deviceId`
 
-### WebRTC Connection Sequence
-1. Server: `POST /v1/realtime/sessions` → ephemeral token
+### WebRTC Connection Sequence (Realtime GA, 2026-05-12 이후)
+1. Server: `POST /v1/realtime/client_secrets` → ephemeral client secret (`ek_...`, model/세션 설정은 이 시점에 서버가 고정)
 2. Browser: SDP offer creation with audio track
-3. Browser: `POST /v1/realtime?model=...` with token + SDP → answer
+3. Browser: `POST /v1/realtime/calls` with `Authorization: Bearer ek_...` + `Content-Type: application/sdp` → answer (구 `POST /v1/realtime?model=...` 은 GA에서 400)
 4. RTCPeerConnection established, DataChannel for caption events
 
 ### Caption Event Processing
