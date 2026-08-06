@@ -7,11 +7,13 @@ services:
     restart: unless-stopped
     ports:
       - "8501:8501"
-      - "8765:8765"
+      # 번역 파이프라인 WebSocket — WS_PORT 고정, 브라우저가 직접 접속 (#84)
+      - "${WS_PORT:-8765}:${WS_PORT:-8765}"
       # 뷰어 SSE 브로드캐스트 서버 (ISSUE-30) — QR 스캔한 기기가 접속하는 포트
       - "${SSE_PORT:-8766}:${SSE_PORT:-8766}"
     environment:
       - OPENAI_KEY=${OPENAI_KEY}
+      - WS_PORT=${WS_PORT:-8765}
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
       - AWS_REGION=${AWS_REGION:-ap-northeast-2}

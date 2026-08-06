@@ -822,59 +822,77 @@ async def _periodic_room_cleanup_loop() -> None:
             print(f"[Room] cleanup loop error: {e!r}")
 
 
+# 프로세스 단위 WS 서버 싱글턴 플래그. Streamlit 은 브라우저 세션마다
+# start_websocket_server 를 새 스레드로 부르므로, 첫 스레드만 실제 서버가
+# 되고 나머지는 포트만 보고 반환한다 (#84).
+_WS_SERVER_STARTED = False
+
+
 def start_websocket_server(port_ref):
-    """WebSocket 서버 시작 (동적 포트 할당)
+    """WebSocket 서버 시작 (WS_PORT 고정, 프로세스 단위 싱글턴)
+
+    포트는 WS_PORT 환경변수(기본 8765)로 고정한다 — Docker 포트 매핑과
+    일치해야 컨테이너 밖 브라우저가 접속할 수 있다. 이전의
+    find_free_port() 동적 할당은 세션마다 서버가 증식해 매핑 밖 포트
+    (8767, 8768, ...)로 새는 문제가 있었다 (#84).
 
     Args:
         port_ref: 포트를 저장할 dict ({"port": None})
     """
+    global _WS_SERVER_STARTED
+    ws_port = int(os.getenv("WS_PORT", "8765"))
+    port_ref["port"] = ws_port
+
+    if _WS_SERVER_STARTED:
+        print(f"[WebSocket] 서버 이미 실행 중 — 재사용: ws://0.0.0.0:{ws_port}")
+        return
+
     try:
-        free_port = find_free_port()
-        print(f"[WebSocket] 할당된 포트: {free_port}")
-        port_ref["port"] = free_port
-
-        # ISSUE-26: attach the persistent Room repository, hydrate
-        # waiting/active/inactive rooms from DB, and start the periodic
-        # stale-room cleanup. Best-effort: any failure here only
-        # downgrades to in-memory mode — server continues to start.
-        try:
-            from database import get_room_model
-
-            global _room_manager
-            repo = get_room_model()
-            _room_manager = RoomManager(room_repository=repo)
-            loaded = _room_manager.hydrate_from_db()
-            if loaded:
-                print(f"[Room] DB 복원: {loaded}개 룸")
-        except Exception as e:
-            # Fall back to in-memory mode; never block server start
-            # on persistence wiring.
-            print(f"[Room] 영속 저장소 연결 실패 — 메모리 전용 모드: {e!r}")
-
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
         async def run_server():
+            global _WS_SERVER_STARTED, _room_manager
             try:
                 server = await websockets.serve(
                     handle_openai_websocket,
                     "0.0.0.0",
-                    free_port,
+                    ws_port,
                 )
+            except OSError:
+                # 다른 세션 스레드가 먼저 바인딩함 — 그 서버를 재사용.
                 print(
-                    f"[WebSocket] 서버 시작 완료 (OpenAI 모드): "
-                    f"ws://0.0.0.0:{free_port}"
+                    f"[WebSocket] 포트 사용 중 — 기존 서버 재사용: "
+                    f"ws://0.0.0.0:{ws_port}"
                 )
-                # Background task: scan for stale rooms every minute and
-                # close them. Cancelled when wait_closed returns.
-                cleanup_task = asyncio.create_task(_periodic_room_cleanup_loop())
-                try:
-                    await server.wait_closed()
-                finally:
-                    cleanup_task.cancel()
+                return
+            _WS_SERVER_STARTED = True
+
+            # ISSUE-26: attach the persistent Room repository, hydrate
+            # waiting/active/inactive rooms from DB, and start the periodic
+            # stale-room cleanup. Best-effort: any failure here only
+            # downgrades to in-memory mode — server continues to start.
+            # 실제 서버가 된 스레드만 수행한다 — 세션마다 _room_manager 를
+            # 갈아치우면 구동 중인 서버의 룸 상태가 오염된다 (#84).
+            try:
+                from database import get_room_model
+
+                repo = get_room_model()
+                _room_manager = RoomManager(room_repository=repo)
+                loaded = _room_manager.hydrate_from_db()
+                if loaded:
+                    print(f"[Room] DB 복원: {loaded}개 룸")
             except Exception as e:
-                print(f"[WebSocket] 서버 실행 오류: {e}")
-                raise e
+                print(f"[Room] 영속 저장소 연결 실패 — 메모리 전용 모드: {e!r}")
+
+            print(f"[WebSocket] 서버 시작 완료 (OpenAI 모드): ws://0.0.0.0:{ws_port}")
+            # Background task: scan for stale rooms every minute and
+            # close them. Cancelled when wait_closed returns.
+            cleanup_task = asyncio.create_task(_periodic_room_cleanup_loop())
+            try:
+                await server.wait_closed()
+            finally:
+                cleanup_task.cancel()
 
         loop.run_until_complete(run_server())
     except Exception as e:
