@@ -7,7 +7,7 @@ import json
 import os
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
 
 import bcrypt
@@ -133,7 +133,7 @@ class DatabaseManager:
                 )
             """
             )
-            # status 필터 (cleanup_stale_rooms, list_by_status, hydrate)
+            # status 필터 (list_by_status, hydrate)
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_rooms_status
@@ -770,8 +770,8 @@ class Room:
 
     - 상태 전이는 _ROOM_TRANSITIONS 다이어그램에 따라 application
       레이어에서 강제한다 (CHECK 제약은 fallback 방어선).
-    - cleanup_stale_rooms() 는 timeout_minutes 를 초과한 active/inactive
-      룸을 closed 처리한다 (좀비 룸 정리).
+    - 룸 종료는 admin 강제 종료(force_close)로만 수행한다
+      (#86 — auto-timeout 제거).
     - 모든 메서드는 외부에서 SQLite tmp_path 로 격리 가능하도록
       DatabaseManager 인스턴스 주입을 받는다.
     """
@@ -1028,57 +1028,6 @@ class Room:
             )
             conn.commit()
             return cursor.rowcount > 0
-
-    # ------------------------------------------------------------------
-    # Cleanup
-    # ------------------------------------------------------------------
-    def cleanup_stale_rooms(self, now: datetime | None = None) -> list[str]:
-        """Close active/inactive rooms whose last_activity is older than
-        their per-row timeout_minutes.
-
-        Returns the list of room ids that were closed.
-
-        The check is performed in Python (not a single UPDATE) so we can:
-          - Apply per-row timeout_minutes accurately
-          - Run the same transition_status path used by the rest of the
-            code, keeping closed_at + audit semantics consistent
-          - Be unit-testable without monkey-patching SQLite NOW().
-        """
-        now = now or datetime.utcnow()
-        closed_ids: list[str] = []
-        with self.db.get_connection() as conn:
-            cursor = conn.execute(
-                "SELECT id, last_activity, timeout_minutes, status "
-                "FROM rooms WHERE status IN ('active', 'inactive')"
-            )
-            candidates = [dict(r) for r in cursor.fetchall()]
-
-        for room in candidates:
-            last_activity = room.get("last_activity")
-            if not last_activity:
-                # No activity recorded yet — leave alone, will be cleaned
-                # up on the next touch/transition.
-                continue
-            if isinstance(last_activity, str):
-                try:
-                    last_dt = datetime.strptime(last_activity, "%Y-%m-%d %H:%M:%S")
-                except ValueError:
-                    # Unknown timestamp shape; skip rather than crash.
-                    continue
-            elif isinstance(last_activity, datetime):
-                last_dt = last_activity
-            else:
-                continue
-
-            timeout = timedelta(minutes=room["timeout_minutes"])
-            if now - last_dt >= timeout:
-                try:
-                    self.transition_status(room["id"], "closed")
-                    closed_ids.append(room["id"])
-                except InvalidRoomTransition:
-                    # Race: another caller closed it first; skip.
-                    continue
-        return closed_ids
 
 
 def init_admin_from_env(db_manager: DatabaseManager) -> bool:

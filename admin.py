@@ -12,9 +12,13 @@ import pandas as pd
 import streamlit as st
 
 from admin_logic import (
+    DEFAULT_ROOM_LIST_STATUSES,
+    ROOM_STATUS_FILTER_OPTIONS,
     build_room_metrics_view_data,
     export_room_logs_csv,
+    filter_rooms_by_status,
     filter_rooms_for_role,
+    format_room_status,
     get_logs_for_operator,
     prepare_room_table_data,
     validate_room_creation_input,
@@ -598,18 +602,31 @@ def show_room_management(
     # ------------------------------------------------------------------
     # 룸 목록 표시
     # ------------------------------------------------------------------
+    listed_rooms = visible_rooms
     if is_role_admin:
-        st.subheader("🏠 활성 룸 목록")
+        st.subheader("🏠 룸 목록")
+        # ISSUE-85: 상태 필터 — 기본은 closed 숨김. 종료 룸은 기록
+        # 조회/CSV 용도로만 필터에서 명시 선택 시 노출한다.
+        selected_statuses = st.multiselect(
+            "상태 필터",
+            options=list(ROOM_STATUS_FILTER_OPTIONS),
+            default=list(DEFAULT_ROOM_LIST_STATUSES),
+            format_func=format_room_status,
+        )
+        listed_rooms = filter_rooms_by_status(visible_rooms, selected_statuses)
     else:
         st.subheader("🏠 내 룸 목록")
 
-    if not visible_rooms:
+    if not listed_rooms:
         if is_role_admin:
-            st.info("등록된 룸이 없습니다. 아래에서 새 룸을 생성하세요.")
+            st.info(
+                "표시할 룸이 없습니다. 상태 필터를 확인하거나 "
+                "아래에서 새 룸을 생성하세요."
+            )
         else:
             st.info("배정된 룸이 없습니다. 관리자에게 문의하세요.")
     else:
-        rows = prepare_room_table_data(visible_rooms, user_id_to_username)
+        rows = prepare_room_table_data(listed_rooms, user_id_to_username)
         st.dataframe(pd.DataFrame(rows), use_container_width=True)
 
     # ------------------------------------------------------------------
@@ -662,18 +679,12 @@ def _render_admin_room_create(room_model, user_model, current_user):
                 options=["ko", "en", "ja", "zh"],
                 index=0,
             )
-            timeout_minutes = st.number_input(
-                "타임아웃 (분)",
-                min_value=1,
-                max_value=1440,
-                value=30,
-                step=5,
-                help="이 시간 동안 활동 없으면 룸 자동 종료",
-            )
+            # 타임아웃 입력은 #86(auto-timeout 제거)과 함께 삭제 —
+            # 룸 종료는 아래 '강제 종료' 로 admin 이 수동 수행한다.
 
         submitted = st.form_submit_button("룸 생성")
         if submitted:
-            valid, error = validate_room_creation_input(name, int(timeout_minutes))
+            valid, error = validate_room_creation_input(name)
             if not valid:
                 st.error(error)
                 return
@@ -687,7 +698,6 @@ def _render_admin_room_create(room_model, user_model, current_user):
                     created_by=current_user["id"],
                     input_lang=input_lang,
                     output_lang=output_lang,
-                    timeout_minutes=int(timeout_minutes),
                 )
                 st.success(f"룸 '{name}' 생성됨 (ID: {room_id})")
                 st.rerun()
