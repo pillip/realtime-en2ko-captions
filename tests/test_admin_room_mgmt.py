@@ -892,3 +892,96 @@ class TestWebSocketRecordUsageForwardsRoomId:
 
         assert captured.get("room_id") == "r-server-side"
         assert captured["room_id"] != "r-spoofed"
+
+
+# ============================================================
+# ISSUE-85/86: 룸 목록 상태 필터 + auto-timeout 제거
+# ============================================================
+class TestRoomStatusFilter:
+    """admin_logic.filter_rooms_by_status — closed 기본 숨김 (pure)."""
+
+    def _rooms(self):
+        return [
+            {"id": "r-w", "status": "waiting"},
+            {"id": "r-a", "status": "active"},
+            {"id": "r-i", "status": "inactive"},
+            {"id": "r-c", "status": "closed"},
+        ]
+
+    def test_default_excludes_closed(self):
+        from admin_logic import filter_rooms_by_status
+
+        ids = [r["id"] for r in filter_rooms_by_status(self._rooms())]
+        assert ids == ["r-w", "r-a", "r-i"]
+
+    def test_explicit_closed_only(self):
+        from admin_logic import filter_rooms_by_status
+
+        ids = [r["id"] for r in filter_rooms_by_status(self._rooms(), ["closed"])]
+        assert ids == ["r-c"]
+
+    def test_empty_statuses_returns_empty(self):
+        from admin_logic import filter_rooms_by_status
+
+        assert filter_rooms_by_status(self._rooms(), []) == []
+
+    def test_default_constant_excludes_closed_and_options_cover_all(self):
+        from admin_logic import (
+            DEFAULT_ROOM_LIST_STATUSES,
+            ROOM_STATUS_FILTER_OPTIONS,
+        )
+
+        assert "closed" not in DEFAULT_ROOM_LIST_STATUSES
+        assert set(ROOM_STATUS_FILTER_OPTIONS) == {
+            "waiting",
+            "active",
+            "inactive",
+            "closed",
+        }
+
+
+class TestRoomTableTimeoutRemoved:
+    """#86: 타임아웃 컬럼 제거 — 표시용 dict 에 더 이상 없음."""
+
+    def test_table_has_last_activity_but_no_timeout_column(self):
+        from admin_logic import prepare_room_table_data
+
+        rows = prepare_room_table_data(
+            [
+                {
+                    "id": "r1",
+                    "name": "A홀",
+                    "status": "active",
+                    "operator_id": None,
+                    "created_by": None,
+                    "last_activity": "2026-08-07 10:00:00",
+                }
+            ],
+            {},
+        )
+        assert "타임아웃(분)" not in rows[0]
+        assert rows[0]["마지막활동"] == "2026-08-07 10:00:00"
+
+
+class TestValidateRoomNameOnly:
+    """#86: validate_room_creation_input 는 이름만 검증한다."""
+
+    def test_valid_name_passes(self):
+        from admin_logic import validate_room_creation_input
+
+        valid, error = validate_room_creation_input("A홀 기조연설")
+        assert valid is True
+        assert error == ""
+
+    def test_empty_name_fails(self):
+        from admin_logic import validate_room_creation_input
+
+        valid, error = validate_room_creation_input("   ")
+        assert valid is False
+        assert "필수" in error
+
+    def test_long_name_fails(self):
+        from admin_logic import validate_room_creation_input
+
+        valid, _ = validate_room_creation_input("x" * 101)
+        assert valid is False

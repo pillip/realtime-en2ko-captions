@@ -6,7 +6,6 @@ rooms 테이블 및 Room 모델 단위 테스트 (ISSUE-26)
 - Room CRUD (생성/조회/목록/삭제)
 - 상태 전이 (waiting → active → inactive → active/closed, 강제 종료)
 - 잘못된 전이 거부
-- 타임아웃 정리 (last_activity 30분 이상 미갱신 → closed)
 - 외래 키 무결성 (foreign_keys=ON, created_by 필수)
 - 서버 재시작 복원 (RoomManager.hydrate_from_db)
 - WebSocket 인증 시 closed 룸 거부 (RL-006: 일반화된 에러 메시지)
@@ -21,7 +20,6 @@ import json
 import sqlite3
 import sys
 import time
-from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -330,7 +328,7 @@ class TestRoomStateTransitions:
     waiting → active     (오퍼레이터가 시작)
     active → inactive    (오퍼레이터가 정지)
     inactive → active    (오퍼레이터가 재시작)
-    inactive → closed    (타임아웃 또는 관리자 종료)
+    inactive → closed    (관리자 종료)
     active → closed      (관리자 강제 종료)
     waiting → closed     (관리자 삭제)
     """
@@ -418,93 +416,6 @@ class TestRoomStateTransitions:
         after = room_model.get_by_id(room_id)["last_activity"]
         assert before is None or after >= before
         assert after is not None
-
-
-# ---------------------------------------------------------------------------
-# Timeout cleanup
-# ---------------------------------------------------------------------------
-class TestRoomTimeoutCleanup:
-    """AC: 30분간 last_activity 미갱신 비활성 룸이 자동으로 closed 처리된다."""
-
-    def _backdate_last_activity(self, db_manager, room_id, minutes_ago):
-        ts = (datetime.utcnow() - timedelta(minutes=minutes_ago)).strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
-        with db_manager.get_connection() as conn:
-            conn.execute(
-                "UPDATE rooms SET last_activity = ? WHERE id = ?",
-                (ts, room_id),
-            )
-            conn.commit()
-
-    def test_cleanup_closes_inactive_room_past_timeout(
-        self, room_model, db_manager, admin_user_id
-    ):
-        room_model.create(
-            room_id="r-stale",
-            name="stale",
-            created_by=admin_user_id,
-            timeout_minutes=30,
-        )
-        room_model.transition_status("r-stale", "active")
-        room_model.transition_status("r-stale", "inactive")
-        self._backdate_last_activity(db_manager, "r-stale", 60)
-
-        closed = room_model.cleanup_stale_rooms()
-        assert "r-stale" in closed
-        assert room_model.get_by_id("r-stale")["status"] == "closed"
-
-    def test_cleanup_closes_active_room_past_timeout(
-        self, room_model, db_manager, admin_user_id
-    ):
-        """Active 룸도 last_activity가 timeout 초과면 closed (좀비 정리)."""
-        room_model.create(
-            room_id="r-zombie",
-            name="zombie",
-            created_by=admin_user_id,
-            timeout_minutes=30,
-        )
-        room_model.transition_status("r-zombie", "active")
-        self._backdate_last_activity(db_manager, "r-zombie", 90)
-
-        closed = room_model.cleanup_stale_rooms()
-        assert "r-zombie" in closed
-        assert room_model.get_by_id("r-zombie")["status"] == "closed"
-
-    def test_cleanup_skips_recent_rooms(self, room_model, db_manager, admin_user_id):
-        room_model.create(
-            room_id="r-fresh",
-            name="fresh",
-            created_by=admin_user_id,
-            timeout_minutes=30,
-        )
-        room_model.transition_status("r-fresh", "active")
-        # last_activity = now, well within timeout
-        closed = room_model.cleanup_stale_rooms()
-        assert "r-fresh" not in closed
-        assert room_model.get_by_id("r-fresh")["status"] == "active"
-
-    def test_cleanup_skips_already_closed(self, room_model, db_manager, admin_user_id):
-        room_model.create(room_id="r-done", name="done", created_by=admin_user_id)
-        room_model.transition_status("r-done", "closed")
-        self._backdate_last_activity(db_manager, "r-done", 999)
-        closed = room_model.cleanup_stale_rooms()
-        assert "r-done" not in closed
-
-    def test_cleanup_respects_per_room_timeout(
-        self, room_model, db_manager, admin_user_id
-    ):
-        """timeout_minutes=5 인 룸이 10분 stale 이면 정리된다."""
-        room_model.create(
-            room_id="r-short",
-            name="short",
-            created_by=admin_user_id,
-            timeout_minutes=5,
-        )
-        room_model.transition_status("r-short", "active")
-        self._backdate_last_activity(db_manager, "r-short", 10)
-        closed = room_model.cleanup_stale_rooms()
-        assert "r-short" in closed
 
 
 # ---------------------------------------------------------------------------

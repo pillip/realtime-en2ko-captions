@@ -170,7 +170,6 @@ def prepare_room_table_data(
                 "입력언어": room.get("input_lang", ""),
                 "출력언어": room.get("output_lang", ""),
                 "생성자": creator_label,
-                "타임아웃(분)": room.get("timeout_minutes", ""),
                 "생성일시": room.get("created_at", ""),
                 "마지막활동": room.get("last_activity") or "-",
                 "종료일시": room.get("closed_at") or "-",
@@ -200,6 +199,38 @@ def filter_rooms_for_role(
     if user_role == "operator":
         return [r for r in rooms if r.get("operator_id") == user_id]
     return []
+
+
+# ISSUE-85: 룸 목록 상태 필터 기본값 — closed 는 기본 숨김.
+# 룸 종료가 admin 수동 관리로 일원화되면서(#86) 종료 룸이 목록에
+# 계속 쌓이므로, 기록 조회 목적일 때만 필터로 명시 선택해 노출한다.
+DEFAULT_ROOM_LIST_STATUSES: tuple[str, ...] = ("waiting", "active", "inactive")
+
+# admin.py 의 상태 필터 multiselect 옵션 (표시 순서 고정).
+ROOM_STATUS_FILTER_OPTIONS: tuple[str, ...] = (
+    "waiting",
+    "active",
+    "inactive",
+    "closed",
+)
+
+
+def format_room_status(status: str) -> str:
+    """상태 코드 → 한글 라벨 (필터 UI 의 format_func 용 공개 래퍼)."""
+    return _format_room_status(status)
+
+
+def filter_rooms_by_status(
+    rooms: list[dict[str, Any]],
+    statuses: list[str] | tuple[str, ...] = DEFAULT_ROOM_LIST_STATUSES,
+) -> list[dict[str, Any]]:
+    """룸 목록을 status 로 필터링한다 (ISSUE-85, Streamlit-free).
+
+    빈 statuses 는 빈 목록을 돌려준다 — "아무것도 선택 안 함 → 아무것도
+    안 보임" 이 multiselect 의 직관과 일치한다.
+    """
+    allowed = set(statuses)
+    return [r for r in rooms if r.get("status") in allowed]
 
 
 def export_room_logs_csv(logs: list[dict[str, Any]], room_id: str) -> bytes:
@@ -368,23 +399,19 @@ def build_room_metrics_view_data(
     }
 
 
-def validate_room_creation_input(
-    name: str,
-    timeout_minutes: int,
-) -> tuple[bool, str]:
+def validate_room_creation_input(name: str) -> tuple[bool, str]:
     """룸 생성 폼 검증.
 
     이 함수는 server-side 검증의 일부이며, UI 의 클라이언트 검증을
     통과한 입력에 대해서도 한 번 더 server-side 에서 호출되어야 한다
     (RL-002 — 클라이언트 입력은 신뢰하지 않음).
+
+    타임아웃 검증은 #86(auto-timeout 제거)과 함께 삭제됨 — 룸 종료는
+    admin 수동 관리로 일원화.
     """
     name = (name or "").strip()
     if not name:
         return False, "룸 이름은 필수입니다."
     if len(name) > 100:
         return False, "룸 이름은 100자 이하여야 합니다."
-    if timeout_minutes < 1:
-        return False, "타임아웃은 1분 이상이어야 합니다."
-    if timeout_minutes > 1440:
-        return False, "타임아웃은 1440분(24시간) 이하여야 합니다."
     return True, ""
