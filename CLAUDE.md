@@ -73,7 +73,8 @@ docker run --rm -p 8501:8501 -p 8765:8765 -p 8766:8766 \
 
 ### Caption Event Processing
 - Handle both delta (unstable) and completed (stable) events from DataChannel
-- Event types vary: `response.text.delta`, `conversation.item.input_audio_transcription.completed`
+- Event types (GA): `response.output_text.delta`/`.done` (browser keeps beta `response.text.*` cases as fall-through for compatibility), `conversation.item.input_audio_transcription.completed`
+- Browser MUST NOT send `session.update` — GA session config is fully pinned server-side at client_secret creation (#89)
 - UI transition: gray/italic temporary text → confirmed lines appended to scroll
 
 ### UI Behavior Requirements
