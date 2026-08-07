@@ -1784,26 +1784,10 @@ try {
 
       dataChannel.onopen = () => {
         console.log('✅ DataChannel 연결됨');
-
-        // Session instructions 전송
-        const sessionUpdate = {
-          type: 'session.update',
-          session: {
-            input_audio_format: 'pcm16',
-            input_audio_transcription: {
-              model: 'gpt-4o-transcribe',
-            },
-            turn_detection: {
-              type: 'server_vad',
-              threshold: 0.5,
-              prefix_padding_ms: 300,
-              silence_duration_ms: 500
-            }
-          }
-        };
-
-        dataChannel.send(JSON.stringify(sessionUpdate));
-        console.log('📤 Transcription-only session 설정됨');
+        // GA: 세션 설정(전사 모델·VAD·instructions·output_modalities)은
+        // 서버가 client_secret 발급 시 이미 전부 고정한다 (services.py).
+        // beta 시절의 session.update 재전송은 GA 에서 "Missing required
+        // parameter: 'session.type'" 에러만 내는 중복이라 제거 (#89).
       };
 
       dataChannel.onmessage = (event) => {
@@ -2253,7 +2237,8 @@ try {
         }
         break;
 
-      case 'response.text.delta':
+      case 'response.output_text.delta': // GA 이벤트명 (#89)
+      case 'response.text.delta':        // beta 호환
         if (message.delta && pendingTranscript) {
           const cleanDelta = message.delta.replace(/^["']|["']$/g, '');
           if (!cleanDelta.toLowerCase().includes('cannot') &&
@@ -2267,7 +2252,8 @@ try {
         }
         break;
 
-      case 'response.text.done':
+      case 'response.output_text.done': // GA 이벤트명 (#89)
+      case 'response.text.done':        // beta 호환
         if (message.text && pendingTranscript) {
           let cleanText = message.text.replace(/^["']|["']$/g, '').trim();
           console.log('[Done]', cleanText);
