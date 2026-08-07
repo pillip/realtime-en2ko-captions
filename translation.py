@@ -18,6 +18,20 @@ SOURCE_LANG_NAMES = {
     "de": "독일어",
 }
 
+# 뷰어가 선택할 수 있는 자막 언어 전체 (#91/#92).
+# 룸별 output_langs 설정 대신 전역 고정 목록을 쓴다 — SSE lazy 게이트
+# (has_viewers)가 언어별 번역 비용을 이미 제어하므로 룸 제한이 불필요.
+SUPPORTED_OUTPUT_LANGS: tuple[str, ...] = (
+    "ko",
+    "en",
+    "ja",
+    "zh",
+    "vi",
+    "es",
+    "fr",
+    "de",
+)
+
 # Bedrock 모델 ID (품질 → 속도 순, 앞이 실패하면 뒤로 폴백)
 #
 # 이전 목록(claude-3-5-sonnet-20240620, claude-3-haiku-20240307,

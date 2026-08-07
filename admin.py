@@ -664,23 +664,10 @@ def _render_admin_room_create(room_model, user_model, current_user):
     st.divider()
     st.subheader("➕ 새 룸 생성")
     with st.form("create_room_form"):
-        col1, col2 = st.columns(2)
-        with col1:
-            name = st.text_input("룸 이름 *", help="회의 이름 (예: A홀 기조연설)")
-            input_lang = st.selectbox(
-                "입력 언어",
-                options=["auto", "en", "ko", "ja", "zh"],
-                index=0,
-                help="auto = 자동 감지",
-            )
-        with col2:
-            output_lang = st.selectbox(
-                "출력 언어",
-                options=["ko", "en", "ja", "zh"],
-                index=0,
-            )
-            # 타임아웃 입력은 #86(auto-timeout 제거)과 함께 삭제 —
-            # 룸 종료는 아래 '강제 종료' 로 admin 이 수동 수행한다.
+        # 입력/출력 언어 설정은 #92 에서 제거 — 입력 언어는 오퍼레이터
+        # 화면에서, 자막 언어는 뷰어가 각자 드롭다운에서 선택한다
+        # (룸 설정과 무관). 타임아웃 입력은 #86 에서 제거.
+        name = st.text_input("룸 이름 *", help="회의 이름 (예: A홀 기조연설)")
 
         submitted = st.form_submit_button("룸 생성")
         if submitted:
@@ -696,8 +683,6 @@ def _render_admin_room_create(room_model, user_model, current_user):
                     room_id=room_id,
                     name=name.strip(),
                     created_by=current_user["id"],
-                    input_lang=input_lang,
-                    output_lang=output_lang,
                 )
                 st.success(f"룸 '{name}' 생성됨 (ID: {room_id})")
                 st.rerun()

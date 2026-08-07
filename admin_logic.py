@@ -167,8 +167,6 @@ def prepare_room_table_data(
                 "이름": room.get("name", ""),
                 "상태": _format_room_status(room.get("status", "")),
                 "오퍼레이터": operator_label,
-                "입력언어": room.get("input_lang", ""),
-                "출력언어": room.get("output_lang", ""),
                 "생성자": creator_label,
                 "생성일시": room.get("created_at", ""),
                 "마지막활동": room.get("last_activity") or "-",

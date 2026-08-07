@@ -793,6 +793,34 @@ class TestCoerceOutputLangsListWithFallback:
 
 
 # ---------------------------------------------------------------------------
+# _supported_output_langs — 전역 지원 언어 고정 (#91/#92)
+# ---------------------------------------------------------------------------
+class TestSupportedOutputLangs:
+    """뷰어 언어 목록·번역 대상이 룸 설정 대신 전역 목록을 쓴다."""
+
+    def test_returns_full_supported_list(self):
+        from sse_broadcast import _supported_output_langs
+        from translation import SUPPORTED_OUTPUT_LANGS
+
+        assert _supported_output_langs("ko") == list(SUPPORTED_OUTPUT_LANGS)
+
+    def test_unknown_primary_is_prepended(self):
+        from sse_broadcast import _supported_output_langs
+
+        result = _supported_output_langs("xx")
+        assert result[0] == "xx"
+        assert "ko" in result and "en" in result
+
+    def test_covers_langs_beyond_default_room_config(self):
+        """기본 룸 설정(ko 뿐)이던 시절과 달리 전 언어가 선택 가능해야 한다."""
+        from sse_broadcast import _supported_output_langs
+
+        result = _supported_output_langs("ko")
+        for lang in ("en", "ja", "zh", "vi"):
+            assert lang in result
+
+
+# ---------------------------------------------------------------------------
 # /view/{room_id} (lines 367-399, 394-397)
 # ---------------------------------------------------------------------------
 class TestHandleView:
