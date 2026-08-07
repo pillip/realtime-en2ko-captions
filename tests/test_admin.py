@@ -8,7 +8,37 @@ import io
 
 import pytest
 
-from admin_logic import export_user_logs_csv, prepare_user_table_data, validate_password
+from admin_logic import (
+    SELECTABLE_USER_ROLES,
+    UNLIMITED_USAGE_ROLES,
+    export_user_logs_csv,
+    prepare_user_table_data,
+    role_select_index,
+    validate_password,
+)
+
+
+# ============================================================
+# 역할 선택 (#95) — operator 를 UI 에서 생성/수정 가능해야 한다
+# ============================================================
+class TestUserRoleSelection:
+    def test_operator_is_selectable(self):
+        assert "operator" in SELECTABLE_USER_ROLES
+        # user/admin 도 그대로 유지
+        assert set(SELECTABLE_USER_ROLES) == {"user", "operator", "admin"}
+
+    def test_role_select_index_maps_each_role(self):
+        for role in SELECTABLE_USER_ROLES:
+            assert SELECTABLE_USER_ROLES[role_select_index(role)] == role
+
+    def test_role_select_index_unknown_defaults_to_user(self):
+        idx = role_select_index("nonexistent")
+        assert SELECTABLE_USER_ROLES[idx] == "user"
+
+    def test_operator_and_admin_are_unlimited(self):
+        assert "operator" in UNLIMITED_USAGE_ROLES
+        assert "admin" in UNLIMITED_USAGE_ROLES
+        assert "user" not in UNLIMITED_USAGE_ROLES
 
 
 # ============================================================
