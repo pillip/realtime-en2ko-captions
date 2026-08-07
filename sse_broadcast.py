@@ -36,6 +36,8 @@ from typing import Any
 
 from aiohttp import web
 
+from translation import SUPPORTED_OUTPUT_LANGS
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -318,6 +320,20 @@ def _coerce_output_langs_list(raw: Any, fallback: str) -> list[str]:
     return langs
 
 
+def _supported_output_langs(primary: str) -> list[str]:
+    """뷰어 언어 목록 — 전역 지원 언어 고정 (#91/#92).
+
+    룸별 rooms.output_langs 대신 translation.SUPPORTED_OUTPUT_LANGS 를
+    쓴다. admin 룸 설정과 무관하게 뷰어는 지원 언어 전부를 고를 수 있고,
+    번역 비용은 has_viewers lazy 게이트가 언어 단위로 제어한다.
+    primary 가 목록 밖 코드여도 앞에 끼워 넣어 드롭다운이 비지 않게 한다.
+    """
+    langs = list(SUPPORTED_OUTPUT_LANGS)
+    if primary and primary not in langs:
+        langs.insert(0, primary)
+    return langs
+
+
 def _render_viewer_html(
     *,
     room_id: str,
@@ -378,7 +394,7 @@ async def _handle_view(request: web.Request) -> web.Response:
         return web.Response(status=404, text=_NOT_FOUND_HTML, content_type="text/html")
 
     primary_lang = room.get("primary_output_lang") or "ko"
-    output_langs = _coerce_output_langs_list(room.get("output_langs"), primary_lang)
+    output_langs = _supported_output_langs(primary_lang)
     room_name = room.get("name") or room_id
     status = room.get("status") or "waiting"
     initial_state = "closed" if status == "closed" else status
@@ -597,8 +613,10 @@ async def broadcast_translation_for_room(
         },
     )
 
-    # 2) Resolve secondary languages.
-    output_langs = _coerce_output_langs(room.get("output_langs"), primary_lang)
+    # 2) Resolve secondary languages — 전역 지원 언어 기준 (#91/#92).
+    #    뷰어 없는 언어는 아래 has_viewers 게이트가 스킵하므로, 목록을
+    #    넓혀도 번역 호출 수는 늘지 않는다.
+    output_langs = _supported_output_langs(primary_lang)
     secondaries = [lang for lang in output_langs if lang != primary_lang]
     if not secondaries:
         return

@@ -573,14 +573,12 @@ async def _publish_to_viewers(
         return
 
     # _handle_transcript 가 이미 정한 target_lang 으로 메인 채널을 매핑한다.
-    # rooms.primary_output_lang 은 룸 운영자가 정한 행사장 메인 언어이며,
-    # 일반적으로 target_lang 과 일치한다 (오퍼레이터의 output_lang 설정과 함께
-    # 운영). 만약 양쪽이 다르면 운영자 설정을 우선해 source-of-truth 로 삼는다 —
-    # 행사장 화면에 실제로 송출되는 텍스트가 메인 채널이어야 하기 때문.
+    # 오퍼레이터 설정이 source-of-truth — 행사장 화면에 실제로 송출되는
+    # 텍스트가 메인 채널이어야 하기 때문. 추가 언어 목록은 룸 설정이 아니라
+    # 전역 지원 언어(#91/#92)를 broadcast 쪽이 직접 쓴다.
     room_for_publish = {
         "id": room_id,
         "primary_output_lang": target_lang,
-        "output_langs": room_row.get("output_langs"),
     }
 
     async def _translate_fn(text, src, dst):

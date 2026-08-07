@@ -510,8 +510,9 @@ class TestPrepareRoomTableData:
         assert row["이름"] == "A홀"
         assert row["상태"] == "활성"
         assert row["오퍼레이터"] == "op1"
-        assert row["입력언어"] == "auto"
-        assert row["출력언어"] == "ko"
+        # #92: 입력언어/출력언어 컬럼 제거 — 언어는 룸 설정이 아님
+        assert "입력언어" not in row
+        assert "출력언어" not in row
 
     def test_unassigned_operator_displays_dash(self):
         from admin_logic import prepare_room_table_data
