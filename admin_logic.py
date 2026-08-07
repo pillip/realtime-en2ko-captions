@@ -24,6 +24,24 @@ def _format_room_status(status: str) -> str:
     return _ROOM_STATUS_KOR_LABELS.get(status, status)
 
 
+# admin 사용자 생성/수정 폼의 역할 selectbox 옵션 (#95).
+# operator 는 auth.is_operator / 룸 배정에서 쓰이는 정식 역할이므로 UI 에서
+# 반드시 선택 가능해야 한다. 순서 = selectbox 표시 순서.
+SELECTABLE_USER_ROLES: tuple[str, ...] = ("user", "operator", "admin")
+
+# 생성 시 사용량 무제한으로 두는 역할 — 세션을 직접 운영하는 권한 역할.
+# operator 는 컨퍼런스 장시간 세션을 돌리므로 중간에 한도로 끊기면 안 된다.
+UNLIMITED_USAGE_ROLES: frozenset[str] = frozenset({"admin", "operator"})
+
+
+def role_select_index(role: str) -> int:
+    """수정 폼 selectbox 의 초기 index — 미지 역할은 0(user)로 방어."""
+    try:
+        return SELECTABLE_USER_ROLES.index(role)
+    except ValueError:
+        return 0
+
+
 def validate_password(password: str, confirm: str) -> tuple[bool, str]:
     """비밀번호 유효성 검증
 

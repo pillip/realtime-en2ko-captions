@@ -14,6 +14,8 @@ import streamlit as st
 from admin_logic import (
     DEFAULT_ROOM_LIST_STATUSES,
     ROOM_STATUS_FILTER_OPTIONS,
+    SELECTABLE_USER_ROLES,
+    UNLIMITED_USAGE_ROLES,
     build_room_metrics_view_data,
     export_room_logs_csv,
     filter_rooms_by_status,
@@ -21,6 +23,7 @@ from admin_logic import (
     format_room_status,
     get_logs_for_operator,
     prepare_room_table_data,
+    role_select_index,
     validate_room_creation_input,
 )
 from auth import (
@@ -195,8 +198,8 @@ def show_user_management(user_model):
                     )
                     new_role = st.selectbox(
                         "역할",
-                        options=["user", "admin"],
-                        index=0 if selected_user["role"] == "user" else 1,
+                        options=list(SELECTABLE_USER_ROLES),
+                        index=role_select_index(selected_user["role"]),
                     )
 
                 with col2:
@@ -299,7 +302,7 @@ def show_create_user_form(user_model):
         with col2:
             email = st.text_input("이메일")
             full_name = st.text_input("소속")
-            role = st.selectbox("역할", options=["user", "admin"], index=0)
+            role = st.selectbox("역할", options=list(SELECTABLE_USER_ROLES), index=0)
 
         usage_limit_hours = st.number_input(
             "사용 가능 시간 (시간)",
@@ -325,9 +328,10 @@ def show_create_user_form(user_model):
                 st.error("비밀번호는 최소 6자 이상이어야 합니다.")
                 return
 
-            # 사용량 제한 계산 (관리자는 무제한)
+            # 사용량 제한 계산 — 세션을 직접 운영하는 권한 역할(admin,
+            # operator)은 무제한 (#95: 컨퍼런스 장시간 세션 중 끊김 방지).
             usage_limit_seconds = (
-                0 if role == "admin" else int(usage_limit_hours * 3600)
+                0 if role in UNLIMITED_USAGE_ROLES else int(usage_limit_hours * 3600)
             )
 
             # 사용자 생성
