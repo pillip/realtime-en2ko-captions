@@ -395,3 +395,53 @@ class TestAuthRoomRouting:
         assert any(msg.get("type") == "auth_error" for msg in sent)
         # No auth_success on unknown room
         assert all(msg.get("type") != "auth_success" for msg in sent)
+
+
+# ============================================================
+# adopt_from_db (#99) — 서버 가동 중 생성된 룸 온디맨드 입양
+# ============================================================
+class TestAdoptFromDb:
+    """hydrate 이후 생성된 룸이 인메모리에 없어도 DB에서 입양된다."""
+
+    def _repo(self, rows):
+        repo = MagicMock()
+        repo.get_by_id.side_effect = lambda rid: rows.get(rid)
+        return repo
+
+    def test_adopts_db_room_not_in_memory(self):
+        from room_manager import RoomManager
+
+        repo = self._repo(
+            {"r-new": {"id": "r-new", "status": "active", "output_lang": "ko"}}
+        )
+        rm = RoomManager(room_repository=repo)
+        # 인메모리에 없음 (hydrate 이후 생성 시나리오)
+        assert rm.get_room("r-new") is None
+        adopted = rm.adopt_from_db("r-new")
+        assert adopted is not None
+        # 이후 인메모리에도 등록되어 register_connection 가능
+        assert rm.get_room("r-new") is adopted
+
+    def test_unknown_room_returns_none(self):
+        from room_manager import RoomManager
+
+        rm = RoomManager(room_repository=self._repo({}))
+        assert rm.adopt_from_db("nope") is None
+
+    def test_closed_room_returns_none_and_drops_stale_memory(self):
+        from room_manager import RoomManager
+
+        repo = self._repo({"r-x": {"id": "r-x", "status": "closed"}})
+        rm = RoomManager(room_repository=repo)
+        # 인메모리에 잔재가 있어도 DB가 closed면 거부 + 잔재 제거
+        rm.get_or_create_room("r-x")
+        assert rm.adopt_from_db("r-x") is None
+        assert rm.get_room("r-x") is None
+
+    def test_memory_only_mode_falls_back_to_registry(self):
+        from room_manager import RoomManager
+
+        rm = RoomManager()  # repo 없음
+        assert rm.adopt_from_db("r-mem") is None
+        room = rm.get_or_create_room("r-mem")
+        assert rm.adopt_from_db("r-mem") is room
