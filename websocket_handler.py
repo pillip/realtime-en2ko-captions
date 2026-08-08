@@ -666,12 +666,18 @@ async def handle_openai_websocket(websocket):
 
     user_info = await _authenticate_client(websocket)
 
+    # 인증 실패 시 즉시 연결 종료 (#97). 이전에는 루프로 계속 진행해
+    # transcript 마다 "로그인이 필요합니다" 를 반복 전송했다.
+    # _authenticate_client 가 실패 브랜치별 auth_error 를 이미 보냈으므로
+    # 여기서는 조용히 닫기만 한다.
+    if not user_info:
+        print("[Auth] 인증 실패로 연결 종료")
+        return
+
     # Per-connection language settings (ISSUE-2)
     # Initialised from auth message; updated by language_update messages.
-    language_settings = (
-        user_info.get("language_settings", {"input_lang": "auto", "output_lang": "ko"})
-        if user_info
-        else {"input_lang": "auto", "output_lang": "ko"}
+    language_settings = user_info.get(
+        "language_settings", {"input_lang": "auto", "output_lang": "ko"}
     )
 
     # Per-connection sliding window for rate limiting
