@@ -60,15 +60,26 @@ st.set_page_config(
     initial_sidebar_state=st.session_state["sidebar_state"],
 )
 
-# 전역 UI 테마 보정 (#112): 밝은 primaryColor 버튼(시작/로그인 등)은
-# 흰 배경이라 글자가 안 보인다 → 강제로 검은 글자. 로그인 화면에도
-# 적용되도록 인증 체크보다 먼저 주입한다.
+# 전역 UI 테마 보정 (#112/#113): primary 버튼(시작/로그인 등)을 밝은
+# primaryColor 대신 어두운 표면 + 흰 글자로 통일한다. #112 에서 흰 배경+검은
+# 글자로 맞췄으나, 버튼이 disabled(시작 누른 후) 되면 배경이 어두워져 검은
+# 글자가 사라졌다(#113). 어두운 표면+흰 글자는 enabled/hover/disabled 모든
+# 상태에서 읽히고 미니멀 다크 톤과도 일치한다. 로그인 화면에도 적용되도록
+# 인증 체크보다 먼저 주입한다.
 st.markdown(
     """
     <style>
+      button[kind="primary"], button[kind="primaryFormSubmit"] {
+        background-color: rgba(255, 255, 255, 0.12) !important;
+        border: 1px solid rgba(255, 255, 255, 0.24) !important;
+      }
+      button[kind="primary"]:hover, button[kind="primaryFormSubmit"]:hover {
+        background-color: rgba(255, 255, 255, 0.2) !important;
+        border-color: rgba(255, 255, 255, 0.38) !important;
+      }
       button[kind="primary"], button[kind="primary"] *,
       button[kind="primaryFormSubmit"], button[kind="primaryFormSubmit"] * {
-        color: #0b0b0c !important;
+        color: #ffffff !important;
       }
     </style>
     """,
