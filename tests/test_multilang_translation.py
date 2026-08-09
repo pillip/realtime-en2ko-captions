@@ -12,6 +12,7 @@ from translation import (
     SOURCE_LANG_NAMES,
     _build_prompt_to_chinese,
     _build_prompt_to_english,
+    _build_prompt_to_japanese,
     _build_prompt_to_vietnamese,
     translate_with_llm,
 )
@@ -106,6 +107,29 @@ class TestBuildPromptToVietnamese:
         assert "Huong dan dich" in prompt
 
 
+# === _build_prompt_to_japanese 테스트 (#103) ===
+
+
+class TestBuildPromptToJapanese:
+    def test_contains_source_text(self):
+        prompt = _build_prompt_to_japanese("Hello world", "en")
+        assert "Hello world" in prompt
+
+    def test_contains_japanese_instructions(self):
+        """일본어 번역 프롬프트여야 한다 (영어 기본값으로 새지 않음)."""
+        prompt = _build_prompt_to_japanese("Hello", "en")
+        assert "日本語" in prompt
+        assert "日本語訳" in prompt
+
+    def test_english_source_shows_label(self):
+        prompt = _build_prompt_to_japanese("Hello", "en")
+        assert SOURCE_LANG_NAMES["en"] in prompt
+
+    def test_unknown_source_uses_fallback(self):
+        prompt = _build_prompt_to_japanese("Hello", "xx")
+        assert "元の言語" in prompt
+
+
 # === _build_prompt_to_english 확장 테스트 ===
 
 
@@ -182,6 +206,17 @@ class TestTranslateWithLlmMultilang:
         result = translate_with_llm(mock_client, "안녕하세요", "ko", "vi")
         assert result is not None
         assert "Xin chao" in result
+
+    def test_translate_en_to_ja_uses_japanese_prompt(self):
+        """#103 회귀: ja 는 일본어 프롬프트로 가야 한다 (영어 기본값 금지)."""
+        mock_client = self._make_mock_bedrock("こんにちは")
+        result = translate_with_llm(mock_client, "Hello", "en", "ja")
+        assert result is not None and "こんにちは" in result
+        # 실제 Bedrock 에 보낸 body(JSON)를 파싱해 프롬프트가 일본어인지 검증.
+        sent_body = mock_client.invoke_model.call_args.kwargs["body"]
+        prompt = json.loads(sent_body)["messages"][0]["content"][0]["text"]
+        assert "日本語訳" in prompt
+        assert "국제 컨퍼런스" not in prompt  # 영어 프롬프트 마커가 아님
 
     def test_translate_zh_to_en(self):
         """중국어 -> 영어 번역"""
