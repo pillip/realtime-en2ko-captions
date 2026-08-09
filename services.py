@@ -60,9 +60,11 @@ async def create_openai_session() -> dict:
                             "concise and natural — this appears as a "
                             "live caption line."
                         ),
-                        # Text-only responses — browser (webrtc.html) consumes
-                        # only response.text.* events; audio responses would
-                        # be silently dropped AND rack up audio-output tokens.
+                        # 전사 전용 세션 (#100): 실제 번역은 서버 Bedrock 이
+                        # 담당하고, OpenAI 가 자동 생성하던 번역 응답은 브라우저가
+                        # 전부 폐기했다. create_response=False 로 turn 종료 시
+                        # 응답 자동 생성을 끄면, 전사(input_audio_transcription)는
+                        # 그대로 동작하면서 쓰지 않는 번역 토큰을 아낀다.
                         # Voice config intentionally omitted (unused).
                         "audio": {
                             "input": {
@@ -72,6 +74,8 @@ async def create_openai_session() -> dict:
                                     "threshold": 0.5,
                                     "prefix_padding_ms": 300,
                                     "silence_duration_ms": 500,
+                                    # turn 종료 시 모델 응답 자동 생성 안 함.
+                                    "create_response": False,
                                 },
                             },
                         },

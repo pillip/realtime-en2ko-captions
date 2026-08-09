@@ -72,8 +72,8 @@ docker run --rm -p 8501:8501 -p 8765:8765 -p 8766:8766 \
 4. RTCPeerConnection established, DataChannel for caption events
 
 ### Caption Event Processing
-- Handle both delta (unstable) and completed (stable) events from DataChannel
-- Event types (GA): `response.output_text.delta`/`.done` (browser keeps beta `response.text.*` cases as fall-through for compatibility), `conversation.item.input_audio_transcription.completed`
+- OpenAI session is **transcription-only** (#100): `turn_detection.create_response=false`, so OpenAI does NOT auto-generate translation responses (they were discarded and wasted tokens). The only DataChannel event the browser acts on is `conversation.item.input_audio_transcription.completed`.
+- On that event the browser sends the transcript to the server WebSocket (`/ws` → 8765); **all translation is server-side Bedrock** (translation.py), which also fans out to viewers via SSE. OpenAI produces no `response.*` events.
 - Browser MUST NOT send `session.update` — GA session config is fully pinned server-side at client_secret creation (#89)
 - UI transition: gray/italic temporary text → confirmed lines appended to scroll
 
