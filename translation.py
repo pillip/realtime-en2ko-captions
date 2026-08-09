@@ -31,7 +31,10 @@ SUPPORTED_OUTPUT_LANGS: tuple[str, ...] = (
     "vi",
 )
 
-# Bedrock 모델 ID (품질 → 속도 순, 앞이 실패하면 뒤로 폴백)
+# Bedrock 모델 ID (속도 → 품질 순, 앞이 실패하면 뒤로 폴백)
+# 실시간 자막은 지연이 핵심이라 저지연 모델(Haiku 4.5)을 1순위로 두고,
+# 실패 시에만 더 크고 느린 Sonnet 4.5 로 폴백한다 (#106). 짧은 캡션 번역
+# 품질은 Haiku 로 충분하다.
 #
 # 이전 목록(claude-3-5-sonnet-20240620, claude-3-haiku-20240307,
 # claude-3-sonnet-20240229) 은 전부 Anthropic 직접 API 에서 이미 은퇴
@@ -42,8 +45,8 @@ SUPPORTED_OUTPUT_LANGS: tuple[str, ...] = (
 # 어느 소스 리전에서든 호출 가능. 서울(ap-northeast-2) 은 4.5 세대 모델에
 # `apac.` 지역 프로파일이 없고 global 만 지원하므로 이 프리픽스가 필수다.
 BEDROCK_MODEL_IDS = [
-    "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
     "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
 ]
 
 
