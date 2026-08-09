@@ -18,18 +18,17 @@ SOURCE_LANG_NAMES = {
     "de": "독일어",
 }
 
-# 뷰어가 선택할 수 있는 자막 언어 전체 (#91/#92).
+# 뷰어가 선택할 수 있는 자막 언어 (#91/#92, #103).
 # 룸별 output_langs 설정 대신 전역 고정 목록을 쓴다 — SSE lazy 게이트
 # (has_viewers)가 언어별 번역 비용을 이미 제어하므로 룸 제한이 불필요.
+# translate_with_llm 이 전용 프롬프트를 가진 언어만 포함한다 — 프롬프트가
+# 없으면 영어 기본값으로 잘못 번역되므로(#103), 목록과 프롬프트 커버리지를
+# 반드시 일치시킬 것.
 SUPPORTED_OUTPUT_LANGS: tuple[str, ...] = (
     "ko",
-    "en",
     "ja",
     "zh",
     "vi",
-    "es",
-    "fr",
-    "de",
 )
 
 # Bedrock 모델 ID (품질 → 속도 순, 앞이 실패하면 뒤로 폴백)
@@ -215,6 +214,27 @@ def _build_prompt_to_chinese(text, source_lang):
 中文翻译:"""
 
 
+def _build_prompt_to_japanese(text, source_lang):
+    """일본어 번역 프롬프트 생성"""
+    source_lang_name = SOURCE_LANG_NAMES.get(source_lang, "元の言語")
+    return f"""次の{source_lang_name}のテキストを自然な日本語に翻訳してください。
+リアルタイム会議・技術発表の字幕であり、直訳よりも意味の伝達を優先します。
+
+原文: "{text}"
+
+翻訳ガイドライン:
+- 意味重視: 原文の核心的な意味を自然に伝える
+- 聞き手に優しい: 聴衆が理解しやすい日本語表現
+- 文脈適合: 技術発表・ビジネスの場にふさわしいトーン
+- 簡潔: リアルタイム字幕に適した簡潔な文（最大2文）
+- 用語処理: 技術用語は日本の開発者が実際に使う表現
+- 自然な表現: 日本語の語順と慣用表現を優先し、直訳を避ける
+
+翻訳結果のみを出力してください（説明・注釈・補足は一切禁止）:
+
+日本語訳:"""
+
+
 def _build_prompt_to_vietnamese(text, source_lang):
     """베트남어 번역 프롬프트 생성"""
     source_lang_name = SOURCE_LANG_NAMES.get(source_lang, "ngon ngu goc")
@@ -295,11 +315,15 @@ def translate_with_llm(bedrock_client, text, source_lang, target_lang):
     try:
         if target_lang == "ko":
             prompt = _build_prompt_to_korean(text, source_lang)
+        elif target_lang == "ja":
+            prompt = _build_prompt_to_japanese(text, source_lang)
         elif target_lang == "zh":
             prompt = _build_prompt_to_chinese(text, source_lang)
         elif target_lang == "vi":
             prompt = _build_prompt_to_vietnamese(text, source_lang)
         else:
+            # en 등 나머지 (오퍼레이터 output_lang=en 경로). 뷰어 지원 언어
+            # (SUPPORTED_OUTPUT_LANGS)는 위 4개로 한정되므로 여기엔 안 온다.
             prompt = _build_prompt_to_english(text, source_lang)
 
         body = json.dumps(
