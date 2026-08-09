@@ -295,6 +295,39 @@ def _clean_llm_response(translated_text):
     return translated_text.strip()
 
 
+def _build_translation_prompt(text, source_lang, target_lang):
+    """target_lang 에 맞는 번역 프롬프트를 만든다 (translate_with_llm 과
+    translate_with_llm_stream 이 공유)."""
+    if target_lang == "ko":
+        return _build_prompt_to_korean(text, source_lang)
+    elif target_lang == "ja":
+        return _build_prompt_to_japanese(text, source_lang)
+    elif target_lang == "zh":
+        return _build_prompt_to_chinese(text, source_lang)
+    elif target_lang == "vi":
+        return _build_prompt_to_vietnamese(text, source_lang)
+    # en 등 나머지 (오퍼레이터 output_lang=en 경로). 뷰어 지원 언어
+    # (SUPPORTED_OUTPUT_LANGS)는 위 4개로 한정되므로 여기엔 안 온다.
+    return _build_prompt_to_english(text, source_lang)
+
+
+def _build_bedrock_body(prompt):
+    """Anthropic messages API 요청 바디 (JSON 문자열)."""
+    return json.dumps(
+        {
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 200,
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": prompt}]}
+            ],
+            # Claude 4.5 세대는 temperature 와 top_p 동시 지정을 거부한다
+            # (ValidationException). 번역은 결정성이 중요하므로 temperature
+            # 만 남긴다 (#97).
+            "temperature": 0.5,
+        }
+    )
+
+
 def _invoke_bedrock_with_fallback(bedrock_client, body):
     """여러 모델을 시도하며 Bedrock 호출"""
     for model_id in BEDROCK_MODEL_IDS:
@@ -313,36 +346,29 @@ def _invoke_bedrock_with_fallback(bedrock_client, body):
     return None
 
 
+def _invoke_bedrock_stream_with_fallback(bedrock_client, body):
+    """여러 모델을 시도하며 Bedrock 스트리밍 호출 (#114)."""
+    for model_id in BEDROCK_MODEL_IDS:
+        try:
+            return bedrock_client.invoke_model_with_response_stream(
+                modelId=model_id,
+                body=body,
+                contentType="application/json",
+                accept="application/json",
+            )
+        except Exception as model_error:
+            print(f"    ⚠️ {model_id} 스트리밍 실패: {model_error}")
+            if model_id == BEDROCK_MODEL_IDS[-1]:
+                raise model_error
+    return None
+
+
 def translate_with_llm(bedrock_client, text, source_lang, target_lang):
     """Bedrock LLM을 사용한 고품질 컨텍스트 번역"""
     try:
-        if target_lang == "ko":
-            prompt = _build_prompt_to_korean(text, source_lang)
-        elif target_lang == "ja":
-            prompt = _build_prompt_to_japanese(text, source_lang)
-        elif target_lang == "zh":
-            prompt = _build_prompt_to_chinese(text, source_lang)
-        elif target_lang == "vi":
-            prompt = _build_prompt_to_vietnamese(text, source_lang)
-        else:
-            # en 등 나머지 (오퍼레이터 output_lang=en 경로). 뷰어 지원 언어
-            # (SUPPORTED_OUTPUT_LANGS)는 위 4개로 한정되므로 여기엔 안 온다.
-            prompt = _build_prompt_to_english(text, source_lang)
-
-        body = json.dumps(
-            {
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": 200,
-                "messages": [
-                    {"role": "user", "content": [{"type": "text", "text": prompt}]}
-                ],
-                # Claude 4.5 세대는 temperature 와 top_p 동시 지정을 거부한다
-                # (ValidationException). 번역은 결정성이 중요하므로 temperature
-                # 만 남긴다 (#97).
-                "temperature": 0.5,
-            }
+        body = _build_bedrock_body(
+            _build_translation_prompt(text, source_lang, target_lang)
         )
-
         response = _invoke_bedrock_with_fallback(bedrock_client, body)
         response_body = json.loads(response["body"].read())
         translated_text = response_body["content"][0]["text"].strip()
@@ -352,3 +378,31 @@ def translate_with_llm(bedrock_client, text, source_lang, target_lang):
     except Exception as e:
         print(f"    ❌ LLM 번역 실패: {e}")
         return None
+
+
+def translate_with_llm_stream(bedrock_client, text, source_lang, target_lang):
+    """Bedrock 스트리밍 번역 (#114) — 토큰이 도착하는 대로 누적 텍스트를 yield.
+
+    각 yield 는 ``(cumulative_text, done)`` 튜플이다. 중간 조각은
+    ``done=False`` 로 원시 누적 텍스트를, 마지막에는 ``done=True`` 로
+    정리된(_clean_llm_response) 최종 텍스트를 한 번 더 yield 한다.
+
+    실패 시 예외를 그대로 올려 호출자가 비스트리밍(translate_with_llm /
+    Amazon Translate)으로 폴백할 수 있게 한다.
+    """
+    body = _build_bedrock_body(
+        _build_translation_prompt(text, source_lang, target_lang)
+    )
+    response = _invoke_bedrock_stream_with_fallback(bedrock_client, body)
+    acc = ""
+    for event in response["body"]:
+        chunk = event.get("chunk")
+        if not chunk:
+            continue
+        data = json.loads(chunk["bytes"])
+        if data.get("type") == "content_block_delta":
+            piece = (data.get("delta") or {}).get("text", "")
+            if piece:
+                acc += piece
+                yield acc, False
+    yield _clean_llm_response(acc), True

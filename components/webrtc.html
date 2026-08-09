@@ -1238,6 +1238,11 @@ try {
     if (currentTypingLine) {
       currentTypingLine.remove();
     }
+    // #114: 새 문장이 생성되기 시작하면 이전 확정 문장은 즉시 회색으로
+    // (스트리밍 중 현재 typing 줄만 흰색으로 부각).
+    captionContainer
+      .querySelectorAll('.caption-line.current')
+      .forEach((n) => n.classList.remove('current'));
     currentTypingLine = document.createElement('div');
     currentTypingLine.className = 'caption-line typing fade-in';
     // #112: 생성 중 표시 — 뷰어와 동일한 점 인디케이터(촘촘한 간격).
@@ -1721,6 +1726,15 @@ try {
     console.log('[Translation] 메시지 수신:', data);
 
     switch (data.type) {
+      case 'translation_partial':
+        // #114: Bedrock 스트리밍 부분 번역 — forming 버블을 누적 텍스트로
+        // 실시간 갱신(점 → 글자). 최종 확정은 transcription_result 가 한다.
+        if (data.text) {
+          if (!currentTypingLine) startTypingTranslation();
+          updateTypingTranslation(data.text);
+        }
+        break;
+
       case 'transcription_result':
         // 번역된 텍스트가 있으면 표시
         if (data.translated_text && data.translated_text !== data.original_text) {
