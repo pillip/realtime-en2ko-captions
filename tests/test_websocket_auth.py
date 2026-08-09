@@ -441,8 +441,9 @@ class TestAuthenticateClientRoomHandling:
 
         assert result is None
         captured = capsys.readouterr()
-        # 내부 에러는 서버 로그로 남아야 한다.
-        assert "[Auth] 룸 상태 조회 실패" in captured.out
+        # 내부 에러는 서버 로그로 남아야 한다. repo 예외 처리는 #99 에서
+        # RoomManager.adopt_from_db 로 이동했으므로 로그 문자열도 그쪽 것.
+        assert "adopt_from_db 조회 실패" in captured.out
 
         sent = _get_sent_messages(ws)
         auth_errors = [m for m in sent if m.get("type") == "auth_error"]

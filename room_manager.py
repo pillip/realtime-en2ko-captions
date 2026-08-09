@@ -231,6 +231,44 @@ class RoomManager:
             loaded += 1
         return loaded
 
+    def adopt_from_db(self, room_id: str) -> RoomState | None:
+        """Return the room for room_id, adopting it from the repository if it
+        exists there but is not yet in memory.
+
+        hydrate_from_db() only runs once at server start (#84 singleton), so a
+        room created by admin WHILE the server is running is absent from the
+        in-memory registry. Without this, WS auth for such a room fails with
+        get_room() → None even though the room is valid in the DB (#99).
+
+        DB status is authoritative: a room persisted as 'closed' is rejected
+        (and any stale in-memory copy dropped) even if memory still holds it.
+        Returns None for unknown or closed rooms.
+
+        Memory-only mode (no repo, e.g. default room / tests): falls back to
+        the in-memory registry.
+        """
+        if self._repo is None:
+            return self._rooms.get(room_id)
+        try:
+            row = self._repo.get_by_id(room_id)
+        except Exception as e:
+            # RL-006: server-side log only; treat repo error as unavailable.
+            print(f"[Room] adopt_from_db 조회 실패 (room={room_id}): {e!r}")
+            return None
+        if row is None or row.get("status") == "closed":
+            # DB authoritative — drop any stale in-memory copy.
+            self._rooms.pop(room_id, None)
+            return None
+        room = self._rooms.get(room_id)
+        if room is None:
+            room = RoomState(room_id=room_id)
+            room.language_settings = {
+                "input_lang": row.get("input_lang") or "auto",
+                "output_lang": row.get("output_lang") or "ko",
+            }
+            self._rooms[room_id] = room
+        return room
+
     # ------------------------------------------------------------------
     # Connection registration
     # ------------------------------------------------------------------

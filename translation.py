@@ -309,8 +309,10 @@ def translate_with_llm(bedrock_client, text, source_lang, target_lang):
                 "messages": [
                     {"role": "user", "content": [{"type": "text", "text": prompt}]}
                 ],
+                # Claude 4.5 세대는 temperature 와 top_p 동시 지정을 거부한다
+                # (ValidationException). 번역은 결정성이 중요하므로 temperature
+                # 만 남긴다 (#97).
                 "temperature": 0.5,
-                "top_p": 0.9,
             }
         )
 

@@ -173,25 +173,12 @@ async def _authenticate_client(websocket):
             requested_room_id = data.get("room_id")
             room_manager = _room_manager
             if requested_room_id:
-                room = room_manager.get_room(requested_room_id)
-                # ISSUE-26: even if memory still holds the room (e.g.
-                # admin force_close updated DB first), reject when the
-                # persisted status is 'closed'. We share the same
-                # generic message used for unknown rooms (RL-006) to
-                # avoid leaking lifecycle information to clients.
-                room_closed = False
-                repo = getattr(room_manager, "_repo", None)
-                if repo is not None:
-                    try:
-                        persisted = repo.get_by_id(requested_room_id)
-                        if persisted is None or persisted["status"] == "closed":
-                            room_closed = True
-                    except Exception as e:
-                        # Server-side log only (RL-006). Treat repo
-                        # errors as fail-open=False — refuse the room.
-                        print(f"[Auth] 룸 상태 조회 실패: {e!r}")
-                        room_closed = True
-                if room is None or room_closed:
+                # adopt_from_db 는 DB 를 authoritative 로 삼아 룸을 조회한다:
+                # 인메모리에 없어도(#84 싱글턴 이후 서버 가동 중 생성된 룸)
+                # DB 에 있고 non-closed 면 입양해 반환하고, 미존재/closed 면
+                # None (#99). RL-006: closed/unknown 을 같은 일반 메시지로 거부.
+                room = room_manager.adopt_from_db(requested_room_id)
+                if room is None:
                     print(
                         f"[Auth] 인증 실패: 룸 사용 불가 "
                         f"(user={validated_user['username']})"
@@ -666,12 +653,18 @@ async def handle_openai_websocket(websocket):
 
     user_info = await _authenticate_client(websocket)
 
+    # 인증 실패 시 즉시 연결 종료 (#97). 이전에는 루프로 계속 진행해
+    # transcript 마다 "로그인이 필요합니다" 를 반복 전송했다.
+    # _authenticate_client 가 실패 브랜치별 auth_error 를 이미 보냈으므로
+    # 여기서는 조용히 닫기만 한다.
+    if not user_info:
+        print("[Auth] 인증 실패로 연결 종료")
+        return
+
     # Per-connection language settings (ISSUE-2)
     # Initialised from auth message; updated by language_update messages.
-    language_settings = (
-        user_info.get("language_settings", {"input_lang": "auto", "output_lang": "ko"})
-        if user_info
-        else {"input_lang": "auto", "output_lang": "ko"}
+    language_settings = user_info.get(
+        "language_settings", {"input_lang": "auto", "output_lang": "ko"}
     )
 
     # Per-connection sliding window for rate limiting
