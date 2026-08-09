@@ -8,6 +8,8 @@ import json
 from io import BytesIO
 from unittest.mock import MagicMock
 
+import pytest
+
 from translation import (
     SOURCE_LANG_NAMES,
     _build_prompt_to_chinese,
@@ -245,3 +247,58 @@ class TestTranslateWithLlmMultilang:
         result = translate_with_llm(mock_client, "Xin chao", "vi", "en")
         assert result is not None
         assert "Hello" in result
+
+
+# === translate_with_llm_stream (#114) ===
+
+
+class TestTranslateWithLlmStream:
+    def _mk_delta(self, text):
+        payload = json.dumps(
+            {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": text},
+            }
+        ).encode()
+        return {"chunk": {"bytes": payload}}
+
+    def _mk_stop(self):
+        return {"chunk": {"bytes": json.dumps({"type": "message_stop"}).encode()}}
+
+    def _make_stream_bedrock(self, pieces):
+        mock = MagicMock()
+        events = [self._mk_delta(p) for p in pieces] + [self._mk_stop()]
+        mock.invoke_model_with_response_stream.return_value = {"body": events}
+        return mock
+
+    def test_yields_cumulative_then_final_done(self):
+        from translation import translate_with_llm_stream
+
+        mock = self._make_stream_bedrock(["아키", "텍처를", " 봅니다."])
+        chunks = list(
+            translate_with_llm_stream(mock, "Let me show the architecture", "en", "ko")
+        )
+        # 마지막은 done=True 이며 누적 최종 텍스트.
+        assert chunks[-1][1] is True
+        assert chunks[-1][0] == "아키텍처를 봅니다."
+        # 중간 조각은 done=False 이고 누적되어 커진다.
+        partials = [c for c in chunks if not c[1]]
+        assert partials[0] == ("아키", False)
+        assert partials[-1] == ("아키텍처를 봅니다.", False)
+
+    def test_uses_target_language_prompt(self):
+        from translation import translate_with_llm_stream
+
+        mock = self._make_stream_bedrock(["안녕"])
+        list(translate_with_llm_stream(mock, "Hello", "en", "ko"))
+        body = mock.invoke_model_with_response_stream.call_args.kwargs["body"]
+        prompt = json.loads(body)["messages"][0]["content"][0]["text"]
+        assert "한국어" in prompt
+
+    def test_raises_on_bedrock_error_for_fallback(self):
+        from translation import translate_with_llm_stream
+
+        mock = MagicMock()
+        mock.invoke_model_with_response_stream.side_effect = RuntimeError("boom")
+        with pytest.raises(RuntimeError):
+            list(translate_with_llm_stream(mock, "Hello", "en", "ko"))

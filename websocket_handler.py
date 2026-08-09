@@ -22,7 +22,11 @@ from services import (
     get_aws_secret_access_key,
 )
 from sse_broadcast import BroadcastManager, broadcast_translation_for_room
-from translation import detect_language, translate_with_llm
+from translation import (
+    detect_language,
+    translate_with_llm,
+    translate_with_llm_stream,
+)
 
 # Per-connection rate limit: max messages per minute (sliding window)
 WS_RATE_LIMIT_PER_MINUTE = int(os.getenv("WS_RATE_LIMIT_PER_MINUTE", "30"))
@@ -385,6 +389,56 @@ def _record_usage(
         return audio_duration
 
 
+async def _stream_llm_translation(
+    websocket, bedrock_client, transcript, source_lang, target_lang
+):
+    """Bedrock 스트리밍 번역을 스레드에서 돌리며 부분 결과를 오퍼레이터 WS 로
+    ``translation_partial`` 로 흘려보낸다 (#114 — 발화 후 첫 글자까지의 체감
+    지연 단축).
+
+    반환: 최종 번역 텍스트(성공) 또는 None(실패 → 호출자가 폴백).
+    블로킹 boto3 스트림은 executor 스레드에서 돌리고, 청크는 asyncio.Queue
+    로 받아 이벤트 루프를 막지 않고 순차 전송한다.
+    """
+    loop = asyncio.get_running_loop()
+    q: asyncio.Queue = asyncio.Queue()
+
+    def _worker():
+        try:
+            for cumulative, done in translate_with_llm_stream(
+                bedrock_client, transcript, source_lang, target_lang
+            ):
+                loop.call_soon_threadsafe(q.put_nowait, ("chunk", cumulative, done))
+        except Exception as e:  # noqa: BLE001 — 폴백 트리거용
+            loop.call_soon_threadsafe(q.put_nowait, ("error", repr(e), True))
+        finally:
+            loop.call_soon_threadsafe(q.put_nowait, ("end", None, True))
+
+    fut = loop.run_in_executor(None, _worker)
+    final_text = None
+    errored = False
+    while True:
+        kind, payload, done = await q.get()
+        if kind == "end":
+            break
+        if kind == "error":
+            print(f"[Translate] 스트리밍 실패, 폴백: {payload}")
+            errored = True
+            continue
+        # kind == "chunk"
+        if done:
+            final_text = payload
+        else:
+            try:
+                await websocket.send(
+                    json.dumps({"type": "translation_partial", "text": payload})
+                )
+            except Exception as send_err:
+                print(f"[Translate] 부분 번역 전송 실패: {send_err!r}")
+    await fut
+    return None if errored else final_text
+
+
 async def _handle_transcript(
     websocket,
     data,
@@ -471,14 +525,25 @@ async def _handle_transcript(
         source_lang = input_lang
         target_lang = output_lang or "ko"
 
-    translated_text, used_llm = _translate_text(
-        transcript,
-        source_lang,
-        target_lang,
-        translate_client,
-        bedrock_client,
-        bedrock_available,
-    )
+    # #114: Bedrock LLM 번역을 스트리밍으로 받아 오퍼레이터 화면에 부분 결과를
+    # 즉시 흘려보낸다(체감 지연 단축). 스트리밍이 실패/빈 결과면 LLM 재시도
+    # 없이 Amazon Translate 로 폴백한다(bedrock_available=False 로 호출).
+    translated_text = None
+    used_llm = False
+    if bedrock_available:
+        translated_text = await _stream_llm_translation(
+            websocket, bedrock_client, transcript, source_lang, target_lang
+        )
+        used_llm = bool(translated_text)
+    if not translated_text:
+        translated_text, used_llm = _translate_text(
+            transcript,
+            source_lang,
+            target_lang,
+            translate_client,
+            bedrock_client,
+            bedrock_available=False,
+        )
 
     audio_duration = _record_usage(
         current_user,
