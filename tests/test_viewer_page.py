@@ -81,7 +81,8 @@ class TestViewerHtmlMarkup:
     def test_korean_state_labels_present(self, viewer_html):
         """한국어 상태 안내 카피 존재 (UX 기획 라벨)."""
         # 정확한 카피는 ux_spec.md 가 없어 issues.md 의 상태 표 라벨을 정본으로 본다.
-        assert "잠시 후 자막이 시작됩니다" in viewer_html
+        # #112: 대기 문구에서 "자막" 어절 제거 + 언어별 표시.
+        assert "잠시 후 시작됩니다" in viewer_html
         assert "세션이 종료되었습니다" in viewer_html
 
     def test_viewport_meta_for_mobile(self, viewer_html):
