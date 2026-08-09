@@ -15,6 +15,9 @@ import pytest
 # 테스트 계정 정보
 TEST_USERNAME = "e2e_admin"
 TEST_PASSWORD = "e2e_test_pass_123"
+# 캡션 UI 는 operator 역할에서만 렌더된다 (admin 은 관리 전용, #101).
+# logged_in_page 는 이 operator 로 로그인해 캡션 컴포넌트를 띄운다.
+TEST_OPERATOR_USERNAME = "e2e_operator"
 
 # Streamlit 서버 포트
 STREAMLIT_PORT = 8599
@@ -81,6 +84,25 @@ def streamlit_server(_tmp_db_dir):
             f"Streamlit server failed to start\nstdout: {stdout}\nstderr: {stderr}"
         )
 
+    # 캡션 UI E2E 는 operator 계정으로 수행한다 (#101: admin 은 관리 전용이라
+    # 캡션 컴포넌트를 렌더하지 않음). 서버와 동일한 DB 파일에 operator 를
+    # 직접 생성한다 — DatabaseManager.__init__ 은 멱등(IF NOT EXISTS)이다.
+    try:
+        from database import DatabaseManager, User
+
+        dbm = DatabaseManager(db_path)
+        user_repo = User(dbm)
+        if user_repo.get_user_by_username(TEST_OPERATOR_USERNAME) is None:
+            user_repo.create_user(
+                username=TEST_OPERATOR_USERNAME,
+                password=TEST_PASSWORD,
+                role="operator",
+                usage_limit_seconds=36000,
+            )
+    except Exception as e:
+        proc.terminate()
+        pytest.fail(f"E2E operator 계정 생성 실패: {e!r}")
+
     yield base_url
 
     proc.terminate()
@@ -109,7 +131,8 @@ def logged_in_page(page, streamlit_server):
         login_needed = username_input.count() > 0
 
     if login_needed:
-        username_input.fill(TEST_USERNAME)
+        # operator 로 로그인 — 캡션 컴포넌트가 렌더되어야 하기 때문 (#101).
+        username_input.fill(TEST_OPERATOR_USERNAME)
         password_input = page.locator('input[aria-label="비밀번호"]')
         password_input.wait_for(state="visible", timeout=5000)
         password_input.fill(TEST_PASSWORD)
