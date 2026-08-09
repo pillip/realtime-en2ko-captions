@@ -398,7 +398,7 @@ def display_login_form():
         )
 
         # 로딩 메시지 표시
-        st.info("🔄 로그인 처리 중...")
+        st.info("로그인 중...")
 
         # 0.5초 동안 처리 중 메시지 표시
         time.sleep(0.5)
@@ -425,7 +425,7 @@ def display_login_form():
         return False
 
     # 로그인 폼 표시
-    st.title("🔐 로그인")
+    st.title("로그인")
 
     with st.form("login_form"):
         username = st.text_input("사용자명")

@@ -85,20 +85,25 @@
       text-overflow: ellipsis;
     }
 
-    .lang-control { display: flex; align-items: center; gap: 10px; }
+    .lang-control { display: flex; align-items: center; gap: 8px; }
     .lang-control label {
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: 0.12em;
-      color: rgba(255, 255, 255, 0.35);
+      display: flex;
+      align-items: center;
+      color: rgba(255, 255, 255, 0.5);
     }
+    .lang-control label svg { width: 18px; height: 18px; }
 
     #lang-select {
       min-height: 40px; /* WCAG touch target (RL-010) */
-      padding: 8px 14px;
+      padding: 8px 34px 8px 14px; /* room for the chevron */
       border: 1px solid rgba(255, 255, 255, 0.14);
       border-radius: 8px;
-      background: transparent;
+      background-color: transparent;
+      /* custom chevron — appearance:none removes the native arrow (#111) */
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23cccccc' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 12px center;
+      background-size: 12px;
       color: #ffffff;
       font-size: 14px;
       font-family: inherit;
@@ -212,6 +217,35 @@
       letter-spacing: 0.01em;
     }
 
+    /* #111 visual clue: persistent "listening" dots at the bottom while the
+       stream is live, so new lines emerge above a steady presence rather than
+       appearing from nothing. Sits outside .caption-container to avoid
+       clashing with the current-line (:last-child) highlight. */
+    .listening-indicator {
+      position: absolute;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: none;
+      align-items: center;
+      gap: 7px;
+      pointer-events: none;
+    }
+    .listening-indicator.live { display: flex; }
+    .listening-indicator span {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.3);
+      animation: dot-pulse 1.4s ease-in-out infinite;
+    }
+    .listening-indicator span:nth-child(2) { animation-delay: 0.2s; }
+    .listening-indicator span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes dot-pulse {
+      0%, 100% { opacity: 0.2; transform: translateY(0); }
+      50% { opacity: 0.9; transform: translateY(-3px); }
+    }
+
     /* Connection hint — subtle monochrome pill, not alarming */
     .conn-error {
       position: absolute;
@@ -231,7 +265,6 @@
 
     @media (max-width: 600px) {
       .topbar { padding: 14px 18px; }
-      .lang-control label { display: none; }
       .caption-container { padding: 28px 22px 72px; gap: 20px; }
     }
   </style>
@@ -244,7 +277,7 @@
         <div class="room-name" id="room-name">{{ROOM_NAME}}</div>
       </div>
       <div class="lang-control">
-        <label for="lang-select">Language</label>
+        <label for="lang-select" title="언어 선택"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></label>
         <select id="lang-select" aria-label="자막 언어 선택"></select>
       </div>
     </header>
@@ -261,6 +294,9 @@
           <div class="caption-container" id="captionContainer">
             <div class="caption-empty" id="caption-empty">자막을 기다리는 중…</div>
           </div>
+        </div>
+        <div class="listening-indicator" id="listening-indicator" aria-hidden="true">
+          <span></span><span></span><span></span>
         </div>
       </section>
 
@@ -301,6 +337,7 @@
     const connError = $("conn-error");
     const waitingRoom = $("waiting-room");
     const liveDot = $("live-dot");
+    const listeningIndicator = $("listening-indicator");
 
     waitingRoom.textContent = CONFIG.room_name || "";
 
@@ -345,6 +382,8 @@
 
     function setLive(on) {
       liveDot.classList.toggle("live", !!on);
+      // #111: 하단 "듣는 중" 점 인디케이터도 동기화.
+      if (listeningIndicator) listeningIndicator.classList.toggle("live", !!on);
     }
 
     // ---------------------------------------------------------------------
