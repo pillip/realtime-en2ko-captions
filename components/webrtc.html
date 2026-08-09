@@ -294,14 +294,17 @@
     .hide-translation .caption-line.typing { display: none !important; }
 
     /* Confirmed translation — the hero line */
+    /* Confirmed translation — dim by default, only the current line is white
+       (#111): the latest sentence stands out, previous ones recede. */
     .caption-line.stable {
       font-size: var(--translation-font-size);
-      color: #ffffff;
+      color: rgba(255, 255, 255, 0.4);
       font-weight: 600;
       letter-spacing: -0.01em;
     }
+    .caption-line.stable.current { color: #ffffff; }
 
-    /* Typing translation — same as stable + subtle monochrome cursor */
+    /* Typing translation — current line, white + monochrome cursor */
     .caption-line.typing {
       font-size: var(--translation-font-size);
       color: #ffffff;
@@ -319,10 +322,27 @@
       background: rgba(255, 255, 255, 0.6);
       animation: cursor-blink 1s ease-in-out infinite;
     }
+    /* #111 visual clue: while a sentence is being formed (transcript in, but
+       translation not yet back), the empty typing bubble shows breathing dots
+       so lines never appear abruptly. */
+    .caption-line.typing:empty::after {
+      content: "· · ·";
+      width: auto;
+      height: auto;
+      margin-left: 0;
+      background: none;
+      color: rgba(255, 255, 255, 0.55);
+      letter-spacing: 0.15em;
+      animation: dots-breathe 1.4s ease-in-out infinite;
+    }
 
     @keyframes cursor-blink {
       0%, 50% { opacity: 1; }
       51%, 100% { opacity: 0; }
+    }
+    @keyframes dots-breathe {
+      0%, 100% { opacity: 0.35; }
+      50% { opacity: 1; }
     }
 
     /* Interim (unstable) — dim, lighter weight */
@@ -1247,8 +1267,13 @@ try {
 
   function completeTypingTranslation(text) {
     if (currentTypingLine) {
-      currentTypingLine.className = 'caption-line stable fade-in';
-      currentTypingLine.textContent = text;
+      const el = currentTypingLine;
+      // #111: 마지막 문장만 흰색 — 이전 current 를 모두 해제하고 이 줄에 부여.
+      captionContainer
+        .querySelectorAll('.caption-line.current')
+        .forEach((n) => n.classList.remove('current'));
+      el.className = 'caption-line stable fade-in current';
+      el.textContent = text;
       currentTypingLine = null;
     }
   }
@@ -1662,6 +1687,11 @@ try {
               timestamp: Date.now()
             }));
 
+            // #111: 번역이 서버에서 오는 동안(약 1초) 비어 보이지 않도록
+            // "생성 중" forming 버블(점 애니메이션)을 즉시 띄운다. 이후
+            // transcription_result 가 이 버블을 그대로 채운다.
+            startTypingTranslation();
+
             // 타이밍 변수 초기화
             speechStartTime = null;
             speechEndTime = null;
@@ -1701,11 +1731,13 @@ try {
       case 'transcription_result':
         // 번역된 텍스트가 있으면 표시
         if (data.translated_text && data.translated_text !== data.original_text) {
-          startTypingTranslation();
-          // 즉시 번역 완료 표시
-          setTimeout(() => {
-            completeTypingTranslation(data.translated_text);
-          }, 100);
+          // 전사 완료 시 미리 만들어 둔 forming 버블(생성중 점)을 그대로 채운다.
+          if (!currentTypingLine) startTypingTranslation();
+          completeTypingTranslation(data.translated_text);
+        } else if (currentTypingLine) {
+          // 번역이 원문과 동일(동일 언어) — 대기 중이던 forming 버블 제거.
+          currentTypingLine.remove();
+          currentTypingLine = null;
         }
 
         // 사용량 정보 업데이트 (Streamlit 부모 프레임에 메시지 전송)

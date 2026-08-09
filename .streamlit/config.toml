@@ -1,3 +1,12 @@
+[theme]
+# 미니멀 다크 (#109/#111) — 로그인/사이드바 등 Streamlit chrome 을 임베드된
+# 캡션 컴포넌트(#0b0b0c)와 톤을 맞춘다. 액센트는 거의 무채색.
+base = "dark"
+primaryColor = "#e8e8e8"
+backgroundColor = "#0b0b0c"
+secondaryBackgroundColor = "#151517"
+textColor = "#fafafa"
+
 [server]
 # ALB/프록시 환경에서 HTTPS 지원
 enableXsrfProtection = true

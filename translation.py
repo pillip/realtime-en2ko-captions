@@ -18,15 +18,15 @@ SOURCE_LANG_NAMES = {
     "de": "독일어",
 }
 
-# 뷰어가 선택할 수 있는 자막 언어 (#91/#92, #103).
+# 뷰어가 선택할 수 있는 자막 언어 (#91/#92, #103, #111).
 # 룸별 output_langs 설정 대신 전역 고정 목록을 쓴다 — SSE lazy 게이트
 # (has_viewers)가 언어별 번역 비용을 이미 제어하므로 룸 제한이 불필요.
-# translate_with_llm 이 전용 프롬프트를 가진 언어만 포함한다 — 프롬프트가
-# 없으면 영어 기본값으로 잘못 번역되므로(#103), 목록과 프롬프트 커버리지를
-# 반드시 일치시킬 것.
+# translate_with_llm 이 커버하는 언어만 포함한다 (ko/zh/vi 전용 프롬프트,
+# en 은 _build_prompt_to_english). #111: operator 출력 언어(ko/zh/en/vi)와
+# 싱크 — en 추가, ja 제거.
 SUPPORTED_OUTPUT_LANGS: tuple[str, ...] = (
     "ko",
-    "ja",
+    "en",
     "zh",
     "vi",
 )

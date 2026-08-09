@@ -425,24 +425,24 @@ class TestLazyTranslationAndNonBlocking:
         )
 
         mgr = BroadcastManager()
-        # 메인 언어 ko, 추가 언어 ja (#103: secondary 는 SUPPORTED_OUTPUT_LANGS
-        # 기준이므로 ko/ja/zh/vi 중에서 고른다).
+        # 메인 언어 ko, 추가 언어 en (#111: secondary 는 SUPPORTED_OUTPUT_LANGS
+        # 기준이므로 ko/en/zh/vi 중에서 고른다).
         room = {
             "id": "r1",
             "primary_output_lang": "ko",
         }
         # 메인 + 추가 언어 모두 viewer 등록
         ko_q = await mgr.register_viewer("r1", "ko")
-        ja_q = await mgr.register_viewer("r1", "ja")
+        en_q = await mgr.register_viewer("r1", "en")
 
         slow_calls: list[str] = []
 
         async def fake_translate(text: str, src: str, dst: str) -> str:
-            if dst == "ja":
-                slow_calls.append("ja-start")
+            if dst == "en":
+                slow_calls.append("en-start")
                 await asyncio.sleep(0.5)  # secondary lang is artificially slow
-                slow_calls.append("ja-done")
-                return "こんにちは"
+                slow_calls.append("en-done")
+                return "Hello"
             return "안녕"  # primary path is fast
 
         translated_main = "안녕"
@@ -470,10 +470,10 @@ class TestLazyTranslationAndNonBlocking:
         assert "timestamp" in msg_main
 
         # Then the secondary message arrives later.
-        msg_secondary = await asyncio.wait_for(ja_q.get(), timeout=2.0)
-        assert msg_secondary["text"] == "こんにちは"
-        assert msg_secondary["lang"] == "ja"
-        assert "ja-done" in slow_calls
+        msg_secondary = await asyncio.wait_for(en_q.get(), timeout=2.0)
+        assert msg_secondary["text"] == "Hello"
+        assert msg_secondary["lang"] == "en"
+        assert "en-done" in slow_calls
 
     @pytest.mark.asyncio
     async def test_secondary_translation_skipped_when_no_viewers(self):
@@ -528,13 +528,13 @@ class TestLazyTranslationAndNonBlocking:
         )
 
         mgr = BroadcastManager()
-        # #103: secondary 는 SUPPORTED_OUTPUT_LANGS(ko/ja/zh/vi) 기준.
+        # #111: secondary 는 SUPPORTED_OUTPUT_LANGS(ko/en/zh/vi) 기준.
         room = {
             "id": "r1",
             "primary_output_lang": "ko",
         }
         await mgr.register_viewer("r1", "ko")
-        ja_q = await mgr.register_viewer("r1", "ja")
+        en_q = await mgr.register_viewer("r1", "en")
         # zh, vi 는 viewer 없음 — 번역 스킵 대상
 
         secondary_calls: list[str] = []
@@ -552,10 +552,10 @@ class TestLazyTranslationAndNonBlocking:
             translate_fn=fake_translate,
         )
 
-        msg = await asyncio.wait_for(ja_q.get(), timeout=2.0)
-        assert msg["text"] == "[ja]hi"
+        msg = await asyncio.wait_for(en_q.get(), timeout=2.0)
+        assert msg["text"] == "[en]hi"
         # zh, vi 는 호출되지 않음
-        assert secondary_calls == ["ja"], secondary_calls
+        assert secondary_calls == ["en"], secondary_calls
 
 
 # ---------------------------------------------------------------------------
@@ -809,15 +809,15 @@ class TestSupportedOutputLangs:
 
         result = _supported_output_langs("xx")
         assert result[0] == "xx"
-        assert "ko" in result and "ja" in result
+        assert "ko" in result and "en" in result
 
     def test_covers_langs_beyond_default_room_config(self):
         """기본 룸 설정(ko 뿐)이던 시절과 달리 지원 언어 전부 선택 가능."""
         from sse_broadcast import _supported_output_langs
 
         result = _supported_output_langs("ko")
-        # #103: 지원 언어는 ko/ja/zh/vi (전용 번역 프롬프트가 있는 것만).
-        for lang in ("ko", "ja", "zh", "vi"):
+        # #111: 지원 언어는 ko/en/zh/vi (operator 출력 언어와 싱크).
+        for lang in ("ko", "en", "zh", "vi"):
             assert lang in result
 
 
