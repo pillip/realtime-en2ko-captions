@@ -117,6 +117,9 @@ with st.sidebar:
     assigned_rooms = _load_assigned_rooms_for_user(sidebar_user)
     selected_room_id = None
     show_room_section = sidebar_user is not None and sidebar_user.get("role") != "admin"
+    # admin 은 룸 배정 개념이 없어 자막 세션을 시작할 수 없다 — 관리 전용
+    # 역할이다 (#101). 실제 세션은 룸이 배정된 operator 만 운영한다.
+    is_admin_role = sidebar_user is not None and sidebar_user.get("role") == "admin"
 
     if show_room_section:
         st.markdown("---")
@@ -168,6 +171,7 @@ with st.sidebar:
                 "starting",
             ]
             or no_room_for_operator
+            or is_admin_role
         )
         start = st.button(
             "🎯 시작",
@@ -175,7 +179,14 @@ with st.sidebar:
             use_container_width=True,
             disabled=start_disabled,
             help=(
-                "배정된 룸이 없어 시작할 수 없습니다." if no_room_for_operator else None
+                "관리자 계정은 자막 세션을 시작할 수 없습니다. "
+                "룸/사용자 관리는 관리자 대시보드를 이용하세요."
+                if is_admin_role
+                else (
+                    "배정된 룸이 없어 시작할 수 없습니다."
+                    if no_room_for_operator
+                    else None
+                )
             ),
         )
 
@@ -275,7 +286,9 @@ if "action" not in st.session_state:
 
 # === Handle actions ===
 openai_session = None
-if start:
+# admin 은 세션 시작 불가 (#101). 버튼이 disabled 라 여기 도달할 일은
+# 없지만, 서버측 방어로 한 번 더 막는다.
+if start and not is_admin_role:
     try:
         st.session_state["sidebar_state"] = "expanded"
 
@@ -342,31 +355,40 @@ def _build_view_url_and_qr(room_id: str | None) -> tuple[str | None, str | None]
 
 
 # === 메인 캡션 뷰어 ===
-try:
-    with open("components/webrtc.html", encoding="utf-8") as f:
-        html_template = f.read()
-
-    current_user = get_current_user()
-
-    # ISSUE-32: 오퍼레이터 룸이 선택된 경우에만 QR 데이터 동봉.
-    bootstrap_room_id = st.session_state.get("selected_room_id")
-    view_url, qr_data_url = _build_view_url_and_qr(bootstrap_room_id)
-
-    payload = build_bootstrap_payload(
-        action=st.session_state["action"],
-        openai_session=st.session_state.get("openai_session"),
-        websocket_port=st.session_state["websocket_port_ref"]["port"],
-        user_info=current_user,
-        room_id=bootstrap_room_id,
-        # ISSUE-28 AC3: 웰컴 화면에 룸 이름을 보이기 위한 BOOT 필드.
-        room_name=st.session_state.get("selected_room_name"),
-        # ISSUE-32: 웰컴 화면에 QR 코드를 표시하기 위한 BOOT 필드.
-        view_url=view_url,
-        qr_data_url=qr_data_url,
+# admin 은 관리 전용 (#101) — 캡션/마이크 컴포넌트 대신 안내만 표시한다.
+# admin 은 룸 배정이 없어 세션을 시작할 수 없고, default 룸으로 붙으면
+# 번역이 실패하므로 (컴포넌트를 아예 렌더하지 않는다).
+if (get_current_user() or {}).get("role") == "admin":
+    st.info(
+        "👋 관리자 계정입니다. 자막 세션은 룸이 배정된 오퍼레이터 계정에서 "
+        "운영합니다. 사이드바의 **관리자 대시보드**에서 룸과 사용자를 관리하세요."
     )
+else:
+    try:
+        with open("components/webrtc.html", encoding="utf-8") as f:
+            html_template = f.read()
 
-    html_content = html_template.replace("{{BOOTSTRAP_JSON}}", json.dumps(payload))
-    st.components.v1.html(html_content, height=900, scrolling=False)
+        current_user = get_current_user()
 
-except Exception:
-    st.error("❌ 시스템을 로드할 수 없습니다.")
+        # ISSUE-32: 오퍼레이터 룸이 선택된 경우에만 QR 데이터 동봉.
+        bootstrap_room_id = st.session_state.get("selected_room_id")
+        view_url, qr_data_url = _build_view_url_and_qr(bootstrap_room_id)
+
+        payload = build_bootstrap_payload(
+            action=st.session_state["action"],
+            openai_session=st.session_state.get("openai_session"),
+            websocket_port=st.session_state["websocket_port_ref"]["port"],
+            user_info=current_user,
+            room_id=bootstrap_room_id,
+            # ISSUE-28 AC3: 웰컴 화면에 룸 이름을 보이기 위한 BOOT 필드.
+            room_name=st.session_state.get("selected_room_name"),
+            # ISSUE-32: 웰컴 화면에 QR 코드를 표시하기 위한 BOOT 필드.
+            view_url=view_url,
+            qr_data_url=qr_data_url,
+        )
+
+        html_content = html_template.replace("{{BOOTSTRAP_JSON}}", json.dumps(payload))
+        st.components.v1.html(html_content, height=900, scrolling=False)
+
+    except Exception:
+        st.error("❌ 시스템을 로드할 수 없습니다.")
