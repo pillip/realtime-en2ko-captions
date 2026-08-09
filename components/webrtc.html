@@ -304,7 +304,7 @@
     }
     .caption-line.stable.current { color: #ffffff; }
 
-    /* Typing translation — current line, white + monochrome cursor */
+    /* Typing / forming translation — current line, white */
     .caption-line.typing {
       font-size: var(--translation-font-size);
       color: #ffffff;
@@ -312,37 +312,27 @@
       letter-spacing: -0.01em;
       position: relative;
     }
-    .caption-line.typing::after {
-      content: '';
-      display: inline-block;
-      width: 2px;
-      height: 1em;
-      margin-left: 4px;
-      vertical-align: text-bottom;
-      background: rgba(255, 255, 255, 0.6);
-      animation: cursor-blink 1s ease-in-out infinite;
+    /* #111/#112 visual clue: while a sentence is being formed (transcript in,
+       translation not yet back), show breathing dots. Same size/rhythm as the
+       viewer's listening indicator (6px dots), spacing kept tight. */
+    .forming-dots {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      vertical-align: middle;
     }
-    /* #111 visual clue: while a sentence is being formed (transcript in, but
-       translation not yet back), the empty typing bubble shows breathing dots
-       so lines never appear abruptly. */
-    .caption-line.typing:empty::after {
-      content: "· · ·";
-      width: auto;
-      height: auto;
-      margin-left: 0;
-      background: none;
-      color: rgba(255, 255, 255, 0.55);
-      letter-spacing: 0.15em;
-      animation: dots-breathe 1.4s ease-in-out infinite;
+    .forming-dots span {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.5);
+      animation: dot-pulse 1.4s ease-in-out infinite;
     }
-
-    @keyframes cursor-blink {
-      0%, 50% { opacity: 1; }
-      51%, 100% { opacity: 0; }
-    }
-    @keyframes dots-breathe {
-      0%, 100% { opacity: 0.35; }
-      50% { opacity: 1; }
+    .forming-dots span:nth-child(2) { animation-delay: 0.2s; }
+    .forming-dots span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes dot-pulse {
+      0%, 100% { opacity: 0.2; transform: translateY(0); }
+      50% { opacity: 0.9; transform: translateY(-3px); }
     }
 
     /* Interim (unstable) — dim, lighter weight */
@@ -458,8 +448,15 @@
       font-size: clamp(26px, 3.4vw, 34px);
       font-weight: 500;
       letter-spacing: -0.02em;
-      margin-bottom: 14px;
+      margin-bottom: 10px;
       color: #ffffff;
+    }
+    /* #112: 룸 이름 — 제목 아래 별도 줄, 대시 없이 */
+    .welcome-room {
+      font-size: 14px;
+      letter-spacing: 0.03em;
+      color: rgba(255, 255, 255, 0.45);
+      margin-bottom: 24px;
     }
     .welcome-state p, .welcome-desc {
       font-size: 16px;
@@ -663,6 +660,7 @@
       <div class="welcome-state">
         <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></div>
         <h1 class="welcome-title">실시간 다국어 자막</h1>
+        <div class="welcome-room" style="display: none;"></div>
         <p class="welcome-desc">말하면 실시간 자막과 번역이 나타납니다</p>
         <div class="hint">
           <span>우상단 설정에서 마이크를 활성화하세요</span>
@@ -862,12 +860,8 @@ try {
     } else {
       title = `실시간 ${inputName} → ${outputName} 자막`;
     }
-    // ISSUE-28 AC3: 운영자가 룸을 선택했을 때만 룸 이름을 타이틀에 합성한다.
-    // BOOT.room_name 이 비어있는 경로(관리자/단일 룸)에서는 기존 문구를
-    // 그대로 유지해 회귀를 막는다.
-    if (BOOT.room_name) {
-      title = `${BOOT.room_name} — ${title}`;
-    }
+    // #112: 룸 이름은 타이틀에 "룸 — 제목" 으로 붙이지 않고, 제목 아래
+    // 별도 줄(.welcome-room)에 보여준다. (ISSUE-28: 룸 선택 시에만 노출)
 
     // 설명 동적 변경
     let desc;
@@ -888,6 +882,11 @@ try {
     rulesContainers.forEach(ws => {
       const titleEl = ws.querySelector('.welcome-title');
       if (titleEl) titleEl.textContent = title;
+      const roomEl = ws.querySelector('.welcome-room');
+      if (roomEl) {
+        roomEl.textContent = BOOT.room_name || '';
+        roomEl.style.display = BOOT.room_name ? '' : 'none';
+      }
       const descEl = ws.querySelector('.welcome-desc');
       if (descEl) descEl.innerHTML = desc;
       const rulesDiv = ws.querySelector('.welcome-rules');
@@ -1223,25 +1222,14 @@ try {
 
   // 토스트 메시지
   function showToast(message, type = 'info') {
-    if (type === 'error' || type === 'warning') {
-      const toast = document.createElement('div');
-      toast.style.cssText = `
-        position: fixed; top: 24px; left: 50%;
-        transform: translateX(-50%);
-        background: ${type === 'error' ? '#ef4444' : '#f59e0b'};
-        color: white; padding: 16px 24px; border-radius: 12px;
-        box-shadow: 0 8px 32px rgba(0,0,0,0.3);
-        z-index: 1002; font-size: 14px; font-weight: 500;
-        opacity: 0; transition: opacity 0.3s ease;
-      `;
-      toast.textContent = message;
-      document.body.appendChild(toast);
-
-      setTimeout(() => toast.style.opacity = '1', 10);
-      setTimeout(() => {
-        toast.style.opacity = '0';
-        setTimeout(() => document.body.removeChild(toast), 300);
-      }, 3000);
+    // #112: 컨퍼런스 중 상단 토스트는 화면을 가려 방해가 된다. 진단은
+    // 콘솔로만 남기고 화면에는 띄우지 않는다.
+    if (type === 'error') {
+      console.error('[Toast]', message);
+    } else if (type === 'warning') {
+      console.warn('[Toast]', message);
+    } else {
+      console.log('[Toast]', message);
     }
   }
 
@@ -1252,7 +1240,11 @@ try {
     }
     currentTypingLine = document.createElement('div');
     currentTypingLine.className = 'caption-line typing fade-in';
-    currentTypingLine.textContent = '';
+    // #112: 생성 중 표시 — 뷰어와 동일한 점 인디케이터(촘촘한 간격).
+    // completeTypingTranslation/updateTypingTranslation 이 textContent 로
+    // 덮어쓰면 자동으로 사라진다.
+    currentTypingLine.innerHTML =
+      '<span class="forming-dots"><span></span><span></span><span></span></span>';
     captionContainer.appendChild(currentTypingLine);
 
     // 🎯 사용자 스크롤 상태 확인 후 자동 스크롤
@@ -1397,6 +1389,7 @@ try {
       <div class="welcome-state">
         <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></div>
         <h1 class="welcome-title">실시간 다국어 자막</h1>
+        <div class="welcome-room" style="display: none;"></div>
         <p class="welcome-desc">말하면 실시간 자막과 번역이 나타납니다</p>
         <div class="hint">
           <span>우상단 설정에서 마이크를 활성화하세요</span>

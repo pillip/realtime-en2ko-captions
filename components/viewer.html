@@ -284,7 +284,7 @@
 
     <div class="main">
       <section id="state-waiting" class="state" aria-live="polite">
-        <div class="state-message">잠시 후 자막이 시작됩니다</div>
+        <div class="state-message">잠시 후 시작됩니다</div>
         <div class="state-room" id="waiting-room"></div>
         <div class="state-spinner" aria-hidden="true"></div>
       </section>
@@ -292,7 +292,7 @@
       <section id="state-active" class="state">
         <div id="viewer">
           <div class="caption-container" id="captionContainer">
-            <div class="caption-empty" id="caption-empty">자막을 기다리는 중…</div>
+            <div class="caption-empty" id="caption-empty">잠시 후 시작됩니다</div>
           </div>
         </div>
         <div class="listening-indicator" id="listening-indicator" aria-hidden="true">
@@ -371,6 +371,24 @@
       }
     })();
 
+    // #112: 대기/빈 상태 문구를 선택 언어로 표시 ("자막" 어절 제거).
+    const WAITING_MSG = {
+      ko: "잠시 후 시작됩니다",
+      en: "Starting shortly",
+      zh: "即将开始",
+      vi: "Sắp bắt đầu",
+    };
+    const waitingMsgEl = document.querySelector("#state-waiting .state-message");
+
+    function applyWaitingText(lang) {
+      const msg = WAITING_MSG[lang] || WAITING_MSG.ko;
+      if (waitingMsgEl) waitingMsgEl.textContent = msg;
+      const emptyEl = document.getElementById("caption-empty");
+      if (emptyEl) emptyEl.textContent = msg;
+    }
+
+    applyWaitingText(CONFIG.primary_lang || "ko");
+
     // ---------------------------------------------------------------------
     // State controller
     // ---------------------------------------------------------------------
@@ -424,7 +442,7 @@
       const empty = document.createElement("div");
       empty.id = "caption-empty";
       empty.className = "caption-empty";
-      empty.textContent = "자막을 기다리는 중…";
+      empty.textContent = WAITING_MSG[currentLang] || WAITING_MSG.ko;
       captionContainer.appendChild(empty);
     }
 
@@ -499,6 +517,8 @@
       if (!next || next === currentLang) return;
       clearCaptions();
       connect(next);
+      // #112: 대기/빈 문구를 새 언어로 갱신 (connect 이후 currentLang=next).
+      applyWaitingText(next);
     });
 
     // ---------------------------------------------------------------------

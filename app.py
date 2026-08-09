@@ -60,6 +60,21 @@ st.set_page_config(
     initial_sidebar_state=st.session_state["sidebar_state"],
 )
 
+# 전역 UI 테마 보정 (#112): 밝은 primaryColor 버튼(시작/로그인 등)은
+# 흰 배경이라 글자가 안 보인다 → 강제로 검은 글자. 로그인 화면에도
+# 적용되도록 인증 체크보다 먼저 주입한다.
+st.markdown(
+    """
+    <style>
+      button[kind="primary"], button[kind="primary"] *,
+      button[kind="primaryFormSubmit"], button[kind="primaryFormSubmit"] * {
+        color: #0b0b0c !important;
+      }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 # 사용자 인증 체크
 init_session_state()
 
@@ -104,12 +119,12 @@ def _load_assigned_rooms_for_user(user):
 
 # === 사이드바 ===
 with st.sidebar:
-    st.header("🧑‍💻 유저 정보")
+    st.header("유저 정보")
     display_user_info()
 
     if not get_aws_access_key_id() or not get_aws_secret_access_key():
-        st.error("⚠️ AWS 자격 증명이 설정되지 않았습니다.")
-        st.info("💡 .env 파일에 AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY를 설정하세요")
+        st.error("AWS 자격 증명이 설정되지 않았습니다.")
+        st.info(".env 파일에 AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY를 설정하세요")
         st.stop()
 
     # 룸 선택 (오퍼레이터 전용, ISSUE-27) ----------------------------
@@ -123,7 +138,7 @@ with st.sidebar:
 
     if show_room_section:
         st.markdown("---")
-        st.subheader("🏛️ 배정된 룸")
+        st.subheader("배정된 룸")
         if has_assigned_rooms(assigned_rooms):
             options = build_room_dropdown_options(assigned_rooms)
             labels = [opt["label"] for opt in options]
@@ -155,7 +170,7 @@ with st.sidebar:
             st.session_state.pop("selected_room_name", None)
 
     # 시스템 제어
-    st.subheader("🎛️ 시스템 제어")
+    st.subheader("시스템 제어")
     col1, col2 = st.columns([1, 1])
 
     current_status = st.session_state.get("action", "idle")
@@ -174,7 +189,7 @@ with st.sidebar:
             or is_admin_role
         )
         start = st.button(
-            "🎯 시작",
+            "시작",
             type="primary",
             use_container_width=True,
             disabled=start_disabled,
@@ -197,36 +212,36 @@ with st.sidebar:
             "error",
         ]
         stop = st.button(
-            "⏹️ 정지",
+            "정지",
             use_container_width=True,
             disabled=stop_disabled,
         )
 
     # 시스템 상태
     st.markdown("---")
-    st.subheader("📊 시스템 상태")
+    st.subheader("시스템 상태")
     status = st.session_state.get("action", "idle")
     if status == "start":
-        st.success("🟢 서비스 실행 중")
-        st.info("💡 자막 세부 설정은 화면 우상단 ⚙️ 버튼을 클릭하세요")
+        st.success("서비스 실행 중")
+        st.info("자막 세부 설정은 화면 우상단 설정 버튼을 클릭하세요")
     elif status == "error":
-        st.error("🔴 오류 발생")
+        st.error("오류 발생")
     else:
-        st.info("🟡 대기 중")
+        st.info("대기 중")
 
     # WebSocket 포트 정보 표시
     ws_port = st.session_state["websocket_port_ref"]["port"]
     if ws_port:
         st.markdown("---")
-        st.subheader("🔗 연결 정보")
+        st.subheader("연결 정보")
         st.code(f"WebSocket: ws://localhost:{ws_port}")
         if (
             st.session_state.get("websocket_thread")
             and st.session_state["websocket_thread"].is_alive()
         ):
-            st.success("🟢 WebSocket 서버 실행 중")
+            st.success("WebSocket 서버 실행 중")
         else:
-            st.warning("🟡 WebSocket 서버 대기 중")
+            st.warning("WebSocket 서버 대기 중")
 
 
 # === WebSocket 서버 스레드 ===
@@ -302,7 +317,7 @@ if start and not is_admin_role:
             st.session_state["action"] = "start"
             st.rerun()
     except ValueError as e:
-        st.error(f"❌ {e!s}")
+        st.error(f"{e!s}")
         st.session_state["action"] = "error"
         st.session_state["sidebar_state"] = "expanded"
         st.rerun()
@@ -360,7 +375,7 @@ def _build_view_url_and_qr(room_id: str | None) -> tuple[str | None, str | None]
 # 번역이 실패하므로 (컴포넌트를 아예 렌더하지 않는다).
 if (get_current_user() or {}).get("role") == "admin":
     st.info(
-        "👋 관리자 계정입니다. 자막 세션은 룸이 배정된 오퍼레이터 계정에서 "
+        "관리자 계정입니다. 자막 세션은 룸이 배정된 오퍼레이터 계정에서 "
         "운영합니다. 사이드바의 **관리자 대시보드**에서 룸과 사용자를 관리하세요."
     )
 else:
@@ -391,4 +406,4 @@ else:
         st.components.v1.html(html_content, height=900, scrolling=False)
 
     except Exception:
-        st.error("❌ 시스템을 로드할 수 없습니다.")
+        st.error("시스템을 로드할 수 없습니다.")
