@@ -699,6 +699,12 @@ try {
   let startTime = null;
   let currentUnstableLine = null;
   let currentTypingLine = null;  // 🎨 타이핑 라인
+  // #115: 타자기 스무딩 — Bedrock 이 여러 토큰을 큰 덩어리로 보내도 화면엔
+  // 글자를 일정 속도로 흘려보내 부드럽고 빠른 느낌을 낸다.
+  let twTarget = '';       // 목표 전체 텍스트 (누적/최종)
+  let twShown = 0;         // 현재 화면에 보인 글자 수
+  let twFinalize = false;  // 따라잡으면 stable 로 확정할지
+  let twTimer = null;
   let responseInProgress = false;
   let currentResponseId = null;
   let pendingTranscript = null;
@@ -1234,7 +1240,55 @@ try {
   }
 
   // 🎨 타이핑 번역 함수들
+  // #115: 타자기 스무딩 루프 — twTarget 을 향해 twShown 을 조금씩 늘려
+  // 화면에 글자를 흘려보낸다. Bedrock 이 큰 덩어리로 줘도 부드럽게 보인다.
+  function _twStop() {
+    if (twTimer) {
+      clearInterval(twTimer);
+      twTimer = null;
+    }
+  }
+
+  function _twStart() {
+    if (twTimer || !currentTypingLine) return;
+    twTimer = setInterval(() => {
+      if (!currentTypingLine) {
+        _twStop();
+        return;
+      }
+      // 확정 텍스트가 정리(clean)되며 짧아졌으면 클램프.
+      if (twShown > twTarget.length) twShown = twTarget.length;
+      const gap = twTarget.length - twShown;
+      if (gap > 0) {
+        // gap 비례 + 최소 2자 → 긴 덩어리는 빠르게 따라잡고 짧으면 부드럽게.
+        const step = Math.max(2, Math.ceil(gap / 6));
+        twShown = Math.min(twTarget.length, twShown + step);
+        currentTypingLine.textContent = twTarget.slice(0, twShown);
+        autoScrollToBottom();
+      }
+      if (twShown >= twTarget.length) {
+        if (twFinalize) {
+          const el = currentTypingLine;
+          captionContainer
+            .querySelectorAll('.caption-line.current')
+            .forEach((n) => n.classList.remove('current'));
+          el.className = 'caption-line stable fade-in current';
+          el.textContent = twTarget;
+          currentTypingLine = null;
+          _twStop();
+        } else {
+          // 다음 partial 을 기다리며 유휴 — CPU 아끼려 멈춘다.
+          _twStop();
+        }
+      }
+    }, 28);
+  }
+
   function startTypingTranslation() {
+    _twStop();
+    twTarget = '';
+    twShown = 0;
+    twFinalize = false;
     if (currentTypingLine) {
       currentTypingLine.remove();
     }
@@ -1246,8 +1300,7 @@ try {
     currentTypingLine = document.createElement('div');
     currentTypingLine.className = 'caption-line typing fade-in';
     // #112: 생성 중 표시 — 뷰어와 동일한 점 인디케이터(촘촘한 간격).
-    // completeTypingTranslation/updateTypingTranslation 이 textContent 로
-    // 덮어쓰면 자동으로 사라진다.
+    // 첫 partial 이 오면 스무딩 루프가 textContent 로 덮어쓴다.
     currentTypingLine.innerHTML =
       '<span class="forming-dots"><span></span><span></span><span></span></span>';
     captionContainer.appendChild(currentTypingLine);
@@ -1257,22 +1310,19 @@ try {
   }
 
   function updateTypingTranslation(text) {
-    if (currentTypingLine) {
-      currentTypingLine.textContent = text;
-    }
+    if (!currentTypingLine) return;
+    // #115: 누적 목표를 갱신하고 스무딩 루프가 따라잡게 한다 (즉시 점프 금지).
+    twTarget = text || '';
+    _twStart();
   }
 
   function completeTypingTranslation(text) {
-    if (currentTypingLine) {
-      const el = currentTypingLine;
-      // #111: 마지막 문장만 흰색 — 이전 current 를 모두 해제하고 이 줄에 부여.
-      captionContainer
-        .querySelectorAll('.caption-line.current')
-        .forEach((n) => n.classList.remove('current'));
-      el.className = 'caption-line stable fade-in current';
-      el.textContent = text;
-      currentTypingLine = null;
-    }
+    if (!currentTypingLine) return;
+    // #115: 최종 텍스트를 목표로 두고 finalize — 루프가 다 흘려보낸 뒤
+    // stable(현재 줄=흰색)로 확정한다.
+    twTarget = text || '';
+    twFinalize = true;
+    _twStart();
   }
 
   // 자막 추가 함수
