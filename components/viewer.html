@@ -333,7 +333,6 @@
     };
     const langSelect = $("lang-select");
     const captionContainer = $("captionContainer");
-    const captionEmpty = $("caption-empty");
     const connError = $("conn-error");
     const waitingRoom = $("waiting-room");
     const liveDot = $("live-dot");
@@ -415,29 +414,94 @@
       return viewer.scrollHeight - viewer.scrollTop - viewer.clientHeight <= slack;
     }
 
-    function appendCaption(text) {
-      if (!text) return;
-      if (captionEmpty && captionEmpty.parentNode) {
-        captionEmpty.remove();
-      }
-      const div = document.createElement("div");
-      div.className = "caption-line";
-      div.textContent = text;
-      captionContainer.appendChild(div);
+    // Typewriter smoothing (#116): reveal text at a steady client-side rate
+    // regardless of SSE chunk size, so viewer captions flow like the operator
+    // screen (#115) rather than snapping in whole. `partial` messages grow the
+    // target; the final (non-partial) message locks the line.
+    let currentLine = null; // in-progress .caption-line (null between lines)
+    let twTarget = ""; // full text we're revealing toward
+    let twShown = 0; // chars currently on screen
+    let twFinalize = false; // lock the line once we catch up?
+    let twTimer = null;
 
-      while (captionContainer.children.length > MAX_LINES) {
-        captionContainer.removeChild(captionContainer.firstChild);
-      }
-
+    function _scrollIfBottom() {
       if (isUserAtBottom()) {
-        // Defer scroll to next frame so layout reflects new node first.
         requestAnimationFrame(() => {
           viewer.scrollTop = viewer.scrollHeight;
         });
       }
     }
 
+    function _twStop() {
+      if (twTimer) {
+        clearInterval(twTimer);
+        twTimer = null;
+      }
+    }
+
+    function _twStart() {
+      if (twTimer || !currentLine) return;
+      twTimer = setInterval(() => {
+        if (!currentLine) {
+          _twStop();
+          return;
+        }
+        if (twShown > twTarget.length) twShown = twTarget.length;
+        const gap = twTarget.length - twShown;
+        if (gap > 0) {
+          const step = Math.max(2, Math.ceil(gap / 6));
+          twShown = Math.min(twTarget.length, twShown + step);
+          currentLine.textContent = twTarget.slice(0, twShown);
+          _scrollIfBottom();
+        }
+        if (twShown >= twTarget.length) {
+          if (twFinalize) {
+            // Lock exact final text (handles LLM cleanup shrinking the string).
+            currentLine.textContent = twTarget;
+            currentLine = null;
+            _twStop();
+          } else {
+            _twStop(); // caught up to a partial — idle until the next chunk
+          }
+        }
+      }, 28);
+    }
+
+    function _ensureCurrentLine() {
+      if (currentLine) return;
+      const empty = document.getElementById("caption-empty");
+      if (empty && empty.parentNode) empty.remove();
+      const div = document.createElement("div");
+      div.className = "caption-line";
+      captionContainer.appendChild(div);
+      while (captionContainer.children.length > MAX_LINES) {
+        captionContainer.removeChild(captionContainer.firstChild);
+      }
+      currentLine = div;
+      twTarget = "";
+      twShown = 0;
+      twFinalize = false;
+    }
+
+    // Partial (streaming) chunk — grow the target, keep revealing, don't lock.
+    function updatePartialCaption(text) {
+      if (!text) return;
+      _ensureCurrentLine();
+      twTarget = text;
+      _twStart();
+    }
+
+    // Final message — reveal the rest, then lock (next chunk starts a new line).
+    function finalizeCaption(text) {
+      _ensureCurrentLine();
+      twTarget = text || twTarget || "";
+      twFinalize = true;
+      _twStart();
+    }
+
     function clearCaptions() {
+      _twStop();
+      currentLine = null;
       captionContainer.innerHTML = "";
       const empty = document.createElement("div");
       empty.id = "caption-empty";
@@ -487,7 +551,13 @@
             if (!stateNodes.active.classList.contains("active")) {
               setState("active");
             }
-            appendCaption(payload.text);
+            // #116: partial streaming chunks smooth-reveal onto the current
+            // line; the final (no `partial` flag) locks it.
+            if (payload.partial) {
+              updatePartialCaption(payload.text);
+            } else {
+              finalizeCaption(payload.text);
+            }
           }
         } catch (_) {
           /* malformed payload — ignore (RL-006: do not echo to UI). */
@@ -497,6 +567,10 @@
       es.addEventListener("session_end", () => {
         setLive(false);
         setState("ended");
+        // #116: stop any in-flight typewriter reveal so no stray timer runs
+        // after the session ends.
+        _twStop();
+        currentLine = null;
         if (es) {
           try { es.close(); } catch (_) { /* noop */ }
           es = null;

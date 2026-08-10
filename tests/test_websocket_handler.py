@@ -1031,6 +1031,103 @@ class TestModuleSingletons:
 
 
 # ============================================================
+# #116: 뷰어 SSE 스트리밍 — 부분 청크 전달 + partial publish
+# ============================================================
+class TestViewerStreamingPartials:
+    """스트리밍 부분 청크를 오퍼레이터 WS + 뷰어 SSE 로 흘려보내는 경로."""
+
+    def test_stream_llm_translation_forwards_partials_to_on_partial(self):
+        """비-최종 청크만 on_partial/WS 로 나가고, 최종 텍스트가 반환된다."""
+        from websocket_handler import _stream_llm_translation
+
+        chunks = [("안", False), ("안녕", False), ("안녕하세요", True)]
+        collected = []
+
+        async def on_partial(text):
+            collected.append(text)
+
+        ws = AsyncMock()
+        with patch(
+            "websocket_handler.translate_with_llm_stream",
+            return_value=iter(chunks),
+        ):
+            result = asyncio.run(
+                _stream_llm_translation(
+                    ws, MagicMock(), "hello", "en", "ko", on_partial=on_partial
+                )
+            )
+
+        assert result == "안녕하세요"
+        # 최종(done=True)은 콜백으로 넘기지 않는다 — 부분 청크만.
+        assert collected == ["안", "안녕"]
+        # 오퍼레이터 WS 로도 동일한 비-최종 청크가 translation_partial 로 전송됨.
+        sent = [json.loads(c.args[0]) for c in ws.send.call_args_list]
+        partial_texts = [
+            m["text"] for m in sent if m.get("type") == "translation_partial"
+        ]
+        assert partial_texts == ["안", "안녕"]
+
+    def test_stream_llm_translation_swallows_on_partial_errors(self):
+        """on_partial 예외는 best-effort — 최종 번역 반환에 영향 없음."""
+        from websocket_handler import _stream_llm_translation
+
+        async def boom(_text):
+            raise RuntimeError("viewer publish down")
+
+        ws = AsyncMock()
+        with patch(
+            "websocket_handler.translate_with_llm_stream",
+            return_value=iter([("부분", False), ("최종", True)]),
+        ):
+            result = asyncio.run(
+                _stream_llm_translation(
+                    ws, MagicMock(), "x", "en", "ko", on_partial=boom
+                )
+            )
+        assert result == "최종"
+
+    def test_publish_partial_skips_when_no_room_id(self):
+        """room_id 없으면 publish 자체를 시도하지 않는다."""
+        from websocket_handler import _publish_partial_to_viewers
+
+        mgr = MagicMock()
+        mgr.publish = AsyncMock()
+        with patch("websocket_handler._broadcast_manager", mgr):
+            asyncio.run(_publish_partial_to_viewers(None, "안녕", "ko"))
+        mgr.publish.assert_not_called()
+
+    def test_publish_partial_skips_when_no_viewers(self):
+        """뷰어 없는 언어 채널은 lazy 게이트로 publish 를 건너뛴다."""
+        from websocket_handler import _publish_partial_to_viewers
+
+        mgr = MagicMock()
+        mgr.has_viewers.return_value = False
+        mgr.publish = AsyncMock()
+        with patch("websocket_handler._broadcast_manager", mgr):
+            asyncio.run(_publish_partial_to_viewers("room1", "안녕", "ko"))
+        mgr.has_viewers.assert_called_once_with("room1", "ko")
+        mgr.publish.assert_not_called()
+
+    def test_publish_partial_emits_partial_flagged_payload(self):
+        """뷰어가 있으면 partial=True payload 를 해당 (room, lang) 채널로 publish."""
+        from websocket_handler import _publish_partial_to_viewers
+
+        mgr = MagicMock()
+        mgr.has_viewers.return_value = True
+        mgr.publish = AsyncMock()
+        with patch("websocket_handler._broadcast_manager", mgr):
+            asyncio.run(_publish_partial_to_viewers("room1", "안녕하", "ko"))
+        mgr.publish.assert_awaited_once()
+        room_arg, lang_arg, payload = mgr.publish.call_args.args
+        assert room_arg == "room1"
+        assert lang_arg == "ko"
+        assert payload["text"] == "안녕하"
+        assert payload["lang"] == "ko"
+        assert payload["partial"] is True
+        assert "timestamp" in payload
+
+
+# ============================================================
 # _translate_secondary (lines 624-632)
 # ============================================================
 class TestTranslateSecondary:
