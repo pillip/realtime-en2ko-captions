@@ -390,11 +390,16 @@ def _record_usage(
 
 
 async def _stream_llm_translation(
-    websocket, bedrock_client, transcript, source_lang, target_lang
+    websocket, bedrock_client, transcript, source_lang, target_lang, on_partial=None
 ):
     """Bedrock 스트리밍 번역을 스레드에서 돌리며 부분 결과를 오퍼레이터 WS 로
     ``translation_partial`` 로 흘려보낸다 (#114 — 발화 후 첫 글자까지의 체감
     지연 단축).
+
+    ``on_partial`` (async, ``(cumulative_text) -> None``) 이 주어지면 각 부분
+    (누적) 청크를 이 콜백으로도 넘긴다 (#116 — 뷰어 SSE 스트리밍). 오퍼레이터
+    WS 전송과 독립적인 best-effort 경로다 — 콜백 예외는 삼켜서 최종 번역/폴백에
+    영향을 주지 않는다.
 
     반환: 최종 번역 텍스트(성공) 또는 None(실패 → 호출자가 폴백).
     블로킹 boto3 스트림은 executor 스레드에서 돌리고, 청크는 asyncio.Queue
@@ -435,6 +440,12 @@ async def _stream_llm_translation(
                 )
             except Exception as send_err:
                 print(f"[Translate] 부분 번역 전송 실패: {send_err!r}")
+            # #116: 뷰어 SSE 로도 부분 청크를 흘려보낸다 (오퍼레이터 전송과 독립).
+            if on_partial is not None:
+                try:
+                    await on_partial(payload)
+                except Exception as cb_err:
+                    print(f"[Translate] 뷰어 부분 전송 실패: {cb_err!r}")
     await fut
     return None if errored else final_text
 
@@ -531,8 +542,22 @@ async def _handle_transcript(
     translated_text = None
     used_llm = False
     if bedrock_available:
+        # #116: 스트리밍 부분 청크를 뷰어 SSE 메인 채널로도 흘려보낸다. 채널은
+        # 최종 broadcast 와 동일한 target_lang(=primary_output_lang) 을 쓴다.
+        stream_room_id = current_user.get("room_id")
+
+        async def _viewer_partial(cumulative_text):
+            await _publish_partial_to_viewers(
+                stream_room_id, cumulative_text, target_lang
+            )
+
         translated_text = await _stream_llm_translation(
-            websocket, bedrock_client, transcript, source_lang, target_lang
+            websocket,
+            bedrock_client,
+            transcript,
+            source_lang,
+            target_lang,
+            on_partial=_viewer_partial if stream_room_id else None,
         )
         used_llm = bool(translated_text)
     if not translated_text:
@@ -589,6 +614,37 @@ async def _handle_transcript(
         bedrock_client=bedrock_client,
         bedrock_available=bedrock_available,
     )
+
+
+async def _publish_partial_to_viewers(room_id, text, lang):
+    """스트리밍 부분(누적) 번역을 뷰어 SSE 메인 채널로 흘려보낸다 (#116).
+
+    - ``lang`` 은 최종 broadcast 가 쓰는 채널(primary_output_lang == target_lang)
+      과 반드시 같아야 같은 뷰어가 부분 → 최종을 순서대로 받는다.
+    - 뷰어가 없으면 ``publish`` 가 어차피 no-op 이므로, ``has_viewers`` 로 먼저
+      게이트해 스트리밍 hot-path 의 불필요한 await 를 없앤다 (lazy).
+    - best-effort: 실패해도 오퍼레이터 자막/최종 broadcast 에 영향 없음(RL-006).
+    - payload 에 ``partial: True`` 를 실어 뷰어가 타자기 스무딩만 갱신하고
+      확정하지 않게 한다. 최종 broadcast payload 는 이 플래그가 없어 확정 신호.
+    """
+    if not room_id or not text:
+        return
+    if not _broadcast_manager.has_viewers(room_id, lang):
+        return
+    try:
+        await _broadcast_manager.publish(
+            room_id,
+            lang,
+            {
+                "text": text,
+                "lang": lang,
+                "partial": True,
+                "timestamp": time.time(),
+            },
+        )
+    except Exception as e:
+        # RL-006: 내부 예외는 서버 로그로만, 뷰어/오퍼레이터에 노출하지 않는다.
+        print(f"[SSE] 부분 publish 실패 (room={room_id}): {e!r}")
 
 
 async def _publish_to_viewers(
