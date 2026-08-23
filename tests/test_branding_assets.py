@@ -234,6 +234,74 @@ class TestTraversalContainment:
         # 링크 자체는 지우지 않았고, 대상 파일도 그대로다.
         assert secret_file.read_bytes().startswith(b"SQLite format 3")
 
+    def test_resolve_rejects_symlink_that_points_inside_the_room(self, branding_root):
+        """심볼릭 링크 거부가 containment 검사에 업혀 가지 않는지 확인한다 (RL-004).
+
+        위의 `test_resolve_rejects_symlink` 은 링크 대상이 룸 **바깥**이라
+        `is_symlink()` 를 지워도 `is_relative_to()` 가 대신 막아 준다 — 즉 심볼릭
+        링크 방어 자체는 검증되지 않는다. NFR-028 이 별도 통제로 명시한 항목이
+        조용히 썩지 않도록, 두 방어가 갈라지는 유일한 입력(대상이 룸 **안**인
+        링크)으로 `is_symlink()` 만 단독 검증한다.
+        """
+        import branding_assets
+
+        branding_assets.save_asset("room1", "real.png", PNG_BYTES)
+        room = _room_dir(branding_root)
+        (room / "link.png").symlink_to(room / "real.png")
+
+        # 대상이 룸 안이므로 containment 는 통과한다 — 막는 것은 is_symlink() 뿐이다.
+        assert (room / "link.png").resolve().is_relative_to(room.resolve())
+        assert branding_assets.resolve_asset_path("room1", "link.png") is None
+        assert branding_assets.delete_asset("room1", "link.png") is False
+        assert branding_assets.list_assets("room1") == ["real.png"]
+        # 원본은 그대로 서빙 가능하다 (과잉 차단이 아님).
+        assert branding_assets.resolve_asset_path("room1", "real.png") is not None
+
+    def test_resolve_rejects_symlink_to_sibling_room(self, branding_root):
+        """다른 룸을 가리키는 링크도 서빙되지 않는다 (룸 간 격리)."""
+        import branding_assets
+
+        branding_assets.save_asset("roomB", "secret.png", PNG_BYTES)
+        room_a = _room_dir(branding_root, "roomA")
+        room_a.mkdir(parents=True)
+        (room_a / "peek.png").symlink_to(branding_root / "roomB" / "secret.png")
+
+        assert branding_assets.resolve_asset_path("roomA", "peek.png") is None
+        assert branding_assets.list_assets("roomA") == []
+
+    def test_dotdot_in_filename_is_rejected_not_stripped(self, branding_root):
+        """`..` 는 제거가 아니라 거부다 — 구분자가 없어도 마찬가지 (NFR-028).
+
+        구분자 제거만으로는 `..` 이 살아남는 입력이 있으므로, 시그니처 자체를
+        거부하는 규칙이 독립적으로 성립하는지 확인한다.
+        """
+        import branding_assets
+
+        for name in ("a..b.png", "..logo.png", "logo...png"):
+            with pytest.raises(ValueError) as exc:
+                branding_assets.save_asset("room1", name, PNG_BYTES)
+            assert ".." in str(exc.value)
+            assert branding_assets.resolve_asset_path("room1", name) is None
+        assert not branding_root.exists()
+
+    def test_rejected_public_requests_do_not_write_server_logs(
+        self, branding_root, capsys
+    ):
+        """공개 라우트라 잘못된 요청만으로 로그가 오염되면 안 된다.
+
+        `resolve_asset_path` 의 `except ValueError` 가 `except Exception`
+        (로그를 남기는 쪽)으로 흡수되면 인증 없는 `/branding/...` 요청 하나로
+        서버 로그를 무한히 부풀릴 수 있다. 그 분기를 고정한다.
+        """
+        import branding_assets
+
+        capsys.readouterr()  # 이전 출력 비우기
+        for name in HOSTILE_NAMES:
+            assert branding_assets.resolve_asset_path("room1", name) is None
+            assert branding_assets.list_assets("../..") == []
+
+        assert capsys.readouterr().out == ""
+
     def test_resolve_rejects_directory(self, branding_root):
         """디렉터리는 파일이 아니므로 None."""
         import branding_assets
