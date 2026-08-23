@@ -1104,3 +1104,237 @@ class TestTranslateAndPublishSecondary:
 
         captured = capsys.readouterr()
         assert "[SSE] secondary publish failed" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# /branding/{room_id}/{filename} — 로고 정적 서빙 (ISSUE-38, TC-055/TC-056)
+# ---------------------------------------------------------------------------
+_PNG_SIG = b"\x89PNG\r\n\x1a\n"
+_PNG_BYTES = _PNG_SIG + b"\x11" * 64
+_JPEG_BYTES = b"\xff\xd8\xff\xe0" + b"\x22" * 64
+_SVG_BYTES = b'<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>'
+
+
+class TestBrandingAssetRoute:
+    """브랜딩 에셋 라우트 — Content-Type / 캐시 / CSP / traversal 404 (RL-006)."""
+
+    @pytest.fixture
+    def branding_root(self, tmp_path, monkeypatch):
+        root = tmp_path / "branding"
+        monkeypatch.setenv("BRANDING_DIR", str(root))
+        return root
+
+    @pytest.fixture
+    def secret_db(self, tmp_path):
+        """branding 루트 바깥의 미끼 DB — 응답 본문에 절대 나타나면 안 된다."""
+        path = tmp_path / "app.db"
+        path.write_bytes(b"SQLite format 3\x00TOP-SECRET-ROWS")
+        return path
+
+    def _app(self):
+        from sse_broadcast import BroadcastManager, build_sse_app
+
+        return build_sse_app(
+            broadcast_manager=BroadcastManager(),
+            room_repo=_StubRoomRepo({"r1": {"id": "r1", "status": "active"}}),
+        )
+
+    @pytest.mark.asyncio
+    async def test_stored_png_served_with_exact_bytes_and_headers(self, branding_root):
+        """TC-055: 200 + image/png + 저장 바이트와 동일한 본문 + 5분 캐시."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        import branding_assets
+
+        stored = branding_assets.save_asset("r1", "logo.png", _PNG_BYTES)
+
+        async with TestClient(TestServer(self._app())) as client:
+            resp = await client.get(f"/branding/r1/{stored}")
+            assert resp.status == 200
+            assert resp.headers["Content-Type"] == "image/png"
+            assert resp.headers["Cache-Control"] == "public, max-age=300"
+            assert await resp.read() == _PNG_BYTES
+
+    @pytest.mark.asyncio
+    async def test_stored_jpeg_content_type(self, branding_root):
+        from aiohttp.test_utils import TestClient, TestServer
+
+        import branding_assets
+
+        branding_assets.save_asset("r1", "host.jpg", _JPEG_BYTES)
+
+        async with TestClient(TestServer(self._app())) as client:
+            resp = await client.get("/branding/r1/host.jpg")
+            assert resp.status == 200
+            assert resp.headers["Content-Type"] == "image/jpeg"
+            assert await resp.read() == _JPEG_BYTES
+
+    @pytest.mark.asyncio
+    async def test_svg_served_with_csp_header(self, branding_root):
+        """TC-056: image/svg+xml + Content-Security-Policy (업로드 SVG 스크립트 차단)."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        import branding_assets
+
+        branding_assets.save_asset("r1", "sponsor.svg", _SVG_BYTES)
+
+        async with TestClient(TestServer(self._app())) as client:
+            resp = await client.get("/branding/r1/sponsor.svg")
+            assert resp.status == 200
+            assert resp.headers["Content-Type"] == "image/svg+xml"
+            assert (
+                resp.headers["Content-Security-Policy"]
+                == "default-src 'none'; style-src 'unsafe-inline'"
+            )
+            assert await resp.read() == _SVG_BYTES
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "encoded",
+        [
+            "..%2F..%2Fapp.db",
+            "%2e%2e%2fapp.db",
+            "..%5C..%5Capp.db",
+            "%00.png",
+            "..%2F..%2Fapp.png",
+        ],
+    )
+    async def test_url_encoded_traversal_returns_404_without_leaking(
+        self, branding_root, secret_db, encoded
+    ):
+        """TC-055 / AC: ..%2F..%2Fapp.db → 404, DB 내용/내부 절대경로 미노출.
+
+        aiohttp 라우터는 이 페이로드를 걸러 주지 않는다 — 실측상 `%2F` 는 디코드된
+        `../../app.db` 로, 어떤 때는 원문 그대로 match_info 에 실려 핸들러까지
+        도달한다 (둘 다 관측됨). 즉 `branding_assets` 의 sanitize 가 유일한
+        방어선이며, 어느 형태로 오든 거부되어야 한다.
+        """
+        from aiohttp.test_utils import TestClient, TestServer
+
+        import branding_assets
+
+        branding_assets.save_asset("r1", "logo.png", _PNG_BYTES)
+
+        async with TestClient(TestServer(self._app())) as client:
+            resp = await client.get(f"/branding/r1/{encoded}")
+            assert resp.status == 404
+            body = await resp.text()
+            assert "SQLite" not in body
+            assert "TOP-SECRET-ROWS" not in body
+            assert str(branding_root) not in body
+            assert str(secret_db) not in body
+            assert "Traceback" not in body
+
+    @pytest.mark.asyncio
+    async def test_traversal_payload_actually_reaches_the_handler(self, branding_root):
+        """라우터가 아니라 sanitize 가 막고 있음을 명시적으로 확인한다 (RL-004).
+
+        위의 404 테스트들이 "aiohttp 라우터가 알아서 막아 줘서" 통과하는
+        vacuous pass 인지 구분한다. 페이로드가 핸들러까지 실제로 도달하고,
+        거기서 `resolve_asset_path` 가 거부해야 한다.
+
+        Note: match_info 에 실리는 형태는 aiohttp/yarl 버전에 따라 디코드된
+        ``../../app.db`` 이거나 원문 ``..%2F..%2Fapp.db`` 다 (둘 다 실측됨).
+        어느 쪽이든 traversal 시그니처(``..``)가 남아 있고 거부되어야 하므로,
+        특정 인코딩 형태에 의존하지 않고 그 성질만 단언한다.
+        """
+        from aiohttp.test_utils import TestClient, TestServer
+
+        import branding_assets
+        import branding_routes
+
+        seen: list[str] = []
+        original = branding_routes.branding_assets.resolve_asset_path
+
+        def _spy(room_id, filename):
+            seen.append(filename)
+            return original(room_id, filename)
+
+        app = self._app()
+        async with TestClient(TestServer(app)) as client:
+            import unittest.mock as _mock
+
+            with _mock.patch.object(
+                branding_routes.branding_assets, "resolve_asset_path", _spy
+            ):
+                resp = await client.get("/branding/r1/..%2F..%2Fapp.db")
+            assert resp.status == 404
+
+        # 1) 라우터가 아니라 핸들러가 처리했다.
+        assert len(seen) == 1
+        # 2) 도달한 페이로드에 traversal 시그니처가 그대로 남아 있다.
+        assert ".." in seen[0]
+        assert "app.db" in seen[0]
+        # 3) 그 페이로드를 sanitize 가 거부한다 (404 의 실제 이유).
+        assert branding_assets.resolve_asset_path("r1", seen[0]) is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/branding/r1/missing.png",
+            "/branding/no-such-room/logo.png",
+            "/branding/r1/app.db",
+            "/branding/..%2F..%2Fetc/logo.png",
+        ],
+    )
+    async def test_unknown_room_or_file_returns_generic_404(self, branding_root, path):
+        """AC: 존재하지 않는 룸/파일 → 404 + 일반 메시지 (내부 경로 미노출)."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        async with TestClient(TestServer(self._app())) as client:
+            resp = await client.get(path)
+            assert resp.status == 404
+            body = await resp.text()
+            assert str(branding_root) not in body
+            assert "Traceback" not in body
+
+    @pytest.mark.asyncio
+    async def test_symlinked_asset_is_not_served(self, branding_root, secret_db):
+        """룸 디렉터리 안의 심볼릭 링크는 서빙되지 않는다 (NFR-028)."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        room = branding_root / "r1"
+        room.mkdir(parents=True)
+        (room / "evil.png").symlink_to(secret_db)
+
+        async with TestClient(TestServer(self._app())) as client:
+            resp = await client.get("/branding/r1/evil.png")
+            assert resp.status == 404
+            body = await resp.text()
+            assert "TOP-SECRET-ROWS" not in body
+
+    @pytest.mark.asyncio
+    async def test_read_failure_logs_server_side_and_returns_404(
+        self, branding_root, monkeypatch, capsys
+    ):
+        """RL-006: 내부 예외는 서버 로그에만, 클라이언트에는 generic 404."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        import branding_routes
+
+        def _explode(_room_id, _filename):
+            raise OSError("disk on fire at /secret/path/to/branding")
+
+        monkeypatch.setattr(
+            branding_routes.branding_assets, "resolve_asset_path", _explode
+        )
+
+        async with TestClient(TestServer(self._app())) as client:
+            resp = await client.get("/branding/r1/logo.png")
+            assert resp.status == 404
+            body = await resp.text()
+            assert "/secret/path" not in body
+            assert "OSError" not in body
+            assert "Traceback" not in body
+
+        assert "[Branding]" in capsys.readouterr().out
+
+    @pytest.mark.asyncio
+    async def test_existing_routes_still_registered(self, branding_root):
+        """ISSUE-38 라우트 추가가 기존 /health, /view, /stream 을 깨지 않는다."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        async with TestClient(TestServer(self._app())) as client:
+            assert (await client.get("/health")).status == 200
+            assert (await client.get("/view/no-such-room")).status == 404

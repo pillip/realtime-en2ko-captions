@@ -1,115 +1,302 @@
-# Review Notes — ISSUE-33 (PR #67)
+# Review Notes — ISSUE-38 (PR #123)
 
-**Reviewer**: Claude Opus 4.7 (automated, team-lead REVIEW phase)
-**Date**: 2026-05-07
-**PR Size**: +1173 -3 across 8 files
-- `database.py` (+108 LOC): `_migrate_add_room_viewer_metric_columns`, `Room.update_viewer_metrics`, `Room.get_viewer_metrics`
-- `sse_broadcast.py` (+~110 LOC): in-memory counters, `metrics_repo` injection, `get_metrics`
-- `admin.py` (+76 LOC): `_render_room_viewer_metrics`
-- `admin_logic.py` (+79 LOC): `_format_by_lang_label`, `build_room_metrics_view_data`
-- `app.py` (+5 LOC): `attach_broadcast_metrics_repo` wiring at SSE startup
-- `websocket_handler.py` (+16 LOC): `attach_broadcast_metrics_repo` setter
-- `tests/test_viewer_metrics.py` (NEW, 30 unit tests)
-- `tests/e2e/test_viewer_metrics_e2e.py` (NEW, 3 e2e cases — `e2e` marked, deselected by default)
+**Reviewer**: Claude Opus 5 (automated, independent REVIEW phase)
+**Date**: 2026-08-23
+**Branch**: `issue/ISSUE-38-branding-asset-store`
+**PR Size**: +1472 -0 across 6 files
+- `branding_assets.py` (NEW, 435 LOC): `save_asset` / `list_assets` / `delete_asset` / `resolve_asset_path` / `build_asset_headers`
+- `branding_routes.py` (NEW, 51 LOC): `handle_branding_asset` aiohttp handler
+- `sse_broadcast.py` (+2): one import + one `app.router.add_get`
+- `tests/test_branding_assets.py` (NEW, 167 tests after review)
+- `tests/test_sse_broadcast.py` (+234, 16 tests)
+- `CLAUDE.md` (+1): `BRANDING_DIR` env var
+
+**Verdict**: **Approve.** No Critical or High findings. One Medium test-quality gap (an
+untested NFR-028 control) was found by mutation testing and fixed in this review. All 9
+Acceptance Criteria and all 6 `#### Tests` bullets are satisfied by real, discriminating
+assertions — verified by deleting each control from the source and confirming a test fails.
+
+---
 
 ## Scope
 
-룸별 SSE 뷰어 접속 지표 (현재/누적/최대 + 언어별 분포) 를 수집해 관리자 대시보드에 표시. 누적·peak 는 DB 영속화로 서버 재시작에도 보존, 인메모리 current 는 `BroadcastManager` 가 SSE register/unregister 시 O(1) 로 갱신. admin 대시보드는 매 rerun 마다 in-memory snapshot + DB row 를 합쳐 4 개 `st.metric` 위젯으로 렌더링.
+Verified against `issues.md` ISSUE-38, `docs/requirements.md` FR-077 / FR-078 / **NFR-028**,
+`docs/data_model.md` *Filesystem store: `data/branding/{room_id}/`*, and
+`docs/test_plan.md` Gap 8 (TC-053 … TC-056). Review lens: `docs/review_lessons.md`
+RL-001 … RL-016.
+
+**Scope discipline: clean.** `git diff origin/main...HEAD --name-only` returns exactly the
+6 files above. No ISSUE-39/40/41/42 scope. `components/stage.html` untouched.
+`issues.md` / `STATUS.md` / `CHANGELOG.md` **not** committed to the feature branch.
+The `sse_broadcast.py` diff is the minimal 2 lines, so it will not collide with ISSUE-40 (PR #122).
+
+---
+
+## Findings
+
+| ID | Severity | Location | Finding | Status |
+|----|----------|----------|---------|--------|
+| R-01 | Medium | `branding_assets.py:213` (guard) / `tests/test_branding_assets.py:224`, `tests/test_sse_broadcast.py:1293` (tests) | **Symlink rejection had zero discriminating coverage (RL-004 vacuous pass).** All three symlink tests pointed the link *outside* the room directory, so the 404 came from the `is_relative_to()` containment check, not from the symlink guard. Deleting `if candidate.is_symlink(): return None` made **no test fail**. NFR-028 names symlink rejection as a distinct control; it could have been removed silently. | **fixed** |
+| R-02 | Low | `branding_assets.py:309` | The `".." in value` rejection rule in `_reject_path_signatures` had no discriminating test — deleting it left the suite fully green. The rule is real defence (it is what turns `"a..b.png"` into a rejection instead of a stored file), but it was unpinned. | **fixed** |
+| R-03 | Low | `branding_assets.py:221`, `branding_assets.py:251` | The `except ValueError` clauses that deliberately return without logging had no test. Collapsing them into the logging `except Exception` left the suite green — yet that regression turns every malformed request on an **unauthenticated public route** into a server-log write (log-flood / disk-fill vector). | **fixed** |
+| R-04 | Low | `branding_assets.py:284` | No `X-Content-Type-Options: nosniff` on asset responses. Not required by NFR-028 or any AC; modern browsers do not sniff `image/*` into HTML and the SVG path is already neutralised by CSP. Cheap hardening worth adding when the upload UI lands (ISSUE-39). | not-fixed (follow-up) |
+| R-05 | Low | `branding_routes.py:39` | **TOCTOU**: `resolve_asset_path()` runs `is_symlink()` → `resolve()` → `is_file()`, then the route calls `path.read_bytes()`. An attacker who can already write inside `data/branding/{room_id}/` could swap the file for a symlink in that window. Requires local filesystem write access, which is outside the HTTP threat model for this route. | not-fixed (accepted) |
+| R-06 | Low | `branding_assets.py:380` | `_contained_room_dir()` checks containment against the branding **root**, so a room directory that is itself a symlink to a *sibling room* resolves inside the root and is accepted — a cross-room read. This is exactly the rule the spec prescribes (`is_relative_to(root)`), and it also requires local FS write access. | not-fixed (accepted) |
+| R-07 | Low | `branding_assets.py:108` | `_MAX_COLLISION_ATTEMPTS = 100` is an unreachable ceiling: the 12-asset-per-room cap bounds same-stem collisions at ~13, so attempts 14–100 and the trailing `raise` are dead (already marked `# pragma: no cover`). | not-fixed (harmless) |
+| R-08 | Low | `branding_assets.py:368`, `branding_assets.py:371` | `_MAX_ROOM_ID_LEN` and `_reject_path_signatures(value, "룸 식별자")` are fully subsumed by the `_DISALLOWED_CHARS.search()` check three lines below — `/`, `\`, and control characters are all outside `[A-Za-z0-9._-]`. Deleting either leaves the suite green *and* leaves the security property intact. Redundant, but deliberate defence-in-depth on a trust boundary. | not-fixed (accepted) |
+| R-09 | Low | `branding_assets.py:285` | The `application/octet-stream` fallback in `build_asset_headers()` is unreachable from the route — the extension whitelist runs inside `resolve_asset_path()` before a path is ever returned. Directly unit-tested, so not dead for coverage purposes. | not-fixed (harmless) |
+
+### Fix applied
+
+`tests/test_branding_assets.py` +68 lines, 4 new tests (source code unchanged — every
+finding fixed here was a *missing test*, not a defect):
+
+- `test_resolve_rejects_symlink_that_points_inside_the_room` (:237) — the only input where
+  the two defences diverge. Asserts the link target *does* pass containment
+  (`.resolve().is_relative_to(room)`) so the test cannot silently degrade into another
+  containment test, then asserts `resolve_asset_path` / `delete_asset` / `list_assets` all
+  reject it while the real file stays servable (no over-blocking).
+- `test_resolve_rejects_symlink_to_sibling_room` (:260) — cross-room isolation.
+- `test_dotdot_in_filename_is_rejected_not_stripped` (:272) — pins `..` as a *rejection*,
+  not a strip, for separator-free names (`a..b.png`, `..logo.png`, `logo...png`).
+- `test_rejected_public_requests_do_not_write_server_logs` (:287) — pins the no-log
+  rejection path across the whole hostile-name corpus.
+
+---
 
 ## Code Review
 
 ### Strengths
 
-- **RL-006 컴플라이언스 (확실)**:
-  - `BroadcastManager.register_viewer` 의 DB hook 은 `try/except Exception` 으로 감싸 `[SSE] metrics_repo.update_viewer_metrics failed (room=… lang=…): {e!r}` 만 서버 로그에 남기고 SSE 연결은 절대 끊지 않는다. 클라이언트는 generic 동작 (정상 SSE) 만 본다.
-  - `admin._render_room_viewer_metrics` 도 BroadcastManager 로딩 실패 / 룸별 metrics 조회 실패를 모두 try/except 로 격리, 사용자에게는 `뷰어 지표를 불러올 수 없습니다.` / `'<room>' 룸의 지표를 불러올 수 없습니다.` 로만 노출. 내부 `repr(e)` 는 `print()` 로 stderr 만.
-  - `Room.update_viewer_metrics` 가 unknown room 시 `False` 반환 — raise 하지 않아 SSE register 가 stale URL 로 인해 깨지는 경로 차단.
-- **마이그레이션 멱등성 (RL-009 수준)**: ISSUE-29 의 `_migrate_add_room_output_lang_columns` 와 동일 패턴 — `PRAGMA table_info(rooms)` 로 기존 컬럼 셋을 읽고, 없을 때만 `ALTER TABLE … ADD COLUMN`. 두 컬럼 모두 `INTEGER NOT NULL DEFAULT 0` 이라 legacy row 의 자동 0 시드. `test_migration_is_idempotent_on_third_init` (3 회 호출 → 컬럼 1개씩) + `test_legacy_db_without_columns_gets_migrated` (output_lang/total_viewers 없는 prod-like DB 업그레이드) 로 회귀 차단.
-- **peak_viewers race-safety (확실)**: 단일 `UPDATE rooms SET total_viewers = total_viewers + ?, peak_viewers = MAX(peak_viewers, ?) WHERE id = ?` 표현식. SQLite 가 row-level write lock 으로 직렬화하지만 무엇보다 `MAX(peak, ?)` 가 idempotent — 동일 current=N 으로 두 번 호출되어도 결과 동일. `test_peak_viewers_uses_max_not_overwrite` (current 가 10 → 5 로 줄어도 peak=10 유지) 로 검증, `test_peak_viewers_grows` 로 단조 증가 보장.
-- **재시작 hydration (AC#4 충족)**: `test_db_metrics_persist_across_room_repo_recreation` — 같은 SQLite 파일을 새 `DatabaseManager` + `Room` 인스턴스로 다시 열어 `get_viewer_metrics` 가 11/7 (이전 두 register 의 누적/peak) 를 그대로 반환. 재시작 후 in-memory current=0 으로 되돌아가도 누적/peak 은 admin 위젯에 즉시 표시됨.
-- **DB I/O 가 asyncio lock 밖**: `register_viewer` 의 SQLite write 가 `async with self._lock` 블록 OUT 으로 빠져 있어 register burst 시에도 동시 in-memory 업데이트가 직렬화되지 않는다. SQLite 자체 동시성에 위임. (RL-008: lock 보호 영역 최소화.)
-- **언어별 카운트 정확성**: register/unregister 모두 `self._by_lang[room_id][lang]` 을 lock 안에서 갱신. unregister 시 0 도달한 lang 키와 비어버린 room dict 를 모두 pop → `get_metrics` 가 stale 키 없는 깨끗한 zero-state 반환. `test_metrics_isolated_per_room`, `test_unregister_decrements_lang_and_current` 로 검증.
-- **double-unregister 방어**: `had_queue = queue in viewers` 후에만 카운터 mutate — 같은 큐로 unregister 가 두 번 들어와도 underflow 없음 (`test_unregister_unknown_does_not_underflow`).
-- **decrement clamping**: `max(0, … - 1)` 로 음수 가드. 이론상 도달 불가하지만 defensive — 향후 manager 가 다른 경로에서 `_current` 를 갱신해도 안전.
-- **Streamlit-free helper 분리**: `admin_logic.build_room_metrics_view_data` 는 Streamlit/DB 의존성 없이 dict-in/dict-out — Streamlit 없는 pytest 환경에서도 변환 로직만 단위 테스트 가능 (`TestBuildRoomMetricsViewData`). `_format_by_lang_label` 은 카운트 내림차순 → 코드 오름차순 결정적 정렬 → 스냅샷 안정.
-- **keyword-only 인자 강제**: `update_viewer_metrics(*, total_delta, current)` / `build_room_metrics_view_data(*, in_memory, db_metrics)` — 두 인자 swap 시 큰 표시 오류로 이어지므로 명시성을 컴파일 타임에 강제 (admin_logic 의 다른 헬퍼와 동일한 안전 패턴).
-- **lazy import in admin.py**: `_render_room_viewer_metrics` 안에서 `from websocket_handler import get_broadcast_manager` 를 lazy import. websocket_handler 의 부수효과 (env vars, 모듈 레벨 RoomManager) 를 admin 페이지 진입 시점으로 미뤄 import-time 비용 분리.
-- **attach_broadcast_metrics_repo idempotent**: app.py 가 streamlit rerun 마다 attach 해도 같은 `_metrics_repo` 슬롯을 덮어쓸 뿐 — 멱등. 직접 attribute access 로 setter 표면을 작게 유지 (`# noqa: SLF001` 도 의도 표시).
-- **TDD 준수**: tests-written + red phase 체크포인트 PASS — 30 단위 테스트 우선 작성 후 구현. 549 passed, 22 e2e deselected, ruff/black clean.
+- **RL-001 / RL-005 honoured properly.** `branding_assets.py` imports only `os`, `re`,
+  `pathlib` and `stage_config`. Verified empirically: importing it pulls in **no**
+  `streamlit` / `aiohttp` / `sqlite3` / `boto3` / `pandas`. `BRANDING_DIR` is read inside
+  `_branding_root()` per call, not at module scope — `test_branding_dir_is_read_per_call_not_at_import`
+  proves it by flipping the env var between two `save_asset` calls. Extraction came *with*
+  its tests, not after.
+- **RL-015 done for real, not guessed.** The `except` clauses match what fuzzing actually
+  produces. Independently re-fuzzed with ~1000 (room_id × filename) combinations including
+  `None` / `int` / `bytes` / `list`, NUL bytes, 100 000-char names, NFD-decomposed Korean,
+  surrogate-escape sequences from overlong UTF-8, fullwidth `．．`, and `"../" * 10000`:
+  **0 non-`ValueError` escapes** from `save_asset`, **0 exceptions** from
+  `resolve_asset_path` / `list_assets` / `delete_asset`.
+- **No constant duplication.** `MAX_ASSETS_PER_ROOM` is imported from `stage_config`
+  (:49) rather than redeclared, so the validator and the writer cannot drift.
+- **Sanitiser rejects rather than strips.** `_reject_path_signatures` refuses `/`, `\`,
+  `..` and control characters instead of silently unwrapping to a basename. This is the
+  correct call — `"a/b.png"` silently becoming `"b.png"` would make the defence
+  accidental. The module docstring says exactly this, and the behaviour matches.
+- **Ordering of `save_asset` validation is deliberate and correct.** Size → name → magic
+  bytes → count cap → containment, and only then `mkdir`. The AC "부분 파일조차 생성되지
+  않는다" is met in the strong sense: a rejected 3 MB upload does not even create the
+  branding root, which `test_three_mb_png_rejected_before_directory_is_created` asserts
+  via `assert not branding_root.exists()`.
+- **Exclusive create.** `open(candidate, "xb")` (:427) is genuine — mutating it to `"wb"`
+  fails 3 collision tests. Collision names are built from an already-sanitised
+  `[A-Za-z0-9._-]` stem plus a whitelisted suffix, so the generated name is not injectable.
 
-### Findings
+### Correctness notes
 
-- **CR-1 (Low)** — `BroadcastManager.unregister_viewer` 의 DB hook 이 호출되지 않는다. 의도 자체는 명확 (peak 는 register 에서 이미 max 됨, total 은 단조 증가) 이지만, 미래에 "현재 라이브 viewer 수" 도 DB 에 저장하고 싶어진다면 unregister 도 hook 이 필요하다. 현재 AC 는 누적/peak 만 요구하므로 **현 시점 무시 가능**, 코멘트로만 명시되어 있어 readable.
-- **CR-2 (Low)** — `admin.py` 가 `room_model` 을 인자로 받지만 `_render_room_viewer_metrics(visible_rooms, room_model)` 호출 위치 (`show_room_management`) 의 시그니처를 보지 않고는 어디서 주입되는지 즉시 보이지 않는다. `_render_room_qr_section(visible_rooms)` 와 일관성을 위해 `room_model` 을 모듈 함수 (`get_room_model()`) 로 가져오는 패턴도 가능하나, 의존성 주입 (`room_model` 파라미터) 이 테스트 친화적이라 **현재 형태 유지 권장**.
-- **CR-3 (Nit)** — `_format_by_lang_label` 의 알 수 없는 lang 코드 (`{"xx": 3} → "xx 3명"`) 는 한국어 라벨이 없어 좀 어색하다. 테스트에서는 raw code 가 그대로 노출되는 동작을 기대 (`test_unknown_lang_falls_back_to_code`) 하지만, `print(f"[Admin] unknown lang code in metrics: {code}")` 같은 server-log warn 을 추가해 운영자가 라벨 누락을 빠르게 파악할 수 있게 하면 좋다. **AC 외, follow-up 후보.**
-- **CR-4 (Nit)** — `admin.py` 의 `st.metric("언어별", label)` 에서 `label` 이 `"한국어 45명, 중국어 12명"` 처럼 길어지면 `st.metric` 의 value 영역 (보통 큰 폰트) 에 가로로 잘릴 수 있다. 4 개 언어 동시 시 모바일 admin 화면에서 가독성 저하 가능. 향후 `st.markdown` 으로 분리 렌더하거나 첫 1-2 lang 만 노출 + tooltip 으로 전체 표시하는 패턴을 검토. **현 행사 운영 (보통 1-3 lang) 에서는 무시.**
-- **CR-5 (Info)** — `BroadcastManager.get_metrics` 가 lock 없이 dict.copy 만 한다. Python dict 의 `.copy()` 는 GIL 안에서 atomic 이지만, 동시 register 가 진행 중이면 snapshot 이 정확히 register 시점 이전/이후 중 하나로 일관됨이 보장되지 않는다 (read 와 write 사이에 `current` / `by_lang` 가 별도 dict 라 잠시 inconsistent). admin.py 의 새로고침 주기 (Streamlit rerun) 에서는 무시 가능한 수준이지만, **dashboard 가 strict consistency 를 요구한다면 lock 으로 감싸는 옵션을 두는 것이 안전**.
+- `_suffix_of()` recomputes the suffix from the *sanitised* name via `rfind(".")`. Safe
+  because the suffix is appended last from a 4-value whitelist; dotted stems (`a.b.png`)
+  round-trip correctly and collide to `a.b-2.png`.
+- 100 % line coverage on both new modules is **real**, not line-coverage-without-assertion:
+  every mutation listed below is caught by a named test. The four `# pragma: no cover`
+  markers are honest — with the stem (80) and room-id (64) length caps in place, the
+  defensive `except Exception` arms and the `_MAX_COLLISION_ATTEMPTS` exhaustion path are
+  genuinely unreachable.
+- Test isolation is clean: every test monkeypatches `BRANDING_DIR` into `tmp_path`. After a
+  full suite run, `git status` is clean and no `data/branding/` directory exists in the
+  worktree.
 
-### Security review
-
-- **No XSS**: admin 대시보드의 lang label 은 사전 정의된 `_LANG_KOR_LABELS` (ko/en/ja/zh 한정) + 알려지지 않은 코드는 raw 노출. 그러나 lang 코드는 SSE handler 에서 `{ko, en, ja, zh, vi, auto}` 이외는 거부되므로 자유 텍스트 주입 경로 없음. room_name 은 admin auth 통과 후 생성되어 신뢰 가능 + Streamlit 이 markdown 렌더 시 자체 escape.
-- **No SQL injection**: 모든 query parameterized (`?` placeholder).
-- **No information disclosure**: DB 실패 / 일반 예외 모두 generic 메시지로만 사용자에 노출. `print(repr(e))` 는 server stderr 만.
-- **No race writing**: peak 가 `MAX(peak_viewers, ?)` SQL 표현식으로 idempotent — concurrent register 의 두 transaction 이 같은 current=N 을 보더라도 최종 row 는 max(N) 로 수렴.
-- **In-memory state leaks**: room close → unregister 가 모두 호출되면 `_current` / `_by_lang` 의 키가 자동 pop. 룸이 영원히 살아있어도 in-memory dict 는 viewer-수 비례 (DB row 수 비례 X).
-
-### Test quality
-
-- **30 단위 테스트 모두 real assertions**, AC 1:1 매핑:
-  - **AC#1 현재/누적/최대 표시** ↔ `TestUpdateViewerMetrics` (5 cases) + `TestGetViewerMetrics` (3 cases) + `TestBuildRoomMetricsViewData` (formatter)
-  - **AC#2 언어별 표시** ↔ `TestBroadcastManagerInMemoryMetrics` (`test_multiple_languages_have_independent_counts`, `test_metrics_isolated_per_room`) + `TestFormatByLangLabel` (4 cases)
-  - **AC#3 실시간 갱신** ↔ register/unregister 단위 테스트 + `TestBroadcastManagerWithRepoIntegration` (DB hook delta=+1, MAX peak)
-  - **AC#4 재시작 복원** ↔ `TestRoomManagerHydrateMetrics.test_db_metrics_persist_across_room_repo_recreation`
-- **Migration 멱등성** 회귀 차단: 3-회 init + 레거시 prod-like DB 업그레이드 (`test_legacy_db_without_columns_gets_migrated`, output_lang 없고 total_viewers 도 없는 가상 v1 DB).
-- **DB hook 격리**: `test_db_failure_does_not_break_sse_register` (mock repo 가 raise 해도 register 정상 진행), `test_unregister_does_not_call_db_hook` (의도 명시).
-- **3 e2e (Playwright + raw TCP SSE)**: 실서버 SSE 경로로 single/multi-lang counter 정확성 + DB persist 검증. `e2e` 마크로 디폴트 deselected.
-- ruff/black clean (lint 게이트), 549 unit GREEN, 82.77% coverage (≥ 50% 게이트).
+---
 
 ## Security Findings
 
-| ID | Severity | Description | Status |
-|----|----------|-------------|--------|
-| SEC-1 | None | XSS / SQLi / CSRF 모두 적용 안 됨 (admin auth 통과 + parameterized SQL + 사전 정의 label set). | — |
-| SEC-2 | None | RL-006 일관 적용: DB hook / 위젯 렌더 / 룸별 조회 모두 generic 폴백. | — |
-| SEC-3 | Low | `get_metrics` 가 lock 없는 snapshot — strict consistency 미보장. UX 영향 미미 (Streamlit rerun 주기). | Defer (CR-5) |
+NFR-028 is the contract for this issue. Each control was verified by **execution**, not by
+reading, and then by **deletion** (mutation) to confirm a test defends it.
 
-## UI Review (self)
+### Path traversal — the sanitiser is confirmed to be the sole defence
 
-### Layout
-- `st.divider()` + `st.subheader("📈 뷰어 지표")` + `st.caption(...)` 으로 다른 admin 섹션 (룸 관리 / QR 다운로드) 과 시각 구분.
-- 룸당 4 컬럼 (`st.columns(4)`) — 현재/누적/최대/언어별 — Streamlit 의 디폴트 카드 스타일 (라벨 + 큰 숫자) 활용.
-- 룸이 없으면 섹션 자체를 그리지 않음 (빈 카드 노이즈 방지).
+The implementer's claim that aiohttp's router does not stop `%2F` is **true**. Measured on
+aiohttp 3.13.5 / yarl 1.23.0, `GET /branding/r1/..%2F..%2Fapp.db` arrives at the handler
+with `match_info["filename"] == "../../app.db"` — fully decoded, handler invoked. Same for
+`%2e%2e%2f` → `"../app.db"`, `%5C` → `"..\\..\\app.db"`, `%00` → `"\x00.png"`, and
+`/branding/%2e%2e%2f%2e%2e%2fetc/logo.png` → `match_info["room_id"] == "../../etc"`.
+Double-encoded `%252F` arrives literally as `"%2F..%2Fapp.db"`.
 
-### Copy
-- `현재 뷰어` / `누적 뷰어` / `최대 동시` / `언어별` — 한 단어로 짧고 행사 운영자 친화적.
-- `현재/누적/최대 뷰어 수와 언어별 분포. 현재 값은 새로고침 시 갱신됩니다.` — 폴링 모델임을 명시.
-- 언어별 zero-state: `0명` 폴백 (admin.py L961).
+`tests/test_sse_broadcast.py::test_traversal_payload_actually_reaches_the_handler` is a
+**genuine** RL-004 guard: it spies on `resolve_asset_path`, asserts the handler was called
+exactly once, asserts the traversal signature survived into the payload, and asserts the
+sanitiser is what rejects it. It is not a "the router already 404'd" vacuous pass.
 
-### Tokens
-- 시각 토큰: Streamlit 디폴트 (light/dark 자동 적응). 별도 색 oct 없음 — 일관성 유지.
+`room_id` is sanitised and contained **identically** to `filename` — `_sanitize_room_id()`
+applies the same rejection rules plus a strict `[A-Za-z0-9._-]` whitelist and a leading-dot
+ban. A traversal via `room_id` is not possible.
 
-### Accessibility (RL-010)
-- 각 `st.metric` 의 첫 인자가 한국어 라벨 (`현재 뷰어` 등) — 스크린리더가 라벨 + 값 순서로 읽음.
-- 아이콘 only 버튼 / 비텍스트 컨트롤 없음.
-- 언어별 요약 텍스트 (`한국어 45명, 중국어 12명`) — 시각/스크린리더 모두 자연어로 읽힘.
-- `st.divider()` 가 시맨틱 separator 역할.
+**Containment fuzz result**: across ~1000 hostile (room_id × filename) pairs, `save_asset`
+created **0 files outside the branding root**, `resolve_asset_path` returned **0 paths
+outside the root**, and the out-of-root decoy `app.db` was never read, modified, or deleted.
 
-### Mobile responsive
-- Streamlit 의 `st.columns(4)` 는 좁은 화면에서 자동 wrap (Streamlit ≥ 1.28). 4 카드가 모바일 admin 에서 2x2 로 폴백.
-- ✅ AC#1-#3 모바일 admin 시나리오 (행사장 운영자 휴대폰 사용) 충족.
+### Magic bytes and hostile SVG
 
-## Confidence
+- PNG (`\x89PNG\r\n\x1a\n`) and JPEG (`\xff\xd8\xff`) prefixes are exact.
+- SVG: `data.removeprefix(BOM).lstrip()` must then start with `<?xml` or `<svg`. A leading
+  `<!-- … -->` comment, a bare `<!DOCTYPE`, or a leading `<script>` does **not** pass —
+  `test_svg_that_is_actually_html_rejected` covers the last case. A BOM alone does not
+  bypass it (the prefix is stripped, then the same check applies).
+- A polyglot **can** still be built — `<?xml …?>` followed by arbitrary markup is accepted
+  by design, because that is what a real SVG looks like. This is precisely why the CSP is
+  the load-bearing control, and it holds: an SVG containing `onload="alert(1)"`,
+  `<script>alert(2)</script>` **and** an external `<image href="http://evil/x"/>` was stored
+  and then served with `Content-Security-Policy: default-src 'none'; style-src
+  'unsafe-inline'`. `default-src 'none'` fills in for `script-src`, which blocks inline
+  scripts, inline event handlers, and `javascript:` URLs; it also blocks the external
+  fetch. `style-src 'unsafe-inline'` cannot exfiltrate because no other directive permits
+  an outbound request.
+- CSP is on **every** SVG response path: the route is the only serving path, and
+  `build_asset_headers(path.name)` is called unconditionally on the 200 branch with a name
+  whose extension already passed the whitelist.
 
-**High**. 모든 AC (4 개) 충족, RL-006/008/009/010 컴플라이언스 검증, 30 단위 + 3 e2e 테스트 GREEN, ruff/black clean, 보안/접근성 follow-up 만 남고 blocking 이슈 없음.
+### Caps
 
-마이그레이션 멱등성 검증 (3 회 init), peak race-safety 검증 (MAX SQL 표현식 + concurrent register 시나리오), hydration 검증 (DB persist across DatabaseManager recreation), RL-006 (DB hook / 위젯 / 룸별 조회 모두 generic 폴백) — 4 개 검증 포인트 모두 PASS.
+- **2 MB cap is enforced before any filesystem access** (`branding_assets.py:145`, ahead of
+  `mkdir` at :177). Confirmed: a rejected oversize upload leaves no partial file *and* no
+  stray room directory *and* no branding root.
+- **12-asset cap** counts across the whole room via `list_assets()` and is not per-group.
+  A check-then-write race could admit a 13th asset under true concurrency; the only writer
+  is the single-threaded Streamlit admin form (ISSUE-39), so this is race-safe enough for
+  its context.
 
-## Lessons applied (no new RL needed)
+### RL-006 — no information leakage
 
-| Lesson | Application |
-|--------|-------------|
-| RL-006 | DB hook 실패, 위젯 로딩 실패, 룸별 조회 실패 모두 generic 메시지 + server-side `repr(e)` 로그만 |
-| RL-008 | asyncio lock 보호 영역 최소화 — DB I/O 는 lock 밖에서 수행 |
-| RL-009 | PRAGMA table_info 게이팅된 ALTER TABLE 패턴 (ISSUE-29 와 동일) |
-| RL-010 | 한국어 라벨 일관, st.metric 의 시맨틱 + 언어별 요약 자연어 |
-| RL-005 | 새 모듈 (database, sse_broadcast, admin, admin_logic) 모두 단위 테스트 동반 + e2e 추가 |
+Measured raw responses on every failure path (traversal, unknown room, unknown file,
+symlink, forced `OSError`): body is always exactly `not found` (9 bytes), and neither the
+body nor any response header contains the branding root, the temp path, the decoy DB
+contents, an errno, an exception repr, or a traceback. `save_asset`'s `OSError` handler
+(:179-184) logs the errno server-side and re-raises a generic Korean `ValueError` — a test
+asserts `"Errno" not in message` and `str(root) not in message`.
+
+---
+
+## Over-Engineering
+
+Minimality audit of the diff. The module is belt-and-braces, but every redundant layer is a
+control that NFR-028 names explicitly, so removal would trade a documented security property
+for ~10 lines. **Recommendation: keep all of it.**
+
+- `branding_assets.py:108: [yagni] _MAX_COLLISION_ATTEMPTS = 100 → 16` — the 12-asset room
+  cap bounds same-stem collisions at ~13; attempts 14–100 and the trailing `raise` are
+  unreachable (R-07).
+- `branding_assets.py:368,371: [shrink] _MAX_ROOM_ID_LEN + _reject_path_signatures(room_id) → drop`
+  — both are fully subsumed by `_DISALLOWED_CHARS.search()` three lines below; deleting
+  either keeps the suite green *and* the security property intact (R-08). Kept as
+  defence-in-depth on a trust boundary.
+- `branding_assets.py:285: [yagni] "application/octet-stream" fallback` — unreachable from
+  the route, since the extension whitelist gates `resolve_asset_path` (R-09).
+
+Net removable: **~10 lines**, all safety-adjacent. The minimality axis never overrides
+safety, so none of these is recommended for removal.
+
+`branding_routes.py` as a separate 51-line module is **justified**, not speculative
+generality: it keeps `sse_broadcast.py`'s diff to 2 lines while ISSUE-40 (PR #122) is
+concurrently editing that same file. No unused parameters, no dead branches, no duplicated
+constants.
+
+---
+
+## Test quality
+
+179 tests for two small modules is a ratio that warrants suspicion, so it was checked by
+**mutation testing** rather than by reading: 22 mutations were applied to the source, the
+branding tests run, and the source reverted.
+
+**Result: 18 / 22 mutations killed before this review; 4 survived; all 4 now killed.**
+
+| Mutation | Before | After |
+|----------|--------|-------|
+| neuter `_reject_path_signatures` separator branch | 3 fail | 3 fail |
+| drop `is_relative_to` in `_contained_room_dir` | 1 fail | 1 fail |
+| drop `is_relative_to` in `resolve_asset_path` | 1 fail | 1 fail |
+| drop SVG CSP header | 2 fail | 2 fail |
+| raise `MAX_ASSET_BYTES` ×100 | 1 fail | 1 fail |
+| magic bytes always match | 3 fail | 3 fail |
+| `open(…, "xb")` → `"wb"` | 3 fail | 3 fail |
+| drop `isinstance(filename, str)` | 4 fail | 4 fail |
+| drop 12-asset cap | 1 fail | 1 fail |
+| leak exception text into 404 body | 1 fail | 1 fail |
+| drop stem truncation | 3 fail | 3 fail |
+| drop `room_id` charset check | 2 fail | 2 fail |
+| drop non-bytes payload check | 1 fail | 1 fail |
+| drop extension whitelist | 1 fail | 1 fail |
+| `list_assets` includes symlinks / any ext | 3 fail | 3 fail |
+| drop `Cache-Control` | 2 fail | 2 fail |
+| drop route registration | 5 fail | 5 fail |
+| drop control-char rejection | 2 fail | 2 fail |
+| drop `_DISALLOWED_CHARS.sub` on stem | 1 fail | 1 fail |
+| drop `room_id` leading-dot ban | 1 fail | 1 fail |
+| drop BOM `removeprefix` | 1 fail | 1 fail |
+| drop `is_file()` check | 5 fail | 5 fail |
+| drop `Content-Type` mapping | 7 fail | 7 fail |
+| **drop `is_symlink()` guard** | **0 — SURVIVED** | **1 fail** |
+| **drop `".."` rejection** | **0 — SURVIVED** | **1 fail** |
+| **drop `except ValueError` (resolve)** | **0 — SURVIVED** | **1 fail** |
+| **drop `except ValueError` (list_assets)** | **0 — SURVIVED** | **1 fail** |
+
+No test asserts only `is not None` or `assert True`. The parametrised blocks are not
+inflation — the `HOSTILE_NAMES` / `HOSTILE_ROOM_IDS` corpora each cover a distinct failure
+mode (`TypeError` from `re.sub`, `ValueError` from NUL bytes, `OSError(ENAMETOOLONG)`), and
+`test_save_asset_raises_valueerror_only` fails loudly on a non-`ValueError` escape rather
+than swallowing it.
+
+---
+
+## Acceptance Criteria verification
+
+All 9 ACs verified by live execution against a real `build_sse_app()` test server, not by
+reading test names.
+
+| AC | Result |
+|----|--------|
+| `filename="../../app.db"` rejected, nothing created outside `data/branding/` | PASS (fuzz: 0 leaks over ~1000 pairs) |
+| `GET …/..%2F..%2Fapp.db` → 404, no DB content / no internal path | PASS (measured body = `not found`, headers clean) |
+| 3 MB PNG → `ValueError`, no partial file | PASS (branding root not even created) |
+| `.png` extension over non-PNG bytes → rejected | PASS |
+| 13th asset rejected, existing 12 intact | PASS (reason string contains `12` and `개`) |
+| stored `logo.png` → 200 + `image/png` + byte-identical body | PASS (measured) |
+| unknown room / file → 404 + generic message | PASS (measured, both paths) |
+| `sponsor.svg` → `image/svg+xml` + exact CSP header | PASS (measured on a hostile SVG) |
+| same name twice → `logo-2.png`, no overwrite | PASS |
+
+All 6 `#### Tests` bullets map to named tests with real assertions (TC-053 … TC-056 covered).
+
+---
+
+## Gate
+
+- `uv run pytest -q` → **936 passed, 22 deselected**, coverage **93.70 %**
+  (`branding_assets.py` 100 %, `branding_routes.py` 100 %)
+- `uv run ruff check .` → All checks passed
+- `uv run black .` → 52 files unchanged
+
+---
+
+## Follow-ups
+
+- **R-04** `X-Content-Type-Options: nosniff` on branding asset responses — fold into
+  ISSUE-39 when the upload UI lands. Low.
+- **R-05 / R-06** local-filesystem TOCTOU and symlinked-room-directory cross-room read —
+  documented as accepted; revisit only if `data/branding/` ever becomes writable by a
+  non-admin process.
+
+## Lessons applied
+
+- **RL-004** (weak assertions that pass trivially) — this is the finding. A security test
+  whose subject is guarded by a *second, stronger* control passes for the wrong reason. The
+  detection method that worked was mutation, not reading. **Prevention**: when a module
+  advertises "N-stage defence", every stage needs a test using an input that the *other*
+  stages let through; if no such input exists, the stage is redundant and should be labelled
+  as defence-in-depth rather than counted as tested.
+- **RL-015** — applied correctly here for the first time (fuzz-then-write-the-except, with
+  the observed exception types recorded in the docstring). Worth keeping as the template.
+- **RL-001 / RL-005 / RL-006** — all satisfied; no new lesson needed.

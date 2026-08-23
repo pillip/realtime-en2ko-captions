@@ -36,6 +36,7 @@ from typing import Any
 
 from aiohttp import web
 
+from branding_routes import handle_branding_asset
 from translation import SUPPORTED_OUTPUT_LANGS
 
 # ---------------------------------------------------------------------------
@@ -259,6 +260,7 @@ def build_sse_app(
     app["room_repo"] = room_repo
     app.router.add_get("/stream/{room_id}", _handle_stream)
     app.router.add_get("/view/{room_id}", _handle_view)
+    app.router.add_get("/branding/{room_id}/{filename}", handle_branding_asset)
     app.router.add_get("/health", _handle_health)
     return app
 
