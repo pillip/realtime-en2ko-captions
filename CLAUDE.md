@@ -47,6 +47,7 @@ docker run --rm -p 8501:8501 -p 8765:8765 -p 8766:8766 \
 - `WS_PORT`: Optional, defaults to `8765`. Fixed TCP port for the translation-pipeline WebSocket server (process-wide singleton). Must match the Docker port mapping — dynamic per-session allocation leaked past the mapping (#84).
 - `SSE_PORT`: Optional, defaults to `8766`. TCP port for the unauthenticated viewer SSE broadcast server (`/stream/{room_id}`, ISSUE-30).
 - `VIEWER_BASE_URL`: Optional, defaults to `http://localhost:{SSE_PORT}`. Base URL embedded into QR codes (ISSUE-32) — set to the public viewer host (e.g. `https://captions.example.com`) in production so attendees scan a reachable URL.
+- `BRANDING_DIR`: Optional, defaults to `data/branding`. Filesystem root for per-room logo assets (`branding_assets.py`, ISSUE-38), served by the SSE server at `GET /branding/{room_id}/{filename}`. The default sits inside the existing `./data` Docker volume, so logos survive container restarts alongside `app.db` — override only if the volume layout changes. Read via `os.getenv` inside each function (never at import time), same convention as `DB_PATH`.
 
 ## Core Architecture
 
