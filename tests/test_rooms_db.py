@@ -9,6 +9,7 @@ rooms 테이블 및 Room 모델 단위 테스트 (ISSUE-26)
 - 외래 키 무결성 (foreign_keys=ON, created_by 필수)
 - 서버 재시작 복원 (RoomManager.hydrate_from_db)
 - WebSocket 인증 시 closed 룸 거부 (RL-006: 일반화된 에러 메시지)
+- 무대 설정 stage_config 컬럼 읽기/쓰기 (ISSUE-37, TC-052)
 
 Note: SQLite tmp_path 기반 격리. 외부 I/O 없음.
 """
@@ -578,3 +579,185 @@ class TestWebSocketAuthClosedRoom:
             assert "closed" not in msg.lower()
             assert "exception" not in msg.lower()
             assert "traceback" not in msg.lower()
+
+
+# ---------------------------------------------------------------------------
+# Stage config (ISSUE-37) — TC-052
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def stage_room(room_model, admin_user_id):
+    """stage_config 테스트용 룸 하나."""
+    room_model.create(room_id="r-stage", name="A홀", created_by=admin_user_id)
+    return "r-stage"
+
+
+def _raw_stage_config(db_manager, room_id):
+    """DB 에 저장된 stage_config 원본 문자열을 그대로 읽는다."""
+    with db_manager.get_connection() as conn:
+        row = conn.execute(
+            "SELECT stage_config FROM rooms WHERE id = ?", (room_id,)
+        ).fetchone()
+    return row["stage_config"] if row else None
+
+
+_VALID_CONFIG = {
+    "event_title": "2026 개발자 콘퍼런스 🎉",
+    "event_subtitle": "A홀 기조연설",
+    "caption_ratio": "1/3",
+    "logo_groups": [
+        {"label": "주최", "assets": ["host-1.png"]},
+        {"label": "주관", "assets": []},
+        {"label": "후원", "assets": ["sponsor-a.svg", "sponsor-b.png"]},
+    ],
+}
+
+
+class TestRoomStageConfigSchema:
+    """AC: stage_config 컬럼이 존재하고 기본값이 '{}' 이다."""
+
+    def test_column_exists(self, db_manager):
+        with db_manager.get_connection() as conn:
+            cur = conn.execute("PRAGMA table_info(rooms)")
+            cols = {row["name"]: dict(row) for row in cur.fetchall()}
+        assert "stage_config" in cols
+        assert cols["stage_config"]["type"].upper() == "TEXT"
+        assert cols["stage_config"]["notnull"] == 1
+
+    def test_new_room_row_defaults_to_empty_json_object(self, room_model, stage_room):
+        room = room_model.get_by_id(stage_room)
+        assert room["stage_config"] == "{}"
+
+
+class TestRoomGetStageConfig:
+    """AC: NULL / 빈 문자열 / 깨진 JSON → 예외 없이 기본값."""
+
+    def _write_raw(self, db_manager, room_id, value):
+        with db_manager.get_connection() as conn:
+            conn.execute(
+                "UPDATE rooms SET stage_config = ? WHERE id = ?", (value, room_id)
+            )
+            conn.commit()
+
+    def test_default_column_value_returns_default_config(self, room_model, stage_room):
+        from stage_config import DEFAULT_STAGE_CONFIG
+
+        assert room_model.get_stage_config(stage_room) == DEFAULT_STAGE_CONFIG
+
+    @pytest.mark.parametrize(
+        "stored",
+        ["", "   ", "{", "[]", "not json"],
+        ids=["empty", "whitespace", "broken", "array", "plain-text"],
+    )
+    def test_unusable_values_degrade_to_default(
+        self, db_manager, room_model, stage_room, stored
+    ):
+        from stage_config import DEFAULT_STAGE_CONFIG
+
+        self._write_raw(db_manager, stage_room, stored)
+        assert room_model.get_stage_config(stage_room) == DEFAULT_STAGE_CONFIG
+
+    def test_column_rejects_null(self, db_manager, stage_room):
+        """NOT NULL 제약 — NULL 인 룸 자체가 존재할 수 없다.
+
+        AC 가 말하는 "NULL 인 룸" 은 이 제약 덕분에 도달 불가능한 상태이며,
+        get_stage_config 의 None 경로는 '존재하지 않는 room_id' 케이스가
+        커버한다 (degrade 가 아니라 애초에 막는 쪽이 더 강한 보장이다).
+        """
+        with pytest.raises(sqlite3.IntegrityError):
+            with db_manager.get_connection() as conn:
+                conn.execute(
+                    "UPDATE rooms SET stage_config = NULL WHERE id = ?", (stage_room,)
+                )
+                conn.commit()
+
+    def test_broken_json_logs_to_stdout_only(
+        self, db_manager, room_model, stage_room, capsys
+    ):
+        """RL-006: 파싱 실패는 서버 로그로만 남고 예외로 전파되지 않는다."""
+        self._write_raw(db_manager, stage_room, '{"event_title": ')
+        result = room_model.get_stage_config(stage_room)
+
+        from stage_config import DEFAULT_STAGE_CONFIG
+
+        assert result == DEFAULT_STAGE_CONFIG
+        captured = capsys.readouterr().out
+        assert "stage_config parse failed" in captured
+        assert stage_room in captured
+
+    def test_unknown_room_returns_default_without_raising(self, room_model):
+        from stage_config import DEFAULT_STAGE_CONFIG
+
+        assert room_model.get_stage_config("no-such-room") == DEFAULT_STAGE_CONFIG
+
+
+class TestRoomUpdateStageConfig:
+    """AC: 검증 통과 시에만 저장되며, 왕복 시 값이 정확히 보존된다."""
+
+    def test_round_trip_preserves_korean_and_emoji(self, room_model, stage_room):
+        """TC-052 — 원본 dict 와 정확히 동일해야 한다 (RL-004)."""
+        assert room_model.update_stage_config(stage_room, _VALID_CONFIG) is True
+        assert room_model.get_stage_config(stage_room) == _VALID_CONFIG
+
+    def test_stored_json_is_not_ascii_escaped(self, db_manager, room_model, stage_room):
+        """ensure_ascii=False — 한글이 \\uXXXX 로 이스케이프되지 않는다."""
+        room_model.update_stage_config(stage_room, _VALID_CONFIG)
+        stored = _raw_stage_config(db_manager, stage_room)
+        assert "2026 개발자 콘퍼런스 🎉" in stored
+        assert "\\u" not in stored
+        assert json.loads(stored) == _VALID_CONFIG
+
+    def test_invalid_ratio_rejected_and_row_untouched(
+        self, db_manager, room_model, stage_room
+    ):
+        """AC: caption_ratio='1/2' → False, DB 값 불변."""
+        room_model.update_stage_config(stage_room, _VALID_CONFIG)
+        before = _raw_stage_config(db_manager, stage_room)
+
+        bad = dict(_VALID_CONFIG, caption_ratio="1/2")
+        assert room_model.update_stage_config(stage_room, bad) is False
+
+        assert _raw_stage_config(db_manager, stage_room) == before
+        assert room_model.get_stage_config(stage_room) == _VALID_CONFIG
+
+    def test_too_long_title_rejected_and_row_untouched(
+        self, db_manager, room_model, stage_room
+    ):
+        """AC: event_title 121자 → False, DB 값 불변."""
+        room_model.update_stage_config(stage_room, _VALID_CONFIG)
+        before = _raw_stage_config(db_manager, stage_room)
+
+        bad = dict(_VALID_CONFIG, event_title="가" * 121)
+        assert room_model.update_stage_config(stage_room, bad) is False
+        assert _raw_stage_config(db_manager, stage_room) == before
+
+    def test_unknown_room_returns_false_without_raising(self, room_model):
+        assert room_model.update_stage_config("no-such-room", _VALID_CONFIG) is False
+
+    def test_unknown_labels_are_normalised_before_persisting(
+        self, room_model, stage_room
+    ):
+        """AC7: 알 수 없는 라벨/비-dict 원소는 저장 전에 폐기된다."""
+        messy = dict(
+            _VALID_CONFIG,
+            logo_groups=[
+                "문자열",
+                {"label": "협찬", "assets": ["ghost.png"]},
+                {"label": "후원", "assets": ["sponsor-a.svg"]},
+            ],
+        )
+        assert room_model.update_stage_config(stage_room, messy) is True
+
+        stored = room_model.get_stage_config(stage_room)
+        assert [g["label"] for g in stored["logo_groups"]] == ["주최", "주관", "후원"]
+        assert stored["logo_groups"][2]["assets"] == ["sponsor-a.svg"]
+        assert stored["logo_groups"][0]["assets"] == []
+
+    def test_update_does_not_touch_other_rooms(
+        self, room_model, admin_user_id, stage_room
+    ):
+        room_model.create(room_id="r-other", name="B홀", created_by=admin_user_id)
+        room_model.update_stage_config(stage_room, _VALID_CONFIG)
+
+        from stage_config import DEFAULT_STAGE_CONFIG
+
+        assert room_model.get_stage_config("r-other") == DEFAULT_STAGE_CONFIG
