@@ -209,6 +209,9 @@
       overflow: hidden;
       border-left: 1px solid var(--hairline);
       background: var(--canvas);
+      /* 연결 배너(.conn-error)의 컨테이닝 블록. 배너를 뷰포트에 앵커하면
+         발표 영역 위로 떠오른다 — 컬럼 안에 가둔다. */
+      position: relative;
     }
     .caption-live {
       display: flex;
@@ -267,6 +270,47 @@
       color: rgba(255, 255, 255, 0.6);
     }
     .caption-ended[hidden] { display: none; }
+
+    /* 스크린리더 전용 라이브 리전 (#caption-announcer). 흔히 복사되는 구식
+       clip 패턴은 음수 세로 margin 을 쓰는데, 이 페이지는 세로 margin 을 아예
+       금지한다 (RL-012). 잘라내는 일은 clip-path 가 하므로 margin 은 0 이다. */
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      clip-path: inset(50%);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    /* 연결 힌트 — viewer.html:250 의 pill 을 자막 컬럼 하단에 앵커한 것.
+       텍스트 대비는 캔버스가 아니라 **pill 합성색** 위에서 계산해야 한다
+       (RL-018): rgba(255,255,255,0.07) on #0b0b0c = rgb(28,28,29), 그 위의
+       rgba(255,255,255,0.65) 는 7.81:1 (테스트의 정수 반올림 계산으로는
+       7.85:1). pill 위에서 AA 4.5:1 을 넘기는 알파 하한은 0.46 이다 (0.45 는
+       4.44:1 로 미달) — 캔버스 위 하한 0.45 보다 높으니 눈대중으로 낮추지 말 것. */
+    .conn-error {
+      position: absolute;
+      bottom: 16px;
+      left: 50%;
+      transform: translateX(-50%);
+      max-width: calc(100% - 32px);
+      padding: 7px 16px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.07);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      color: rgba(255, 255, 255, 0.65);
+      font-size: clamp(12px, 0.7vw, 16px);
+      letter-spacing: 0.02em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      display: none;
+    }
+    .conn-error.visible { display: block; }
   </style>
   <script>
     // -----------------------------------------------------------------------
@@ -317,6 +361,257 @@
       return img;
     }
 
+    // -----------------------------------------------------------------------
+    // 자막 컬럼 (ISSUE-41) — viewer.html 의 SSE 구독 + 타자기 스무딩을 무대용
+    // 으로 이식한다. viewer 와 다른 점 두 가지:
+    //  (1) 타이머가 28ms 인터벌이 아니라 requestAnimationFrame 이다. 무대
+    //      페이지는 캡처 <video>(ISSUE-42)의 프레임 렌더와 메인 스레드를
+    //      공유하므로, 렌더 스케줄과 무관하게 깨어나는 타이머를 쓰면 영상이
+    //      버벅인다 (NFR-025).
+    //  (2) 이 화면에는 조작자가 없으므로 사용자 스크롤 감지 분기가 없다 —
+    //      항상 하단 고정이고 되돌리기 어포던스도 두지 않는다.
+    // -----------------------------------------------------------------------
+    const MAX_LINES = 60; // 좁은 컬럼 DOM 상한 (viewer 는 200)
+    const MAX_REVEAL_PER_FRAME = 24; // 큰 청크가 한 프레임을 통째로 잡지 않도록
+    const WAITING_MSG = {
+      ko: "잠시 후 시작됩니다",
+      en: "Starting shortly",
+      zh: "即将开始",
+      vi: "Sắp bắt đầu",
+    };
+
+    // DOM 참조는 DOMContentLoaded 에서 채운다 — 이 블록은 <head> 에서 돈다.
+    let captionLive = null;
+    let captionEnded = null;
+    let scroller = null;
+    let container = null;
+    let announcer = null;
+    let connError = null;
+
+    let es = null;
+    let captionState = "waiting"; // 'waiting' | 'active' | 'ended'
+    // 종료는 최종 상태다. currentLine 만 비우면 나머지 진입점(message)이 살아
+    // 있어서, 닫힌 소켓에서 늦게 도착한 프레임 하나가 종료된 컬럼을 되살린다.
+    // 도달 가능성은 필드가 아니라 진입점의 성질이므로 플래그로 막는다.
+    let sessionEnded = false;
+    let currentLine = null; // 진행 중인 .caption-line (라인 사이에는 null)
+    let twTarget = ""; // 드러내야 할 최종 텍스트
+    let twShown = 0; // 지금까지 화면에 나온 글자 수
+    let twFinalize = false; // 따라잡으면 라인을 확정할 것인가
+    let twRaf = 0; // rAF 핸들 (0 = 정지)
+
+    // 항상 하단 고정. 실제로 글자가 늘어난 프레임에서만 호출한다 — 강제 레이아웃을
+    // 유발하는 것은 scrollTop 쓰기가 아니라 그 앞의 scrollHeight **읽기** 이므로
+    // (직전 textContent 쓰기가 더럽힌 레이아웃을 동기 flush 한다), 호출 자체를
+    // 아끼는 것이 요점이고 값 비교는 불필요한 스크롤 앵커 갱신만 막는다.
+    function _scrollToBottom() {
+      if (!scroller) return;
+      const max = scroller.scrollHeight - scroller.clientHeight;
+      if (max > 0 && scroller.scrollTop !== max) scroller.scrollTop = max;
+    }
+
+    function _twStop() {
+      if (twRaf) {
+        cancelAnimationFrame(twRaf);
+        twRaf = 0;
+      }
+    }
+
+    // 라이브 리전에 쓰는 **유일한** 경로 (RL-019). 애니메이션 노드는
+    // aria-hidden 이므로, 확정된 라인만 여기로 흘려보내야 스크린리더가
+    // 프레임마다 텍스트로 범람하지 않는다.
+    function announce(text) {
+      if (announcer) announcer.textContent = text;
+    }
+
+    // 라인 확정 — slice 결과가 아니라 목표 텍스트 자체를 넣는다. 번역 후처리가
+    // 문자열을 **줄이는** 경우가 있어 마지막 슬라이스가 최종본이 아닐 수 있다.
+    function _lockLine() {
+      if (!currentLine) return;
+      currentLine.textContent = twTarget;
+      announce(twTarget);
+      currentLine = null;
+      _twStop();
+      _scrollToBottom();
+    }
+
+    function _twStep() {
+      twRaf = 0;
+      if (!currentLine) return;
+      if (twShown > twTarget.length) {
+        // 목표가 줄어들었다(번역 후처리가 문자열을 깎는 경우). 클램프만 하면
+        // gap 이 0 이 되어 아래 쓰기 분기를 건너뛰고, 화면에는 더 긴 옛 문자열이
+        // 그대로 남는다 — 줄어든 목표에 화면을 맞춘다.
+        twShown = twTarget.length;
+        currentLine.textContent = twTarget;
+      }
+      const gap = twTarget.length - twShown;
+      if (gap > 0) {
+        const step = Math.min(MAX_REVEAL_PER_FRAME, Math.max(2, Math.ceil(gap / 6)));
+        twShown = Math.min(twTarget.length, twShown + step);
+        currentLine.textContent = twTarget.slice(0, twShown);
+        _scrollToBottom(); // 실제로 글자가 늘어난 프레임에서만 만진다
+      }
+      if (twShown >= twTarget.length) {
+        // 따라잡았다. 최종 청크였으면 확정하고, 부분 청크였으면 다음 청크가
+        // 올 때까지 루프를 쉰다 (idle 중 rAF 를 태우지 않는다).
+        if (twFinalize) _lockLine();
+        return;
+      }
+      twRaf = requestAnimationFrame(_twStep);
+    }
+
+    function _twStart() {
+      if (twRaf || !currentLine) return;
+      twRaf = requestAnimationFrame(_twStep);
+    }
+
+    function _ensureCurrentLine() {
+      if (currentLine) return;
+      const empty = document.getElementById("caption-empty");
+      if (empty && empty.parentNode) empty.remove();
+      const div = document.createElement("div");
+      div.className = "caption-line";
+      container.appendChild(div);
+      // firstChild 가 아니라 firstElementChild — 상한은 요소 수로 세는데
+      // firstChild 는 템플릿 들여쓰기가 남긴 공백 **텍스트 노드**부터 지운다.
+      // 지금은 여분 반복으로 자가 교정되지만, 주석 하나만 들어와도 깨진다.
+      while (container.children.length > MAX_LINES) {
+        container.removeChild(container.firstElementChild);
+      }
+      currentLine = div;
+      twTarget = "";
+      twShown = 0;
+      twFinalize = false;
+    }
+
+    // 부분(스트리밍) 청크 — 목표만 키우고 라인은 확정하지 않는다.
+    function updatePartialCaption(text) {
+      if (!text) return;
+      _ensureCurrentLine();
+      twTarget = text;
+      _twStart();
+    }
+
+    // 최종 메시지 — 남은 글자를 마저 드러낸 뒤 라인을 확정한다.
+    function finalizeCaption(text) {
+      // 앞 라인이 아직 확정 대기 중인데 다음 final 이 도착하면 즉시 스냅해
+      // 확정하고 새 라인을 연다 — SSE 가 몰아쳐도 라인이 합쳐지거나 유실되지
+      // 않는다. viewer.html:495 에는 이 분기가 없어 연속 final 이 한 줄로
+      // 합쳐진다 (여기서는 그 동작을 의도적으로 바꾼다).
+      if (currentLine && twFinalize) _lockLine();
+      // 빈 final 은 화면에 넣을 것이 없다. 진행 중인 라인이 있으면 그 라인을
+      // 확정하라는 신호로 쓰고, 없으면 그냥 무시한다. 그대로 통과시키면
+      // _ensureCurrentLine() 이 대기 문구(#caption-empty)를 지우고 빈
+      // .caption-line 을 여는데, 빈 final 이 이어지면 무대 화면이 되돌릴 수
+      // 없는 빈 컬럼이 된다 (broadcast 경로에 비어있음 가드가 없다).
+      const next = text || (currentLine ? twTarget : "");
+      if (!next) return;
+      _ensureCurrentLine();
+      twTarget = next;
+      twFinalize = true;
+      _twStart();
+    }
+
+    // 숨김 탭에서는 rAF 가 멈춘다. 남은 글자를 즉시 스냅해 두지 않으면 복귀
+    // 순간 수백 자가 한꺼번에 몰아친다.
+    // NFR-025: 이 페이지가 새로 등록하는 유일한 document 레벨 리스너다 —
+    // 키 이벤트는 프레젠터 리모컨의 것이므로 끝까지 건드리지 않는다.
+    document.addEventListener("visibilitychange", function () {
+      if (document.hidden) {
+        _twStop();
+        if (currentLine) {
+          twShown = twTarget.length;
+          currentLine.textContent = twTarget;
+          _scrollToBottom();
+          if (twFinalize) _lockLine();
+        }
+      } else {
+        _twStart();
+      }
+    });
+
+    function showError(visible) {
+      if (connError) connError.classList.toggle("visible", !!visible);
+    }
+
+    function waitingText(lang) {
+      return WAITING_MSG[lang] || WAITING_MSG.ko;
+    }
+
+    // 상태 전환은 자막 컬럼 안에서만 일어난다 — 좌열(#event-header /
+    // #presentation / #stage-frame / #title-card / #logo-bar)은 건드리지 않는다.
+    function setCaptionState(name) {
+      captionState = name;
+      const ended = name === "ended";
+      if (captionLive) captionLive.hidden = ended;
+      if (captionEnded) captionEnded.hidden = !ended;
+      if (ended) showError(false); // 종료된 세션에 재연결 힌트는 거짓말이다
+      // 대기 문구(#caption-empty)는 aria-hidden 인 자막 스택 **안**에 있어
+      // 스크린리더에 닿지 않는다 (viewer.html 은 waiting 을 별도 섹션으로 두어
+      // 공짜로 얻는 접근성인데, 여기서는 한 서브트리로 합쳐지면서 잃었다).
+      // 그래서 대기 상태에서는 announcer 가 그 문구를 대신 들고, 자막이 흐르기
+      // 시작하거나 세션이 끝나면 비운다. 자막 **텍스트**를 쓰는 경로는 여전히
+      // _lockLine() 하나뿐이다 (RL-019). 종료 문구는 #caption-ended 가
+      // role="status" 로 직접 알리므로 여기서 되풀이하지 않는다 — 이중 낭독이 된다.
+      announce(name === "waiting" ? waitingText(CONFIG.caption_lang) : "");
+    }
+
+    function applyWaitingText(lang) {
+      const empty = document.getElementById("caption-empty");
+      if (empty) empty.textContent = waitingText(lang);
+    }
+
+    // 자막 언어는 서버가 ?lang= 을 검증해 내려준 CONFIG.caption_lang 으로
+    // 고정한다. 브라우저에서 쿼리를 다시 파싱하면 서버가 거부한 코드가
+    // 되살아난다 (무대 화면에는 언어 전환 UI 도 없다 — NFR-025).
+    function connect() {
+      const url = "/stream/" + encodeURIComponent(CONFIG.room_id) +
+                  "?lang=" + encodeURIComponent(CONFIG.caption_lang);
+      try {
+        es = new EventSource(url);
+      } catch (e) {
+        // 생성자는 잘못된 URL 에서만 동기적으로 던진다. 무대에는 재시도할
+        // 사람이 없으므로 배너만 남기고 조용히 포기한다 (RL-006).
+        showError(true);
+        return;
+      }
+
+      es.addEventListener("open", function () { showError(false); });
+
+      es.addEventListener("message", function (ev) {
+        if (sessionEnded) return; // 종료 후 늦게 도착한 프레임은 버린다
+        showError(false);
+        let payload = null;
+        try {
+          payload = JSON.parse(ev.data);
+        } catch (e) {
+          return; // 깨진 프레임은 무시 — 파싱 오류를 화면에 옮기지 않는다 (RL-006)
+        }
+        if (!payload || typeof payload.text !== "string") return;
+        if (captionState !== "active") setCaptionState("active");
+        if (payload.partial) {
+          updatePartialCaption(payload.text);
+        } else {
+          finalizeCaption(payload.text);
+        }
+      });
+
+      es.addEventListener("session_end", function () {
+        sessionEnded = true;
+        _twStop();
+        currentLine = null;
+        setCaptionState("ended");
+        if (es) {
+          try { es.close(); } catch (e) { /* noop */ }
+          es = null;
+        }
+      });
+
+      // EventSource 는 스스로 재연결한다 — 일시적 힌트만 띄운다.
+      es.addEventListener("error", function () { showError(true); });
+    }
+
     document.addEventListener("DOMContentLoaded", function () {
       const $ = (id) => document.getElementById(id);
       const cfg = CONFIG.stage || {};
@@ -357,14 +652,25 @@
       // 전 그룹이 비면 바가 0 높이로 접히고 발표 영역이 그 공간을 갖는다.
       logoBar.hidden = shown === 0;
 
-      // 종료된 룸은 자막 영역이 종료 상태로 시작한다.
-      // (자막 SSE 구독은 ISSUE-41, 화면 캡처는 ISSUE-42 가 담당한다.
+      // --- 자막 컬럼 부트스트랩 (ISSUE-41) ---------------------------------
+      captionLive = $("caption-live");
+      captionEnded = $("caption-ended");
+      scroller = $("caption-scroll");
+      container = $("caption-container");
+      announcer = $("caption-announcer");
+      connError = $("conn-error");
+      applyWaitingText(CONFIG.caption_lang);
+
+      // 종료된 룸은 종료 상태로 시작하고 EventSource 를 아예 열지 않는다.
+      // (화면 캡처는 ISSUE-42 가 담당한다.
       //  NFR-025: 이 페이지는 document/window 레벨 키 이벤트를 등록하지 않고
       //  포커스/전체화면 API 도 자동 호출하지 않는다 — 프레젠터 리모컨이
       //  무대 창에 가로채이면 행사장에서 슬라이드가 넘어가지 않는다.)
       if (CONFIG.initial_state === "closed") {
-        $("caption-live").hidden = true;
-        $("caption-ended").hidden = false;
+        setCaptionState("ended");
+      } else {
+        setCaptionState("waiting");
+        connect();
       }
     });
   </script>
@@ -395,13 +701,25 @@
     <aside class="caption-column" id="caption-column" aria-label="자막">
       <div class="caption-live" id="caption-live">
         <div class="caption-scroll" id="caption-scroll">
-          <div class="caption-container" id="caption-container" aria-live="polite">
+          <!-- aria-hidden 은 의도된 것이다. 되돌리지 말 것 (RL-019).
+               ISSUE-40(PR #122 UI-6)은 이 노드에 aria-live="polite" 를 붙인 채
+               셸을 출하했지만, ISSUE-41 의 타자기가 바로 이 노드에
+               .caption-line 을 append 하고 마지막 라인의 textContent 를 매
+               requestAnimationFrame 마다 바꾸며 MAX_LINES 로 앞쪽 자식을
+               잘라낸다 — 라이브 리전으로 두면 모든 공개 프레임과 모든 트리밍이
+               스크린리더로 낭독된다. 라이브 리전 소유자는 아래
+               #caption-announcer 이고, 라인이 **확정될 때만** 갱신된다. -->
+          <div class="caption-container" id="caption-container" aria-hidden="true">
             <div class="caption-empty" id="caption-empty">잠시 후 시작됩니다</div>
           </div>
         </div>
       </div>
+      <p class="sr-only" id="caption-announcer" aria-live="polite" aria-atomic="true"></p>
       <div class="caption-ended" id="caption-ended" role="status" hidden>
         세션이 종료되었습니다
+      </div>
+      <div class="conn-error" id="conn-error" role="status">
+        연결이 끊어졌습니다. 재연결 중…
       </div>
     </aside>
   </div>
