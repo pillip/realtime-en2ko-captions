@@ -1,0 +1,409 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>{{ROOM_NAME}} — 무대 화면</title>
+  <style>
+    /* 무대 합성 화면 (ISSUE-40). viewer.html 의 minimal-dark 톤을 계승한다.
+       레이아웃: 2열 Grid(발표 영역 / 자막 컬럼) × 좌열 3행(헤더 / 스테이지 /
+       로고 바). 16:9 소스가 세로로 긴 좌열에 들어갈 때 남는 세로 공간을
+       헤더 바와 로고 바가 흡수한다 — 두 바가 존재하는 이유가 그것이다. */
+    *, *::before, *::after { box-sizing: border-box; }
+
+    :root {
+      /* 서버가 stage_config.caption_ratio 로부터 계산한 폭을 부트스트랩에서
+         덮어쓴다. 여기 기본값은 JS 가 죽어도 Grid 가 무너지지 않게 하는
+         안전망이다. 폭 문자열을 그대로 쓰지 않는 이유: 템플릿이 두 비율의
+         값을 모두 갖고 있으면 응답 본문으로 룸 설정을 구분할 수 없다. */
+      --caption-width: calc(100% / 4);
+      --canvas: #0b0b0c;
+      --hairline: rgba(255, 255, 255, 0.07);
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100vh;
+      height: 100dvh;
+      width: 100%;
+      overflow: hidden;
+    }
+
+    body {
+      font-family: "Pretendard", -apple-system, BlinkMacSystemFont, "Segoe UI",
+        Roboto, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+      background: var(--canvas);
+      color: #ffffff;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+      word-break: keep-all;
+      line-height: 1.5;
+    }
+
+    /* --- 2열 Grid ------------------------------------------------------- */
+    .stage {
+      display: grid;
+      grid-template-columns: 1fr var(--caption-width);
+      height: 100vh;
+      height: 100dvh;
+      width: 100%;
+    }
+
+    /* --- 좌열 3행 (헤더 / 발표 영역 / 로고 바) --------------------------- */
+    .stage-main {
+      display: grid;
+      /* 열 트랙을 반드시 명시한다. 생략하면 암시적 트랙이 `auto`
+         (= minmax(auto, max-content)) 라서 긴 행사 타이틀이나 룸 이름의
+         max-content 폭만큼 트랙이 자라고, 헤더와 16:9 프레임이 자막 컬럼
+         위에 그려진다. 컨테이너의 min-width: 0 은 컨테이너 박스만 제약할
+         뿐 트랙을 잡지 못한다 (RL-017). */
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      min-width: 0;
+      min-height: 0;
+    }
+
+    .event-header {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 6px;
+      /* 타이틀이 비어 룸 이름으로 대체돼도 높이가 유지되어 좌열 레이아웃이
+         흔들리지 않는다. RL-012: 세로 여백은 margin 이 아니라 padding. */
+      min-height: 88px;
+      padding: 18px 44px;
+      border-bottom: 1px solid var(--hairline);
+    }
+    .event-title {
+      margin: 0;
+      font-size: clamp(20px, 1.9vw, 44px);
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .event-subtitle {
+      margin: 0;
+      font-size: clamp(13px, 1vw, 22px);
+      font-weight: 400;
+      color: rgba(255, 255, 255, 0.5);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .event-subtitle[hidden] { display: none; }
+
+    /* --- 발표 영역: 어떤 뷰포트에서도 16:9 를 유지한다 ------------------- */
+    .presentation {
+      display: grid;
+      place-items: center;
+      /* Grid 자식이 콘텐츠 최소 크기 때문에 넘치지 않게 (필수). */
+      min-height: 0;
+      min-width: 0;
+      padding: 0;
+      background: #000000;
+      container-type: size;
+    }
+    .stage-frame {
+      position: relative;
+      aspect-ratio: 16 / 9;
+      width: 100%;
+      max-width: 100%;
+      max-height: 100%;
+      /* 컨테이너 높이가 제약일 때 폭을 줄여 비율을 지킨다. cqh 미지원
+         브라우저는 위의 width: 100% + max-height 로 degrade 한다
+         (RL-011 의 vh/dvh 페어링과 같은 점진적 향상 패턴). */
+      width: min(100%, calc(100cqh * 16 / 9));
+      overflow: hidden;
+      background: #000000;
+    }
+
+    /* 캡처 스트림은 ISSUE-42 가 연결한다. 16:9 가 아닌 소스도 잘리거나
+       늘어나지 않도록 contain 으로 레터박스 처리한다. */
+    .capture-video {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      background: #000000;
+    }
+    .capture-video[hidden] { display: none; }
+
+    .title-card {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 20px;
+      padding: 4% 6%;
+      text-align: center;
+    }
+    .title-card[hidden] { display: none; }
+    .title-card-title {
+      font-size: clamp(24px, 3.2vw, 68px);
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+    .title-card-subtitle {
+      font-size: clamp(14px, 1.4vw, 30px);
+      color: rgba(255, 255, 255, 0.55);
+    }
+    .title-card-subtitle[hidden] { display: none; }
+    .title-card-logos {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: center;
+      gap: 28px;
+      padding-top: 12px;
+    }
+    .title-card-logos img {
+      max-height: 7vh;
+      max-width: 18vw;
+      object-fit: contain;
+    }
+
+    /* --- 로고 바: 자산 없는 그룹은 숨기고, 전 그룹이 비면 바가 접힌다 ---- */
+    .logo-bar {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-wrap: wrap;
+      gap: 10px 48px;
+      min-height: 76px;
+      padding: 14px 44px;
+      border-top: 1px solid var(--hairline);
+    }
+    /* UA 의 [hidden] 규칙은 위 display:flex 에 밀리므로 명시적으로 잡는다. */
+    .logo-bar[hidden] { display: none; }
+    .logo-group {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .logo-group-label {
+      font-size: clamp(11px, 0.75vw, 16px);
+      letter-spacing: 0.1em;
+      /* 0.4 은 3.80:1 로 WCAG AA(4.5:1) 미달이었다. #0b0b0c 위에서 흰색이
+         4.5:1 을 넘기는 알파 하한은 0.45, 0.5 는 5.34:1 (RL-018). */
+      color: rgba(255, 255, 255, 0.5);
+      white-space: nowrap;
+    }
+    .logo-group img {
+      display: block;
+      max-height: 46px;
+      max-width: 200px;
+      object-fit: contain;
+    }
+
+    /* --- 우열: 자막 컬럼 -------------------------------------------------- */
+    .caption-column {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      border-left: 1px solid var(--hairline);
+      background: var(--canvas);
+    }
+    .caption-live {
+      display: flex;
+      flex: 1 1 auto;
+      min-height: 0;
+    }
+    .caption-live[hidden] { display: none; }
+    .caption-scroll {
+      width: 100%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+    }
+    .caption-scroll::-webkit-scrollbar { display: none; }
+    .caption-container {
+      min-height: 100%;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      gap: 20px;
+      padding: 36px 28px 44px;
+    }
+    /* 좁은 컬럼 타이포 (ux_spec § Stage Composite View). */
+    .caption-line {
+      font-size: clamp(20px, 1.4vw + 8px, 32px);
+      font-weight: 500;
+      line-height: 1.45;
+      letter-spacing: -0.01em;
+      /* clamp 하한이 20px 이라 뷰포트가 좁으면 large-text 완화(3:1)를 쓸 수
+         없다. 0.42 는 4.04:1 로 미달, 0.45 가 4.52:1 로 AA 하한이다
+         (RL-018). 현재 줄의 순백과의 대비는 그대로 유지된다. */
+      color: rgba(255, 255, 255, 0.45);
+      word-break: keep-all;
+      overflow-wrap: anywhere;
+    }
+    .caption-container .caption-line:last-child { color: #ffffff; }
+    .caption-empty {
+      font-size: clamp(14px, 1vw, 19px);
+      /* 0.32 는 2.81:1 로 WCAG AA 미달이었다 — 행사장 뒤쪽에서 읽어야 하는
+         유일한 문구다. 0.5 → 5.34:1 (RL-018). */
+      color: rgba(255, 255, 255, 0.5);
+      text-align: center;
+      padding: 24px 0;
+      letter-spacing: 0.01em;
+    }
+    .caption-ended {
+      flex: 1 1 auto;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      text-align: center;
+      font-size: clamp(16px, 1.2vw, 24px);
+      font-weight: 300;
+      color: rgba(255, 255, 255, 0.6);
+    }
+    .caption-ended[hidden] { display: none; }
+  </style>
+  <script>
+    // -----------------------------------------------------------------------
+    // Bootstrap config — 서버가 템플릿 치환으로 주입한다.
+    // 이 블록 안의 모든 값은 스칼라까지 포함해 _json_for_script 가 만든
+    // **완성된 JS 리터럴** 이다 — 따옴표도 서버가 붙인다. 템플릿에서 따옴표를
+    // 감싸고 html.escape 를 쓰면 `\` 가 닫는 따옴표를 탈출시켜 부트스트랩이
+    // 통째로 죽고, 따옴표는 HTML 엔티티로 바뀌어 값 자체가 손상된다
+    // (스크립트 블록 안에서는 엔티티가 디코딩되지 않는다 — RL-016/020).
+    // <head> 에 두는 이유: 자막 컬럼 폭을 첫 페인트 전에 확정하기 위함.
+    // -----------------------------------------------------------------------
+    const CONFIG = {
+      room_id: {{ROOM_ID}},
+      output_langs: {{OUTPUT_LANGS_JSON}},
+      caption_lang: {{PRIMARY_LANG}},
+      initial_state: {{INITIAL_STATE}}, // 'waiting' | 'active' | 'closed'
+      stage: {{STAGE_CONFIG_JSON}},
+    };
+
+    if (CONFIG.stage && CONFIG.stage.caption_width) {
+      const root = document.documentElement.style;
+      root.setProperty("--caption-width", CONFIG.stage.caption_width);
+    }
+
+    // 없는 에셋은 해당 이미지만 제거해 로고 바 레이아웃을 지킨다 (RL-008).
+    // 다만 그룹의 마지막 이미지가 죽으면 라벨만 떠 있는 빈 그룹이 되고,
+    // 그런 그룹만 남으면 76px 바가 글자만으로 채워진다 — 스크린리더에도
+    // "주최" 만 읽히고 아무것도 없는 상태다. 그래서 비어버린 그룹과, 그룹이
+    // 하나도 남지 않은 바까지 함께 접는다.
+    // /branding 라우트는 ISSUE-38 이 제공한다 — 아직 없으면 전부 404 다.
+    function dropBrokenLogo(img) {
+      const group = img.closest(".logo-group");
+      img.remove();
+      if (group && !group.querySelector("img")) group.remove();
+      const bar = document.getElementById("logo-bar");
+      if (bar && !bar.querySelector(".logo-group")) bar.hidden = true;
+    }
+
+    function makeLogoImage(filename, alt) {
+      const img = document.createElement("img");
+      img.alt = alt; // RL-010: 그룹 라벨에서 파생, 반복 표시는 alt=""
+      img.decoding = "async";
+      img.addEventListener("error", function () { dropBrokenLogo(img); });
+      // URL 컨텍스트 — 파일명은 stage_config 가 검증하지 않고 넘긴 값이므로
+      // 반드시 퍼센트 인코딩한 뒤 src *프로퍼티* 로 넣는다 (마크업 조립 금지).
+      img.src = "/branding/" + encodeURIComponent(CONFIG.room_id) +
+                "/" + encodeURIComponent(filename);
+      return img;
+    }
+
+    document.addEventListener("DOMContentLoaded", function () {
+      const $ = (id) => document.getElementById(id);
+      const cfg = CONFIG.stage || {};
+
+      // 서버가 렌더한 룸 이름(엔티티 디코딩 완료)이 타이틀 미설정 시 폴백이다.
+      const headerTitle = $("event-title");
+      const title = cfg.event_title || headerTitle.textContent.trim();
+      headerTitle.textContent = title;
+      $("card-title").textContent = title;
+
+      const subtitle = cfg.event_subtitle || "";
+      [$("event-subtitle"), $("card-subtitle")].forEach(function (el) {
+        el.textContent = subtitle;
+        el.hidden = !subtitle;
+      });
+
+      const logoBar = $("logo-bar");
+      const cardLogos = $("card-logos");
+      const groups = Array.isArray(cfg.logo_groups) ? cfg.logo_groups : [];
+      let shown = 0;
+      groups.forEach(function (group) {
+        const assets = Array.isArray(group && group.assets) ? group.assets : [];
+        if (assets.length === 0) return; // 자산 없는 그룹은 숨긴다
+        const label = String((group && group.label) || "");
+        const wrap = document.createElement("div");
+        wrap.className = "logo-group";
+        const caption = document.createElement("span");
+        caption.className = "logo-group-label";
+        caption.textContent = label;
+        wrap.appendChild(caption);
+        assets.forEach(function (name, i) {
+          wrap.appendChild(makeLogoImage(name, i === 0 ? label + " 로고" : ""));
+          cardLogos.appendChild(makeLogoImage(name, "")); // 타이틀 카드는 장식 반복
+        });
+        logoBar.appendChild(wrap);
+        shown += 1;
+      });
+      // 전 그룹이 비면 바가 0 높이로 접히고 발표 영역이 그 공간을 갖는다.
+      logoBar.hidden = shown === 0;
+
+      // 종료된 룸은 자막 영역이 종료 상태로 시작한다.
+      // (자막 SSE 구독은 ISSUE-41, 화면 캡처는 ISSUE-42 가 담당한다.
+      //  NFR-025: 이 페이지는 document/window 레벨 키 이벤트를 등록하지 않고
+      //  포커스/전체화면 API 도 자동 호출하지 않는다 — 프레젠터 리모컨이
+      //  무대 창에 가로채이면 행사장에서 슬라이드가 넘어가지 않는다.)
+      if (CONFIG.initial_state === "closed") {
+        $("caption-live").hidden = true;
+        $("caption-ended").hidden = false;
+      }
+    });
+  </script>
+</head>
+<body>
+  <div class="stage">
+    <main class="stage-main">
+      <header class="event-header" id="event-header">
+        <h1 class="event-title" id="event-title">{{ROOM_NAME}}</h1>
+        <p class="event-subtitle" id="event-subtitle" hidden></p>
+      </header>
+
+      <section class="presentation" id="presentation" aria-label="발표 화면">
+        <div class="stage-frame" id="stage-frame">
+          <!-- ISSUE-42 가 getDisplayMedia 스트림을 여기에 연결한다. -->
+          <video class="capture-video" id="capture-video" autoplay muted playsinline hidden></video>
+          <div class="title-card" id="title-card">
+            <div class="title-card-title" id="card-title"></div>
+            <div class="title-card-subtitle" id="card-subtitle" hidden></div>
+            <div class="title-card-logos" id="card-logos"></div>
+          </div>
+        </div>
+      </section>
+
+      <footer class="logo-bar" id="logo-bar" hidden></footer>
+    </main>
+
+    <aside class="caption-column" id="caption-column" aria-label="자막">
+      <div class="caption-live" id="caption-live">
+        <div class="caption-scroll" id="caption-scroll">
+          <div class="caption-container" id="caption-container" aria-live="polite">
+            <div class="caption-empty" id="caption-empty">잠시 후 시작됩니다</div>
+          </div>
+        </div>
+      </div>
+      <div class="caption-ended" id="caption-ended" role="status" hidden>
+        세션이 종료되었습니다
+      </div>
+    </aside>
+  </div>
+</body>
+</html>
