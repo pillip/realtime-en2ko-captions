@@ -13,7 +13,12 @@ import re
 
 import pytest
 
-from qr_generator import build_view_url, make_qr_data_url, make_qr_png
+from qr_generator import (
+    build_stage_url,
+    build_view_url,
+    make_qr_data_url,
+    make_qr_png,
+)
 
 # ---------------------------------------------------------------------------
 # build_view_url
@@ -82,6 +87,77 @@ class TestBuildViewUrl:
     def test_empty_base_url_raises_value_error(self, bad_base: str) -> None:
         with pytest.raises(ValueError, match="base_url"):
             build_view_url("abc", bad_base)
+
+
+# ---------------------------------------------------------------------------
+# build_stage_url (ISSUE-39)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildStageUrl:
+    """무대 화면 URL 도 뷰어 URL 과 동일한 정규화 계약을 따른다."""
+
+    @pytest.mark.parametrize(
+        "viewer_base,room_id,expected",
+        [
+            (
+                "http://localhost:8766",
+                "room_abc",
+                "http://localhost:8766/stage/room_abc",
+            ),
+            (
+                "http://localhost:8766/",
+                "room_abc",
+                "http://localhost:8766/stage/room_abc",
+            ),
+            (
+                "https://captions.example.com",
+                "abc123",
+                "https://captions.example.com/stage/abc123",
+            ),
+            (
+                "https://captions.example.com/",
+                "abc123",
+                "https://captions.example.com/stage/abc123",
+            ),
+            (
+                "https://captions.example.com:443",
+                "abc",
+                "https://captions.example.com:443/stage/abc",
+            ),
+            (
+                "http://localhost:8766///",
+                "abc",
+                "http://localhost:8766/stage/abc",
+            ),
+        ],
+    )
+    def test_normalises_trailing_slash_and_scheme(
+        self, viewer_base: str, room_id: str, expected: str
+    ) -> None:
+        assert build_stage_url(room_id, viewer_base) == expected
+
+    def test_strips_whitespace_in_inputs(self) -> None:
+        assert (
+            build_stage_url("  abc  ", "  http://localhost:8766/  ")
+            == "http://localhost:8766/stage/abc"
+        )
+
+    @pytest.mark.parametrize("bad_room", ["", "   ", "\t", "\n"])
+    def test_empty_room_id_raises_value_error(self, bad_room: str) -> None:
+        with pytest.raises(ValueError, match="room_id"):
+            build_stage_url(bad_room, "http://localhost:8766")
+
+    @pytest.mark.parametrize("bad_base", ["", "   ", "\t"])
+    def test_empty_base_url_raises_value_error(self, bad_base: str) -> None:
+        with pytest.raises(ValueError, match="base_url"):
+            build_stage_url("abc", bad_base)
+
+    def test_stage_and_view_paths_differ_only_in_the_segment(self) -> None:
+        """두 URL 이 같은 베이스에서 서로 다른 경로로 갈라지는지 확인한다."""
+        base = "https://captions.example.com"
+        assert build_stage_url("r1", base) == "https://captions.example.com/stage/r1"
+        assert build_view_url("r1", base) == "https://captions.example.com/view/r1"
 
 
 # ---------------------------------------------------------------------------

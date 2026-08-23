@@ -3,6 +3,7 @@
 사용자 계정 생성/관리 및 사용량 통계 조회
 ISSUE-29: 룸 관리 탭 추가, 오퍼레이터 역할 기반 뷰 분기.
 ISSUE-32: 룸별 QR 코드 PNG 다운로드.
+ISSUE-39: 룸별 무대 화면 설정 폼 (관리자 전용).
 """
 
 import os
@@ -17,11 +18,16 @@ from admin_logic import (
     SELECTABLE_USER_ROLES,
     UNLIMITED_USAGE_ROLES,
     build_room_metrics_view_data,
+    build_stage_config_from_form,
+    delete_stage_logo,
+    describe_stage_config_drops,
     export_room_logs_csv,
     filter_rooms_by_status,
     filter_rooms_for_role,
+    find_asset_drift,
     format_room_status,
     get_logs_for_operator,
+    partition_uploads,
     prepare_room_table_data,
     role_select_index,
     validate_room_creation_input,
@@ -31,13 +37,20 @@ from auth import (
     get_current_user,
     require_admin_or_operator,
 )
+from branding_assets import ALLOWED_EXTENSIONS, list_assets, resolve_asset_path
 from database import (
     InvalidRoomTransition,
     get_room_model,
     get_usage_log_model,
     get_user_model,
 )
-from qr_generator import build_view_url, make_qr_png
+from qr_generator import build_stage_url, build_view_url, make_qr_png
+from stage_config import (
+    CAPTION_RATIOS,
+    LOGO_GROUP_LABELS,
+    normalize_stage_config,
+    validate_stage_config,
+)
 
 
 def _resolve_viewer_base_url() -> str:
@@ -648,6 +661,9 @@ def show_room_management(
     # ------------------------------------------------------------------
     if is_role_admin:
         _render_admin_room_create(room_model, user_model, current_user)
+        # ISSUE-39: 무대 화면 설정은 관리자 전용 — operator 세션에서는
+        # 이 분기에 진입하지 않으므로 섹션 자체가 렌더되지 않는다 (RL-002).
+        _render_admin_room_stage_config(room_model, visible_rooms)
         _render_admin_assign_operator(room_model, user_model, visible_rooms)
         _render_admin_force_close(room_model, visible_rooms)
 
@@ -694,6 +710,354 @@ def _render_admin_room_create(room_model, user_model, current_user):
                 # RL-006: 내부 예외는 server-side 만 로그, 사용자에게는 일반 메시지.
                 print(f"[Admin] 룸 생성 실패: {e!r}")
                 st.error("룸 생성에 실패했습니다.")
+
+
+# ============================================================
+# ISSUE-39: 룸별 무대 화면 설정 (관리자 전용)
+# ============================================================
+# 위젯 key 는 룸이 바뀔 때만 DB 값으로 다시 채운다 — 저장 실패 후에도
+# 관리자가 입력해 둔 텍스트가 남아 있어야 하기 때문이다
+# (AC: "업로드 실패 시 같은 폼의 행사 타이틀 값은 유실되지 않는다").
+_STAGE_TITLE_KEY = "stage_cfg_title"
+_STAGE_SUBTITLE_KEY = "stage_cfg_subtitle"
+_STAGE_RATIO_KEY = "stage_cfg_ratio"
+_STAGE_SEEDED_ROOM_KEY = "stage_cfg_seeded_room"
+# 업로더 초기화용 nonce — key 가 바뀌면 Streamlit 이 위젯 상태를 버린다.
+# 저장에 반영된 파일이 폼에 남아 다음 저장 때 중복 업로드되는 것을 막는다.
+_STAGE_UPLOAD_NONCE_KEY = "stage_cfg_upload_nonce"
+
+# 업로드 허용 확장자는 branding_assets 의 화이트리스트를 그대로 재사용한다
+# (여기서 목록을 복제하면 두 계층이 어긋난다).
+_LOGO_UPLOAD_TYPES = [ext.lstrip(".") for ext in ALLOWED_EXTENSIONS]
+
+
+def _render_admin_room_stage_config(room_model, visible_rooms):
+    """룸별 무대 화면 설정 섹션 (ISSUE-39, FR-076/FR-077/FR-079).
+
+    관리자 전용이다 — 호출부가 ``show_room_management`` 의
+    ``if is_role_admin:`` 분기 안에 있어야 operator 세션에서 렌더되지
+    않는다 (RL-002: server-side 분기).
+
+    Streamlit 제약상 ``st.form`` 안에는 ``st.form_submit_button`` 외의
+    버튼을 둘 수 없으므로 로고 삭제 버튼은 폼 **바깥**에 배치한다.
+
+    a11y (RL-010): 삭제 버튼은 "삭제" 텍스트 라벨 + 파일명을 담은 ``help``,
+    미리보기 ``st.image`` 는 ``caption=파일명``, 모든 위젯에 한국어 라벨.
+    """
+    st.divider()
+    st.subheader("🎬 무대 화면 설정")
+    st.caption(
+        "행사 타이틀·부제, 주최/주관/후원 로고, 자막 컬럼 비율을 룸별로 "
+        "설정합니다. 행사장 PC 는 아래 무대 화면 URL 을 열어 사용합니다."
+    )
+
+    if not visible_rooms:
+        st.caption("설정할 룸이 없습니다. 위에서 새 룸을 먼저 생성하세요.")
+        return
+
+    room_id = st.selectbox(
+        "설정할 룸",
+        options=[r["id"] for r in visible_rooms],
+        format_func=lambda rid: next(
+            f"{r['name']} ({r['id']})" for r in visible_rooms if r["id"] == rid
+        ),
+        key="stage_cfg_room_select",
+    )
+    room_name = next(
+        (r.get("name") for r in visible_rooms if r["id"] == room_id), room_id
+    )
+
+    try:
+        config = room_model.get_stage_config(room_id)
+        disk_names = list_assets(room_id)
+    except Exception as e:
+        # RL-006: 내부 예외는 server-side 로그만, 사용자에게는 generic.
+        print(f"[Admin] 무대 설정 조회 실패 (room={room_id}): {e!r}")
+        st.error("무대 설정을 불러오지 못했습니다.")
+        return
+
+    _seed_stage_form_state(room_id, config)
+    _warn_stage_asset_drift(config, disk_names)
+    _render_stage_logo_manager(room_model, room_id, config)
+
+    submitted, form_values = _render_stage_config_form(room_id)
+    if submitted:
+        _save_stage_config(room_model, room_id, config, form_values)
+
+    _render_stage_url_section(room_id, room_name)
+
+
+def _seed_stage_form_state(room_id, config):
+    """폼 위젯 기본값을 DB 값으로 채운다 — 최초 렌더와 룸 변경 시에만.
+
+    매 렌더마다 덮어쓰면 저장 실패 후(rerun 없이) 남아 있어야 할 입력값이
+    DB 값으로 되돌아가 관리자가 타이핑한 내용을 잃는다.
+    """
+    if st.session_state.get(_STAGE_SEEDED_ROOM_KEY) == room_id:
+        return
+    st.session_state[_STAGE_SEEDED_ROOM_KEY] = room_id
+    st.session_state[_STAGE_TITLE_KEY] = config.get("event_title", "")
+    st.session_state[_STAGE_SUBTITLE_KEY] = config.get("event_subtitle", "")
+    st.session_state[_STAGE_RATIO_KEY] = config.get("caption_ratio", CAPTION_RATIOS[0])
+
+
+def _warn_stage_asset_drift(config, disk_names):
+    """설정 ↔ 디스크 불일치를 관리자에게 알린다 (조용한 실패 방지)."""
+    missing, orphaned = find_asset_drift(config, disk_names)
+    if missing:
+        st.warning(
+            "설정에는 있으나 파일이 없는 로고: "
+            + ", ".join(missing)
+            + " — 무대 화면에서는 해당 로고만 숨겨집니다."
+        )
+    if orphaned:
+        st.warning(
+            "업로드되었지만 어느 그룹에도 속하지 않은 파일: " + ", ".join(orphaned)
+        )
+
+
+def _render_stage_logo_manager(room_model, room_id, config):
+    """현재 등록된 로고 미리보기 + 개별 삭제 버튼 (폼 바깥에 있어야 한다)."""
+    groups = config.get("logo_groups") or []
+    if not any(group.get("assets") for group in groups):
+        st.caption("등록된 로고가 없습니다. 아래 폼에서 그룹별로 업로드하세요.")
+        return
+
+    st.markdown("**현재 등록된 로고**")
+    for group in groups:
+        assets = group.get("assets") or []
+        if not assets:
+            continue
+        label = group.get("label", "")
+        st.markdown(f"*{label}*")
+        for filename in assets:
+            col1, col2 = st.columns([4, 1])
+            with col1:
+                _render_logo_preview(room_id, filename)
+            with col2:
+                # RL-010: 아이콘 전용 버튼이 아니라 "삭제" 텍스트 + help.
+                clicked = st.button(
+                    "삭제",
+                    key=f"stage_cfg_del_{room_id}_{label}_{filename}",
+                    help=f"'{filename}' 로고를 삭제합니다",
+                )
+                if clicked:
+                    ok, message = delete_stage_logo(
+                        room_model=room_model,
+                        room_id=room_id,
+                        filename=filename,
+                    )
+                    if ok:
+                        st.success(message)
+                        st.rerun()
+                    else:
+                        st.error(message)
+
+
+def _render_logo_preview(room_id, filename):
+    """로고 미리보기. 실패해도 파일명은 반드시 보이게 한다 (RL-008/RL-010)."""
+    path = resolve_asset_path(room_id, filename)
+    if path is None:
+        st.caption(f"{filename} (파일 없음)")
+        return
+    try:
+        if path.suffix.lower() == ".svg":
+            # st.image 는 SVG 를 문자열로 받는다 (경로/바이트가 아님).
+            st.image(
+                path.read_text(encoding="utf-8", errors="replace"),
+                caption=filename,
+                width=120,
+            )
+        else:
+            st.image(path.read_bytes(), caption=filename, width=120)
+    except Exception as e:
+        print(f"[Admin] 로고 미리보기 실패 (room={room_id} name={filename!r}): {e!r}")
+        st.caption(f"{filename} (미리보기를 표시할 수 없습니다)")
+
+
+def _render_stage_config_form(room_id):
+    """무대 설정 입력 폼. ``(submitted, 입력값 dict)`` 를 반환한다."""
+    nonce = st.session_state.get(_STAGE_UPLOAD_NONCE_KEY, 0)
+    uploads = {}
+    with st.form("stage_config_form"):
+        title = st.text_input(
+            "행사 타이틀",
+            key=_STAGE_TITLE_KEY,
+            help="무대 화면 상단 헤더 바에 표시됩니다 (최대 120자).",
+        )
+        subtitle = st.text_input(
+            "행사 부제",
+            key=_STAGE_SUBTITLE_KEY,
+            help="타이틀 아래 보조 문구 (최대 80자).",
+        )
+        ratio = st.radio(
+            "자막 컬럼 비율",
+            options=list(CAPTION_RATIOS),
+            key=_STAGE_RATIO_KEY,
+            horizontal=True,
+            help="무대 화면 오른쪽 자막 컬럼이 차지할 가로 비율입니다.",
+        )
+        for label in LOGO_GROUP_LABELS:
+            uploads[label] = st.file_uploader(
+                f"{label} 로고 추가",
+                type=_LOGO_UPLOAD_TYPES,
+                accept_multiple_files=True,
+                key=f"stage_cfg_upload_{label}_{room_id}_{nonce}",
+            )
+        submitted = st.form_submit_button("저장")
+
+    return submitted, {
+        "event_title": title,
+        "event_subtitle": subtitle,
+        "caption_ratio": ratio,
+        "uploads": uploads,
+    }
+
+
+def _upload_pairs(files):
+    """Streamlit ``UploadedFile`` 목록을 ``(파일명, bytes)`` 쌍으로 바꾼다.
+
+    ``admin_logic`` 이 Streamlit 타입을 몰라도 되도록 여기서 변환한다.
+    읽기에 실패하면 데이터 자리에 ``None`` 을 넣는다 — ``save_asset`` 이
+    사람이 읽을 수 있는 사유로 거절하므로 사유 문구를 새로 만들지 않는다.
+    """
+    pairs = []
+    for uploaded in files or []:
+        name = getattr(uploaded, "name", "") or "unknown"
+        try:
+            pairs.append((name, uploaded.getvalue()))
+        except Exception as e:
+            print(f"[Admin] 업로드 파일 읽기 실패 (name={name!r}): {e!r}")
+            pairs.append((name, None))
+    return pairs
+
+
+def _report_rejected_uploads(rejected):
+    """거부된 업로드를 파일명 + 사유로 표시한다 (사유는 save_asset 이 만든 값)."""
+    for name, reason in rejected:
+        st.error(f"'{name}' — {reason}")
+
+
+def _save_stage_config(room_model, room_id, current_config, values):
+    """폼 입력을 검증·저장한다.
+
+    실패 경로에서는 절대 ``st.rerun()`` 하지 않는다 — rerun 하면 위젯이 DB
+    값으로 다시 만들어져 관리자가 입력한 값이 사라진다.
+    """
+    existing = {
+        group.get("label"): list(group.get("assets") or [])
+        for group in current_config.get("logo_groups") or []
+    }
+
+    # 1) 업로드 전에 텍스트 값을 먼저 검증한다. 여기서 걸리면 파일을 디스크에
+    #    올리지 않으므로 config 가 참조하지 않는 고아 파일이 생기지 않는다.
+    #    (F-4) update_stage_config 는 거절 사유를 서버 로그에만 남기므로,
+    #    관리자에게 보여줄 사유는 validate_stage_config 로 직접 얻는다.
+    preflight = build_stage_config_from_form(
+        event_title=values["event_title"],
+        event_subtitle=values["event_subtitle"],
+        caption_ratio=values["caption_ratio"],
+        logo_groups=existing,
+    )
+    ok, reason = validate_stage_config(preflight)
+    if not ok:
+        st.error(reason)
+        return
+
+    # 2) 업로드 — 한 건이 거부돼도 나머지는 계속 저장된다.
+    accepted_by_label = {}
+    rejected = []
+    for label in LOGO_GROUP_LABELS:
+        accepted, group_rejected = partition_uploads(
+            room_id, _upload_pairs(values["uploads"].get(label))
+        )
+        accepted_by_label[label] = accepted
+        rejected.extend(group_rejected)
+
+    candidate = build_stage_config_from_form(
+        event_title=values["event_title"],
+        event_subtitle=values["event_subtitle"],
+        caption_ratio=values["caption_ratio"],
+        logo_groups={
+            label: existing.get(label, []) + accepted_by_label.get(label, [])
+            for label in LOGO_GROUP_LABELS
+        },
+    )
+
+    ok, reason = validate_stage_config(candidate)  # F-4: 사유를 그대로 노출
+    if not ok:
+        _report_rejected_uploads(rejected)
+        st.error(reason)
+        return
+
+    try:
+        saved = room_model.update_stage_config(room_id, candidate)
+    except Exception as e:
+        # RL-006: 내부 예외는 server-side 로그만, 사용자에게는 generic.
+        print(f"[Admin] 무대 설정 저장 실패 (room={room_id}): {e!r}")
+        _report_rejected_uploads(rejected)
+        st.error("무대 설정을 저장하지 못했습니다.")
+        return
+
+    if not saved:
+        _report_rejected_uploads(rejected)
+        st.error("무대 설정을 저장하지 못했습니다.")
+        return
+
+    # (F-5) 정규화가 조용히 버린 값이 있으면 알린다 — "저장했는데 없어짐" 방지.
+    for warning in describe_stage_config_drops(
+        candidate, normalize_stage_config(candidate)
+    ):
+        st.warning(warning)
+
+    if any(accepted_by_label.values()):
+        # 반영된 파일이 업로더에 남아 다음 저장 때 중복 업로드되지 않도록 초기화.
+        st.session_state[_STAGE_UPLOAD_NONCE_KEY] = (
+            st.session_state.get(_STAGE_UPLOAD_NONCE_KEY, 0) + 1
+        )
+
+    if rejected:
+        _report_rejected_uploads(rejected)
+        st.warning("일부 로고를 제외하고 저장했습니다.")
+        return  # 오류 메시지와 입력값을 함께 남기기 위해 rerun 하지 않는다.
+
+    st.success("무대 설정을 저장했습니다.")
+    st.rerun()
+
+
+def _render_stage_url_section(room_id, room_name):
+    """무대 화면 URL 텍스트 + QR PNG 다운로드 (뷰어 QR 섹션과 같은 패턴)."""
+    base_url = _resolve_viewer_base_url()
+    try:
+        stage_url = build_stage_url(room_id, base_url)
+        png_bytes = make_qr_png(stage_url)
+    except Exception as e:
+        # RL-006: 내부 예외는 server-side 로그만, 사용자에게는 generic.
+        print(f"[Admin] 무대 URL/QR 생성 실패 (room={room_id}): {e!r}")
+        st.warning("무대 화면 URL 을 만들 수 없습니다.")
+        return
+
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.markdown(f"**무대 화면 URL** &nbsp;&nbsp; `{stage_url}`")
+    with col2:
+        st.download_button(
+            label="📥 무대 QR PNG",
+            data=png_bytes,
+            file_name=f"stage_{_safe_download_stem(room_name)}.png",
+            mime="image/png",
+            key=f"stage_qr_dl_{room_id}",
+        )
+
+
+def _safe_download_stem(room_name):
+    """다운로드 파일명에 쓸 수 있게 룸 이름을 정규화한다 (슬래시 등 제거)."""
+    return (
+        "".join(
+            ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in str(room_name)
+        )
+        or "room"
+    )
 
 
 def _render_admin_assign_operator(room_model, user_model, visible_rooms):
@@ -887,17 +1251,10 @@ def _render_room_qr_section(visible_rooms):
             st.markdown(f"**{room_name}** &nbsp;&nbsp; `{view_url}`")
         with col2:
             # 파일명에 사용 불가능한 문자 (예: 슬래시) 가 들어가지 않도록 sanitize.
-            safe_name = (
-                "".join(
-                    ch if ch.isalnum() or ch in ("-", "_") else "_"
-                    for ch in str(room_name)
-                )
-                or "room"
-            )
             st.download_button(
                 label="📥 QR PNG",
                 data=png_bytes,
-                file_name=f"room_{safe_name}.png",
+                file_name=f"room_{_safe_download_stem(room_name)}.png",
                 mime="image/png",
                 key=f"qr_dl_{room_id}",
             )
