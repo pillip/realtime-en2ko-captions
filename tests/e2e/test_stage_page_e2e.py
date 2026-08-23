@@ -223,6 +223,424 @@ def _box(page, selector: str) -> dict[str, float]:
     return box
 
 
+# ---------------------------------------------------------------------------
+# ISSUE-41 — 자막 컬럼 SSE 구독 / 타자기 스무딩 (TC-062)
+# ---------------------------------------------------------------------------
+# 진짜 EventSource 를 쓰면 SSE 프레임 타이밍이 테스트에 섞여 flaky 해지고,
+# 61건 주입 같은 시나리오를 서버 쪽에서 만들어야 한다. 네트워크 레벨에서
+# 생성 URL 만 기록하고 이벤트를 손으로 밀어 넣는 스텁으로 대체한다.
+_FAKE_EVENTSOURCE = """
+(() => {
+  window.__sse = { urls: [], last: null };
+  class FakeEventSource {
+    constructor(url) {
+      this.url = String(url);
+      this.readyState = 0;
+      this.closed = false;
+      this._listeners = {};
+      window.__sse.urls.push(this.url);
+      window.__sse.last = this;
+    }
+    addEventListener(type, fn) {
+      if (!this._listeners[type]) this._listeners[type] = [];
+      this._listeners[type].push(fn);
+    }
+    removeEventListener(type, fn) {
+      const fns = this._listeners[type];
+      if (!fns) return;
+      const i = fns.indexOf(fn);
+      if (i !== -1) fns.splice(i, 1);
+    }
+    close() {
+      this.closed = true;
+      this.readyState = 2;
+    }
+    _emit(type, data) {
+      const event = { type: type, data: data };
+      for (const fn of (this._listeners[type] || []).slice()) fn(event);
+    }
+  }
+  window.EventSource = FakeEventSource;
+  window.__emit = (type, data) => {
+    const es = window.__sse.last;
+    if (!es) throw new Error("no EventSource was constructed by the stage page");
+    es._emit(type, data);
+  };
+})();
+"""
+
+
+def _fake_eventsource(page) -> None:
+    """Replace `window.EventSource` with a recording stub (must precede goto)."""
+    page.add_init_script(_FAKE_EVENTSOURCE)
+
+
+def _settle(page, predicate: str, timeout: int = 4000) -> None:
+    """Wait until `predicate` holds, swallowing the timeout.
+
+    On failure we want the test's own assertion to report what the DOM
+    actually looks like, not an opaque Playwright timeout.
+    """
+    from playwright.sync_api import TimeoutError as PlaywrightTimeout
+
+    try:
+        page.wait_for_function(predicate, timeout=timeout)
+    except PlaywrightTimeout:
+        pass
+
+
+def _lines(page) -> list[str]:
+    return page.eval_on_selector_all(
+        ".caption-line", "els => els.map(el => el.textContent)"
+    )
+
+
+def _emit_message(page, text: str, *, partial: bool = False) -> None:
+    payload = {"text": text}
+    if partial:
+        payload["partial"] = True
+    page.evaluate(
+        "(payload) => window.__emit('message', JSON.stringify(payload))", payload
+    )
+
+
+class TestStageCaptionStream:
+    """TC-062 / FR-080 — 자막 컬럼이 viewer 와 같은 스트리밍 동작을 갖는다.
+
+    좌측 발표 영역(ISSUE-40/42)이 이 전환들에 전혀 영향받지 않는다는 것까지
+    함께 확인한다 — 자막 상태 전환은 우측 컬럼 안에서만 일어나야 한다.
+    """
+
+    def test_sixty_one_finals_trim_to_sixty_lines(self, page, stage_server):
+        """TC-062 — DOM 상한 60. 개수와 **값** 을 함께 단언한다 (RL-004).
+
+        `len >= 60` 이나 "마지막 줄에 뭔가 있다" 는 트리밍이 엉뚱한 쪽 자식을
+        지워도 통과한다. 살아남은 첫 줄이 2번째 페이로드, 마지막 줄이 61번째
+        페이로드여야 앞에서부터 잘렸음이 증명된다.
+        """
+        _fake_eventsource(page)
+        page.set_viewport_size({"width": 1920, "height": 1080})
+        page.goto(f"{stage_server}/stage/quarter-room", wait_until="load")
+
+        page.evaluate(
+            """() => {
+              for (let i = 1; i <= 61; i++) {
+                window.__emit("message", JSON.stringify({text: "자막 " + i}));
+              }
+            }"""
+        )
+        _settle(
+            page,
+            """() => {
+              const els = document.querySelectorAll(".caption-line");
+              return els.length === 60 &&
+                     els[els.length - 1].textContent === "자막 61";
+            }""",
+        )
+
+        lines = _lines(page)
+        assert len(lines) == 60, f"expected exactly 60 caption lines, got {len(lines)}"
+        oldest = f"oldest surviving line is {lines[0]!r}, want the 2nd payload"
+        assert lines[0] == "자막 2", oldest
+        newest = f"newest line is {lines[-1]!r}, want the 61st payload"
+        assert lines[-1] == "자막 61", newest
+
+    def test_three_partials_then_a_final_collapse_to_one_line(self, page, stage_server):
+        """TC-062 — partial 청크들은 한 줄로 모이고 final 이 그 줄을 확정한다.
+
+        final 텍스트를 마지막 partial 과 다르게 둔다 — "무언가 표시된다" 만
+        보는 약한 단언이 통과하지 못하게 하기 위함이다 (RL-004).
+        """
+        _fake_eventsource(page)
+        page.set_viewport_size({"width": 1920, "height": 1080})
+        page.goto(f"{stage_server}/stage/quarter-room", wait_until="load")
+
+        final = "안녕하세요 여러분 반갑습니다"
+        for partial in ("안녕", "안녕하세요 여러", "안녕하세요 여러분 반갑"):
+            _emit_message(page, partial, partial=True)
+        _emit_message(page, final)
+
+        _settle(
+            page,
+            f"""() => {{
+              const els = document.querySelectorAll(".caption-line");
+              return els.length === 1 && els[0].textContent === {json.dumps(final)};
+            }}""",
+        )
+
+        lines = _lines(page)
+        assert len(lines) == 1, f"partials must collapse to one line, got {lines}"
+        assert lines[0] == final, f"line reads {lines[0]!r}, want {final!r}"
+
+    def test_only_finalised_lines_reach_the_live_region(self, page, stage_server):
+        """RL-019 (행동) — 라이브 리전은 확정된 줄에서만 갱신된다.
+
+        정적 테스트는 속성 위치만 본다. 여기서는 실제로 partial 이 흐르는
+        동안 announcer 가 조용한지, 그리고 애니메이션 노드가 런타임 DOM 에서도
+        `aria-hidden` 인지를 확인한다.
+        """
+        _fake_eventsource(page)
+        page.set_viewport_size({"width": 1920, "height": 1080})
+        page.goto(f"{stage_server}/stage/quarter-room", wait_until="load")
+
+        for partial in ("오늘", "오늘 발표를", "오늘 발표를 시작"):
+            _emit_message(page, partial, partial=True)
+        page.wait_for_timeout(300)
+
+        announced = page.evaluate(
+            """() => {
+              const el = document.getElementById("caption-announcer");
+              return el === null ? null : el.textContent.trim();
+            }"""
+        )
+        detail = (
+            f"#caption-announcer holds {announced!r} while only partials have "
+            "arrived — the live region must stay silent until a line is final"
+        )
+        assert announced == "", detail
+
+        final = "오늘 발표를 시작하겠습니다"
+        _emit_message(page, final)
+        _settle(
+            page,
+            f"""() => {{
+              const el = document.getElementById("caption-announcer");
+              return el !== null && el.textContent.trim() === {json.dumps(final)};
+            }}""",
+        )
+
+        aria = page.evaluate(
+            """() => {
+              const el = document.getElementById("caption-announcer");
+              const box = document.getElementById("caption-container");
+              return {
+                announced: el === null ? null : el.textContent.trim(),
+                hidden: box.getAttribute("aria-hidden"),
+                live: box.getAttribute("aria-live"),
+              };
+            }"""
+        )
+        assert aria["announced"] == final, f"announcer reads {aria['announced']!r}"
+        assert aria["hidden"] == "true", (
+            f"#caption-container aria-hidden is {aria['hidden']!r} — the "
+            "per-frame typewriter node must not be exposed"
+        )
+        assert aria["live"] is None, (
+            f"#caption-container still carries aria-live={aria['live']!r}; every "
+            "reveal frame would be announced (RL-019)"
+        )
+
+    def test_session_end_switches_the_column_and_leaves_the_stage_intact(
+        self, page, stage_server
+    ):
+        """AC — 종료는 자막 컬럼 안에서만 일어나고 타자기 루프가 정지한다."""
+        _fake_eventsource(page)
+        page.set_viewport_size({"width": 1920, "height": 1080})
+        page.goto(f"{stage_server}/stage/quarter-room", wait_until="load")
+
+        # 루프가 살아 있으면 300ms 안에 눈에 띄게 자랄 만큼 긴 partial.
+        _emit_message(page, "가나다라마바사" * 200, partial=True)
+        page.wait_for_timeout(100)
+        page.evaluate("() => window.__emit('session_end', '')")
+
+        first = page.evaluate(
+            """() => {
+              const els = document.querySelectorAll(".caption-line");
+              return els.length ? els[els.length - 1].textContent : "";
+            }"""
+        )
+        page.wait_for_timeout(300)
+        second = page.evaluate(
+            """() => {
+              const els = document.querySelectorAll(".caption-line");
+              return els.length ? els[els.length - 1].textContent : "";
+            }"""
+        )
+        frozen = (
+            f"caption text grew from {len(first)} to {len(second)} chars after "
+            "session_end — the rAF loop is still running"
+        )
+        assert len(second) == len(first), frozen
+
+        assert page.locator("#caption-ended").is_visible() is True
+        assert "세션이 종료되었습니다" in page.locator("#caption-ended").inner_text()
+        assert page.locator("#caption-live").is_visible() is False
+        assert page.evaluate("window.__sse.last.closed") is True
+
+        for selector in (
+            "#event-header",
+            "#presentation",
+            "#stage-frame",
+            "#title-card",
+        ):
+            count = page.locator(selector).count()
+            assert count == 1, f"{selector} disappeared on session_end (count={count})"
+        assert page.locator("#presentation").is_visible() is True
+        area = _box(page, "#presentation")
+        assert area["width"] > 0 and area["height"] > 0, f"presentation box {area}"
+
+    def test_stream_url_follows_the_query_lang(self, page, stage_server):
+        """AC — `/stage/{id}?lang=en` → `/stream/{id}?lang=en`."""
+        _fake_eventsource(page)
+        page.goto(f"{stage_server}/stage/quarter-room?lang=en", wait_until="load")
+        page.wait_for_timeout(300)
+
+        urls = page.evaluate("window.__sse.urls")
+        assert urls, "the stage page opened no EventSource"
+        assert urls[0] == "/stream/quarter-room?lang=en", f"opened {urls[0]!r}"
+
+    def test_stream_url_falls_back_to_primary_lang(self, page, stage_server):
+        """AC — `?lang=` 이 없으면 룸의 primary_output_lang (fixture: ko)."""
+        _fake_eventsource(page)
+        page.goto(f"{stage_server}/stage/quarter-room", wait_until="load")
+        page.wait_for_timeout(300)
+
+        urls = page.evaluate("window.__sse.urls")
+        assert urls, "the stage page opened no EventSource"
+        assert urls[0].endswith("?lang=ko"), f"opened {urls[0]!r}, want ?lang=ko"
+
+    def test_long_token_wraps_without_horizontal_scroll(self, page, stage_server):
+        """AC — 컬럼 폭보다 긴 단일 토큰(예: 긴 URL)이 포함된 자막이 렌더되면
+        가로 스크롤바가 생기지 않고 줄바꿈된다.
+
+        `word-break: keep-all` 만 있으면 끊을 수 없는 토큰이 컬럼을 가로로
+        밀어낸다 — `overflow-wrap: anywhere` 가 함께 있어야 한다.
+        """
+        _fake_eventsource(page)
+        page.set_viewport_size({"width": 1920, "height": 1080})
+        page.goto(f"{stage_server}/stage/quarter-room", wait_until="load")
+
+        token = "x" * 300
+        _emit_message(page, token)
+        _settle(
+            page,
+            f"""() => {{
+              const els = document.querySelectorAll(".caption-line");
+              return els.length === 1 && els[0].textContent.length === {len(token)};
+            }}""",
+        )
+
+        metrics = page.evaluate(
+            """() => {
+              const scroll = document.getElementById("caption-scroll");
+              const line = document.querySelector(".caption-line");
+              const column = document.getElementById("caption-column");
+              return {
+                scrollWidth: scroll.scrollWidth,
+                clientWidth: scroll.clientWidth,
+                lineRight: line === null ? null : line.getBoundingClientRect().right,
+                columnRight: column.getBoundingClientRect().right,
+              };
+            }"""
+        )
+        assert metrics["lineRight"] is not None, "no .caption-line rendered"
+        overflow = (
+            f"#caption-scroll scrollWidth {metrics['scrollWidth']} exceeds "
+            f"clientWidth {metrics['clientWidth']} — the 300-char token forced a "
+            "horizontal scrollbar"
+        )
+        assert metrics["scrollWidth"] <= metrics["clientWidth"] + 1, overflow
+        assert metrics["lineRight"] <= metrics["columnRight"] + 1, (
+            f"line right edge {metrics['lineRight']:.1f}px spills past the "
+            f"caption column at {metrics['columnRight']:.1f}px"
+        )
+
+    def test_connection_banner_sits_at_the_bottom_of_the_caption_column(
+        self, page, stage_server
+    ):
+        """AC — 끊김 배너는 자막 컬럼 안에만 뜨고, 열리면 사라진다."""
+        _fake_eventsource(page)
+        page.set_viewport_size({"width": 1920, "height": 1080})
+        page.goto(f"{stage_server}/stage/quarter-room", wait_until="load")
+
+        page.evaluate("() => window.__emit('error', '')")
+        page.wait_for_timeout(200)
+
+        assert page.locator("#conn-error").is_visible() is True
+        banner = _box(page, "#conn-error")
+        column = _box(page, "#caption-column")
+        presentation = _box(page, "#presentation")
+
+        contained = (
+            f"banner box {banner} is not fully inside the caption column {column}"
+        )
+        fits_right = banner["x"] + banner["width"] <= column["x"] + column["width"] + 1
+        fits_bottom = (
+            banner["y"] + banner["height"] <= column["y"] + column["height"] + 1
+        )
+        assert banner["x"] >= column["x"] - 1, contained
+        assert fits_right, contained
+        assert banner["y"] >= column["y"] - 1, contained
+        assert fits_bottom, contained
+
+        deck_right = presentation["x"] + presentation["width"]
+        covers = (
+            f"banner left edge {banner['x']:.1f}px sits left of the presentation "
+            f"area's right edge {deck_right:.1f}px — it covers the deck"
+        )
+        assert banner["x"] >= deck_right - 1, covers
+
+        page.evaluate("() => window.__emit('open', '')")
+        page.wait_for_timeout(200)
+        assert page.locator("#conn-error").is_visible() is False
+
+    def test_hidden_tab_snaps_the_current_line_instead_of_queueing(
+        self, page, stage_server
+    ):
+        """숨김 전환 시 현재 줄을 즉시 최종 텍스트로 스냅하고 루프를 멈춘다.
+
+        스냅하지 않으면 rAF 가 정지된 동안 목표 텍스트만 쌓이고, 복귀 순간
+        수백 자가 몰아쳐 나온다.
+        """
+        _fake_eventsource(page)
+        page.set_viewport_size({"width": 1920, "height": 1080})
+        page.goto(f"{stage_server}/stage/quarter-room", wait_until="load")
+
+        text = "무대 자막 스트리밍 " * 40  # 400자 이상
+        assert len(text) >= 400
+
+        # 한 번의 evaluate 안에서 처리해 두 동작 사이에 프레임이 끼지 않게 한다.
+        page.evaluate(
+            """(text) => {
+              window.__emit("message", JSON.stringify({text: text, partial: true}));
+              Object.defineProperty(document, "hidden", {
+                get: () => true, configurable: true,
+              });
+              document.dispatchEvent(new Event("visibilitychange"));
+            }""",
+            text,
+        )
+        snapped = page.evaluate(
+            """() => {
+              const els = document.querySelectorAll(".caption-line");
+              return els.length ? els[els.length - 1].textContent : null;
+            }"""
+        )
+        detail = (
+            f"line holds {0 if snapped is None else len(snapped)} of "
+            f"{len(text)} chars when the tab went hidden — it must snap to the "
+            "full target so nothing avalanches on return"
+        )
+        assert snapped == text, detail
+
+        page.evaluate(
+            """() => {
+              Object.defineProperty(document, "hidden", {
+                get: () => false, configurable: true,
+              });
+              document.dispatchEvent(new Event("visibilitychange"));
+            }"""
+        )
+        page.wait_for_timeout(400)
+        after = page.evaluate(
+            """() => {
+              const els = document.querySelectorAll(".caption-line");
+              return els.length ? els[els.length - 1].textContent : null;
+            }"""
+        )
+        assert after == text, f"text changed after returning: {after!r}"
+
+
 class TestStageLayoutInBrowser:
     # 짧은 콘텐츠 하나만 보면 intrinsic sizing 결함이 통째로 숨는다 (RL-017).
     @pytest.mark.parametrize("width,height", [(1920, 1080), (3440, 1440)])

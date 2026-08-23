@@ -380,6 +380,208 @@ class TestStageHtmlMarkup:
 
 
 # ---------------------------------------------------------------------------
+# Caption column behaviour — components/stage.html (ISSUE-41)
+# ---------------------------------------------------------------------------
+class TestStageCaptionColumn:
+    """자막 컬럼의 SSE 구독 + 타자기 스무딩 정적 계약 (ISSUE-41).
+
+    AC ↔ Test mapping (issues.md ISSUE-41 § Tests, test_plan TC-061):
+      - "requestAnimationFrame 존재 / setInterval 부재"
+          → test_typewriter_runs_on_request_animation_frame
+      - "MAX_LINES 값이 60"
+          → test_caption_dom_cap_is_sixty
+      - "프레임당 공개량 상한"
+          → test_per_frame_reveal_is_capped
+      - "overflow-wrap / word-break 가 자막 라인 규칙에 존재"
+          → test_caption_line_wrapping_rules_live_in_the_caption_line_rule
+      - "애니메이션 노드가 라이브 리전이 아니다" (RL-019)
+          → test_animated_node_is_not_the_live_region
+      - "?lang= 로 고정된 언어로 /stream 을 구독"
+          → test_stream_subscription_uses_the_bootstrapped_caption_lang
+      - "conn-error 배너는 자막 컬럼 하단에만"
+          → test_conn_error_banner_lives_inside_the_caption_column
+    """
+
+    @pytest.fixture
+    def stage_html(self) -> str:
+        assert _STAGE_TEMPLATE.exists(), f"stage.html missing: {_STAGE_TEMPLATE}"
+        return _STAGE_TEMPLATE.read_text(encoding="utf-8")
+
+    def test_typewriter_runs_on_request_animation_frame(self, stage_html):
+        """TC-061 / NFR-025 — 자막 애니메이션은 rAF 로만 돈다.
+
+        무대 페이지에서는 캡처 `<video>` 프레임 렌더와 자막 애니메이션이 같은
+        메인 스레드를 공유한다. `setInterval` 은 브라우저 렌더 스케줄과
+        무관하게 깨어나므로 캡처가 버벅인다 — viewer.html:444 의
+        `setInterval(..., 28)` 을 그대로 이식하면 이 테스트가 막는다.
+        """
+        assert "requestAnimationFrame(" in stage_html
+        assert "cancelAnimationFrame(" in stage_html
+        assert "setInterval" not in stage_html, (
+            "setInterval-based typewriter timer competes with capture frame "
+            "rendering — use requestAnimationFrame (NFR-025)"
+        )
+
+    def test_caption_dom_cap_is_sixty(self, stage_html):
+        """좁은 컬럼의 DOM 상한은 60 (viewer 의 200 이 아니다)."""
+        match = re.search(r"const MAX_LINES = (\d+)", stage_html)
+        assert match is not None, "stage.html must declare `const MAX_LINES = 60`"
+        value = int(match.group(1))
+        assert value == 60, f"MAX_LINES is {value}, the stage column caps at 60"
+
+    def test_per_frame_reveal_is_capped(self, stage_html):
+        """프레임 예산 — 큰 Bedrock 청크가 한 프레임을 통째로 잡아먹지 않는다.
+
+        남은 글자수 비례 공개(`Math.ceil(gap / 6)`)만 쓰면 2000자 청크가
+        한 프레임에 334자를 그린다. 비례 항을 상한으로 감싸야 한다.
+        """
+        match = re.search(r"MAX_REVEAL_PER_FRAME = (\d+)", stage_html)
+        assert match is not None, (
+            "stage.html must declare `const MAX_REVEAL_PER_FRAME = <n>` "
+            "to bound the per-frame reveal"
+        )
+        value = int(match.group(1))
+        assert value > 0, f"MAX_REVEAL_PER_FRAME is {value}, must be positive"
+
+        capped = re.search(
+            r"Math\.min\(\s*MAX_REVEAL_PER_FRAME\s*,\s*"
+            r"Math\.max\(\s*2\s*,\s*Math\.ceil\(gap / 6\)\s*\)\s*\)",
+            stage_html,
+        )
+        detail = (
+            "the proportional term Math.ceil(gap / 6) must be wrapped by "
+            "Math.min(MAX_REVEAL_PER_FRAME, ...) — an uncapped step blows the "
+            "frame budget on a large chunk"
+        )
+        assert capped is not None, detail
+
+    def test_caption_line_wrapping_rules_live_in_the_caption_line_rule(
+        self, stage_html
+    ):
+        """좁은 컬럼 타이포는 `.caption-line` 규칙이 소유한다 (RL-004).
+
+        기존 ISSUE-40 테스트는 파일 전체 substring 매칭이라 `body` 규칙이
+        `word-break: keep-all` 을 갖고 있는 한 `.caption-line` 이 선언을 잃어도
+        통과한다. 단언을 AC 가 말하는 규칙 블록으로 한정한다.
+        """
+        block = _rule_block(stage_html, ".caption-line")
+        for declaration in (
+            "font-size: clamp(20px, 1.4vw + 8px, 32px);",
+            "line-height: 1.45;",
+            "word-break: keep-all;",
+            "overflow-wrap: anywhere;",
+        ):
+            assert declaration in block, f"`{declaration}` missing from .caption-line"
+
+    def test_animated_node_is_not_the_live_region(self, stage_html):
+        """RL-019 회귀 가드 — 프레임마다 바뀌는 노드는 라이브 리전이 아니다.
+
+        ISSUE-40 은 "레이아웃 셸" 범위였음에도 `#caption-container`
+        (stage.html:398) 에 `aria-live="polite"` 를 붙인 채 출하했다. 그런데
+        이 이슈는 바로 그 노드에 `.caption-line` 을 append 하고, 마지막 라인의
+        `textContent` 를 매 `requestAnimationFrame` 마다 바꾸며, `MAX_LINES`
+        로 앞쪽 자식을 잘라낸다 — 속성을 그대로 두면 모든 공개 프레임과 모든
+        트리밍이 라이브 리전 변경이 되어 스크린리더가 텍스트로 범람한다.
+
+        따라서 소유권은 이 이슈에 있다: 애니메이션 노드는 `aria-hidden="true"`
+        가 되고, 라인 확정 시에만 쓰이는 별도의 `#caption-announcer` 가
+        `aria-live` 를 갖는다. 속성을 걷어내는 작업은 리뷰에서 "a11y 후퇴" 로
+        보여 조용히 누락되기 쉬우므로 이 테스트가 유일한 자동 방어선이다.
+        """
+        animated = re.search(r"<div[^>]*\bid=\"caption-container\"[^>]*>", stage_html)
+        assert animated is not None, "#caption-container open tag not found"
+        animated_tag = animated.group(0)
+        flooded = (
+            "#caption-container still carries aria-live — the typewriter mutates "
+            f"this node every frame: {animated_tag}"
+        )
+        assert "aria-live" not in animated_tag, flooded
+        assert 'aria-hidden="true"' in animated_tag, (
+            "#caption-container must be aria-hidden so per-frame reveals are not "
+            f"announced: {animated_tag}"
+        )
+
+        announcer = re.search(
+            r"<[a-zA-Z]+[^>]*\bid=\"caption-announcer\"[^>]*>", stage_html
+        )
+        assert announcer is not None, (
+            "no #caption-announcer element — the live region has no owner once "
+            "#caption-container is aria-hidden (RL-019)"
+        )
+        announcer_tag = announcer.group(0)
+        assert 'aria-live="polite"' in announcer_tag, announcer_tag
+        assert 'aria-atomic="true"' in announcer_tag, announcer_tag
+        distinct = "the announcer must not be the animated container itself"
+        assert announcer_tag != animated_tag, distinct
+
+    def test_hidden_tab_stops_the_typewriter_loop(self, stage_html):
+        """숨김 탭에서 rAF 가 멈추면 복귀 시 자막이 몰아친다 — 스냅 후 정지."""
+        assert 'addEventListener("visibilitychange"' in stage_html
+        assert "document.hidden" in stage_html
+
+    def test_conn_error_banner_lives_inside_the_caption_column(self, stage_html):
+        """AC — 연결 배너는 자막 컬럼 하단에만 뜨고 발표 영역을 덮지 않는다."""
+        aside_start = stage_html.index('<aside class="caption-column"')
+        aside_end = stage_html.index("</aside>", aside_start)
+        caption_column = stage_html[aside_start:aside_end]
+        assert 'id="conn-error"' in caption_column, (
+            "#conn-error must live inside <aside class='caption-column'> so it "
+            "cannot cover the presentation area"
+        )
+
+        main_start = stage_html.index('<main class="stage-main">')
+        main_end = stage_html.index("</main>", main_start)
+        stage_main = stage_html[main_start:main_end]
+        assert 'id="conn-error"' not in stage_main
+
+    def test_conn_error_banner_meets_wcag_aa_contrast(self, stage_html):
+        """RL-018 — 반투명 pill 위 텍스트는 **합성 후** 배경으로 계산한다.
+
+        배너 텍스트의 실제 배경은 캔버스가 아니라 캔버스 위에 깔린 반투명
+        pill 이다. viewer.html 의 알파를 눈대중으로 옮겨오면 이 테스트가 막는다.
+        """
+        block = _rule_block(stage_html, ".conn-error")
+        bg = re.search(
+            r"background:\s*rgba\(\s*(\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\s*\)", block
+        )
+        assert bg is not None, ".conn-error needs an rgba() background declaration"
+        r, g, b, a = bg.groups()
+        pill = _composite((int(r), int(g), int(b), float(a)), _CANVAS_RGB)
+
+        ratio = _contrast_ratio(_rule_rgba(stage_html, ".conn-error"), pill)
+        assert ratio >= 4.5, f".conn-error text is {ratio:.2f}:1, WCAG AA needs 4.5:1"
+
+    def test_stream_subscription_uses_the_bootstrapped_caption_lang(self, stage_html):
+        """AC — 언어는 조작 UI 가 아니라 서버가 확정한 `caption_lang` 으로 고정.
+
+        서버(`_handle_stage`)가 `?lang=` 을 검증해 `caption_lang` 으로 내려주므로
+        클라이언트는 그 값을 그대로 쓴다 — 브라우저에서 다시 파싱하면 서버가
+        거부한 코드가 되살아난다.
+        """
+        assert "new EventSource(" in stage_html
+        assert '"/stream/"' in stage_html
+        assert "encodeURIComponent(CONFIG.room_id)" in stage_html
+        assert "CONFIG.caption_lang" in stage_html
+
+    def test_waiting_copy_is_localised_per_caption_lang(self, stage_html):
+        """대기 문구는 viewer.html 의 `WAITING_MSG` 맵을 재사용한다."""
+        match = re.search(r"WAITING_MSG\s*=\s*\{(.*?)\}", stage_html, re.S)
+        assert match is not None, "stage.html must declare a WAITING_MSG map"
+        entries = match.group(1)
+        assert re.search(r"\bko:\s*\"잠시 후 시작됩니다\"", entries), entries
+        assert re.search(r"\ben:\s*\"Starting shortly\"", entries), entries
+
+    def test_no_user_scroll_override_controls(self, stage_html):
+        """무대 화면에는 조작자가 없다 — 되돌리기 어포던스를 두지 않는다.
+
+        viewer.html 의 `isUserAtBottom()` 분기를 그대로 이식하면 관객이
+        만질 수 없는 화면에서 자동 스크롤이 영구히 멈출 수 있다.
+        """
+        assert "실시간으로" not in stage_html
+        assert "isUserAtBottom" not in stage_html
+
+
+# ---------------------------------------------------------------------------
 # /stage/{room_id} HTTP handler
 # ---------------------------------------------------------------------------
 class TestStageRouteHandler:
