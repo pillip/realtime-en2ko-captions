@@ -1,11 +1,14 @@
 """
-무대 합성 페이지 (`components/stage.html`) + `/stage/{room_id}` 라우트 테스트 (ISSUE-40).
+무대 합성 페이지 (`components/stage.html`) + `/stage/{room_id}` 라우트 테스트
+(ISSUE-40 레이아웃 셸, ISSUE-41 자막 컬럼).
 
 검증 대상 (test_plan.md Gap 8 의 TC-057 ~ TC-059, TC-061 일부):
 - `sse_broadcast._json_for_script` : 인라인 ``<script>`` 안에 JSON 리터럴을
   주입할 때 ``</script>`` 브레이크아웃이 불가능한지 (RL-016 / ISSUE-37 리뷰 F-2).
 - `stage.html` 정적 마크업: 16:9 레터박스 CSS, dvh 페어링(RL-011), 세로 margin
   부재(RL-012), 프레젠터 키보드 비간섭(NFR-025), 로고 degrade 경로(RL-008).
+- `stage.html` 자막 컬럼 (ISSUE-41): rAF 타자기, `MAX_LINES`, 좁은 컬럼 타이포,
+  라이브 리전 소유권(RL-019), 배너 위치와 합성 대비(RL-018).
 - aiohttp `/stage/{room_id}` 핸들러: 404 / closed / caption_ratio → 폭 매핑 /
   깨진 stage_config → 기본값 / 이스케이프.
 
@@ -400,6 +403,14 @@ class TestStageCaptionColumn:
           → test_stream_subscription_uses_the_bootstrapped_caption_lang
       - "conn-error 배너는 자막 컬럼 하단에만"
           → test_conn_error_banner_lives_inside_the_caption_column
+
+    리뷰(PR #127)에서 보강한 가드:
+      - 숨김 탭 분기가 비어 있지 않다 (F-5, RL-004)
+          → test_hidden_tab_stops_the_typewriter_loop
+      - 종료 후 늦은 message 를 막는 최종 상태 플래그 (F-1)
+          → test_terminal_state_blocks_late_messages
+      - 빈 final 이 빈 라인을 열지 않는다 (F-2)
+          → test_empty_final_never_opens_a_blank_line
     """
 
     @pytest.fixture
@@ -515,9 +526,59 @@ class TestStageCaptionColumn:
         assert announcer_tag != animated_tag, distinct
 
     def test_hidden_tab_stops_the_typewriter_loop(self, stage_html):
-        """숨김 탭에서 rAF 가 멈추면 복귀 시 자막이 몰아친다 — 스냅 후 정지."""
+        """숨김 탭에서 rAF 가 멈추면 복귀 시 자막이 몰아친다 — 스냅 후 정지.
+
+        RL-004: 리스너가 "존재한다" 는 단언은 빈 몸통
+        (`if (document.hidden) { }`) 도 통과시킨다. 분기 **안** 을 본다.
+        행동 검증은 e2e `test_hidden_tab_snaps_the_current_line_instead_of_queueing`.
+        """
         assert 'addEventListener("visibilitychange"' in stage_html
-        assert "document.hidden" in stage_html
+        branch = re.search(
+            r"if \(document\.hidden\) \{(.*?)\n      \} else \{(.*?)\n      \}",
+            stage_html,
+            re.S,
+        )
+        assert branch is not None, "no if (document.hidden) { … } else { … } branch"
+        hidden_body, shown_body = branch.group(1), branch.group(2)
+        stopped = f"hidden branch never stops the rAF loop: {hidden_body!r}"
+        assert "_twStop()" in hidden_body, stopped
+        snapped = (
+            "hidden branch must snap the in-flight line to its full target, "
+            f"otherwise the text avalanches on return: {hidden_body!r}"
+        )
+        assert "currentLine.textContent = twTarget" in hidden_body, snapped
+        rearmed = f"returning to a visible tab never re-arms the loop: {shown_body!r}"
+        assert "_twStart()" in shown_body, rearmed
+
+    def test_terminal_state_blocks_late_messages(self, stage_html):
+        """종료는 최종 상태다 — 늦게 도착한 message 가 컬럼을 되살리면 안 된다.
+
+        `currentLine = null` 만으로는 message 진입점이 살아 있어서
+        `setCaptionState("active")` → 새 라인 → rAF 재시작 → 라이브 리전 쓰기가
+        모두 다시 일어난다. 도달 가능성은 필드가 아니라 진입점의 성질이다.
+        행동 검증은 e2e `test_message_after_session_end_is_ignored`.
+        """
+        flagged = "session_end must set a terminal flag, not just clear currentLine"
+        assert "sessionEnded = true;" in stage_html, flagged
+        gated = "the message handler must early-return once the session has ended"
+        assert "if (sessionEnded) return;" in stage_html, gated
+
+    def test_empty_final_never_opens_a_blank_line(self, stage_html):
+        """빈 final 이 대기 문구를 지우고 빈 컬럼을 남기면 안 된다.
+
+        `_ensureCurrentLine()` 은 `#caption-empty` 를 제거하므로, 통과시키면
+        무대 화면이 되돌릴 수 없는 빈 컬럼이 된다. 행동 검증은 e2e
+        `test_empty_final_does_not_blank_the_column`.
+        """
+        body = re.search(
+            r"function finalizeCaption\(text\) \{(.*?)\n    \}", stage_html, re.S
+        )
+        assert body is not None, "finalizeCaption() not found"
+        bailed = (
+            "finalizeCaption must bail out before _ensureCurrentLine() when there "
+            f"is nothing to show: {body.group(1)!r}"
+        )
+        assert "if (!next) return;" in body.group(1), bailed
 
     def test_conn_error_banner_lives_inside_the_caption_column(self, stage_html):
         """AC — 연결 배너는 자막 컬럼 하단에만 뜨고 발표 영역을 덮지 않는다."""

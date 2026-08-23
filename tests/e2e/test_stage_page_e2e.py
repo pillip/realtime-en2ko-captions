@@ -1,5 +1,7 @@
 """
-ISSUE-40 — 무대 합성 페이지 e2e (browser-driven).
+ISSUE-40 / ISSUE-41 — 무대 합성 페이지 e2e (browser-driven).
+
+ISSUE-41 이 추가한 자막 컬럼 스트리밍 검증은 ``TestStageCaptionStream`` 에 있다.
 
 문자열 매칭으로는 절대 검증할 수 없는 두 가지를 브라우저로 확인한다:
 
@@ -295,6 +297,36 @@ def _lines(page) -> list[str]:
     )
 
 
+# rAF 계측 스텁 — 동시에 살아 있는 rAF 콜백의 최대 개수를 센다. 콜백이 실행되기
+# **직전**에 감소시키므로, 루프가 스스로 다음 프레임을 예약해도 max 는 1 에 머문다.
+# 반면 두 번째 루프가 겹쳐 시작되면 즉시 2 이상이 된다.
+_RAF_COUNTER = """
+(() => {
+  window.__raf = { live: 0, max: 0 };
+  const origRAF = window.requestAnimationFrame.bind(window);
+  const origCAF = window.cancelAnimationFrame.bind(window);
+  window.requestAnimationFrame = function (cb) {
+    window.__raf.live += 1;
+    if (window.__raf.live > window.__raf.max) window.__raf.max = window.__raf.live;
+    return origRAF(function (t) { window.__raf.live -= 1; cb(t); });
+  };
+  window.cancelAnimationFrame = function (h) {
+    if (window.__raf.live > 0) window.__raf.live -= 1;
+    return origCAF(h);
+  };
+})();
+"""
+
+
+def _line_length(page) -> int:
+    return page.evaluate(
+        """() => {
+          const els = document.querySelectorAll(".caption-line");
+          return els.length ? els[els.length - 1].textContent.length : 0;
+        }"""
+    )
+
+
 def _emit_message(page, text: str, *, partial: bool = False) -> None:
     payload = {"text": text}
     if partial:
@@ -497,7 +529,9 @@ class TestStageCaptionStream:
 
         urls = page.evaluate("window.__sse.urls")
         assert urls, "the stage page opened no EventSource"
-        assert urls[0].endswith("?lang=ko"), f"opened {urls[0]!r}, want ?lang=ko"
+        # 형제 테스트와 같은 완전 일치 — endswith 는 룸 id 가 어긋나도 통과한다.
+        want = "/stream/quarter-room?lang=ko"
+        assert urls[0] == want, f"opened {urls[0]!r}, want {want!r}"
 
     def test_long_token_wraps_without_horizontal_scroll(self, page, stage_server):
         """AC — 컬럼 폭보다 긴 단일 토큰(예: 긴 URL)이 포함된 자막이 렌더되면
@@ -572,6 +606,14 @@ class TestStageCaptionStream:
         assert fits_right, contained
         assert banner["y"] >= column["y"] - 1, contained
         assert fits_bottom, contained
+        # "하단" 자체를 단언한다 — 격납만 보면 컬럼 **상단**에 붙은 배너도 통과해
+        # 첫 자막 줄을 가린다 (RL-004).
+        midpoint = column["y"] + column["height"] / 2
+        low = (
+            f"banner top {banner['y']:.1f}px sits above the column midpoint "
+            f"{midpoint:.1f}px — the AC anchors it to the bottom"
+        )
+        assert banner["y"] > midpoint, low
 
         deck_right = presentation["x"] + presentation["width"]
         covers = (
@@ -639,6 +681,238 @@ class TestStageCaptionStream:
             }"""
         )
         assert after == text, f"text changed after returning: {after!r}"
+
+    def test_partial_text_is_revealed_gradually_not_in_one_frame(
+        self, page, stage_server
+    ):
+        """AC 1 (타자기 스무딩) 의 유일한 행동 가드 — 중간 상태를 표본한다.
+
+        나머지 자막 테스트는 전부 **종료 상태**만 본다. `_twStep` 을
+        `twShown = twTarget.length` 로 바꿔 즉시 전량 공개하게 만들어도 그 테스트들은
+        모두 통과하고, 정적 테스트는 `requestAnimationFrame(` 이라는 글자가 파일 어딘가
+        있다는 것밖에 증명하지 못한다 (RL-004). 여기서는 청크가 도착한 직후에 화면을
+        찍어 **일부만** 나와 있는지 본다.
+        """
+        _fake_eventsource(page)
+        page.set_viewport_size({"width": 1920, "height": 1080})
+        page.goto(f"{stage_server}/stage/quarter-room", wait_until="load")
+
+        text = "가" * 600
+        _emit_message(page, text, partial=True)
+        page.wait_for_timeout(60)
+        mid = _line_length(page)
+        gradual = (
+            f"{mid} of {len(text)} chars appeared within ~4 frames — the reveal is "
+            "not gradual (MAX_REVEAL_PER_FRAME is 24, so a few dozen chars is the "
+            "expected range)"
+        )
+        assert 0 < mid < len(text), gradual
+
+        _settle(
+            page,
+            f"""() => {{
+              const els = document.querySelectorAll(".caption-line");
+              return els.length === 1 &&
+                     els[0].textContent.length === {len(text)};
+            }}""",
+        )
+        assert _line_length(page) == len(text), "the reveal never caught up"
+
+    def test_a_shrinking_partial_repaints_instead_of_leaving_stale_text(
+        self, page, stage_server
+    ):
+        """짧아진 partial 은 화면을 줄여야 한다 — 옛 긴 문자열이 남으면 안 된다.
+
+        번역 후처리는 문자열을 깎기도 한다. `twShown` 을 클램프만 하면 `gap` 이 0 이
+        되어 쓰기 분기를 건너뛰므로, 화면에는 이전의 더 긴 텍스트가 그대로 남는다.
+        """
+        _fake_eventsource(page)
+        page.set_viewport_size({"width": 1920, "height": 1080})
+        page.goto(f"{stage_server}/stage/quarter-room", wait_until="load")
+
+        long_text = "안녕하세요 반갑습니다 여러분"
+        _emit_message(page, long_text, partial=True)
+        _settle(
+            page,
+            f"""() => {{
+              const els = document.querySelectorAll(".caption-line");
+              return els.length === 1 && els[0].textContent === {json.dumps(long_text)};
+            }}""",
+        )
+
+        _emit_message(page, "안녕", partial=True)
+        _settle(
+            page,
+            """() => {
+              const els = document.querySelectorAll(".caption-line");
+              return els.length === 1 && els[0].textContent === "안녕";
+            }""",
+        )
+        stale = f"line still reads {_lines(page)!r} after the target shrank"
+        assert _lines(page) == ["안녕"], stale
+
+    def test_only_one_raf_loop_ever_runs(self, page, stage_server):
+        """겹쳐 도는 rAF 루프가 없다 — `_twStart` 의 `twRaf` 가드가 유일한 방어선.
+
+        가드를 지우면 partial 이 도착할 때마다 새 루프가 하나씩 더 붙어 세션 내내
+        누적되고, 공개 속도가 루프 수만큼 빨라진다. 그런데 최종 상태는 똑같아서
+        기존 테스트는 전부 통과한다 (RL-004). rAF 를 계측해 동시 실행 수를 센다.
+        """
+        _fake_eventsource(page)
+        page.add_init_script(_RAF_COUNTER)
+        page.set_viewport_size({"width": 1920, "height": 1080})
+        page.goto(f"{stage_server}/stage/quarter-room", wait_until="load")
+
+        # 한 태스크 안에서 연속 partial — 프레임이 끼지 않으므로 가드가 없으면
+        # 12 개의 루프가 동시에 예약된다.
+        page.evaluate(
+            """() => {
+              for (let i = 1; i <= 12; i++) {
+                window.__emit("message", JSON.stringify({
+                  text: "무대 자막 ".repeat(i * 10), partial: true,
+                }));
+              }
+            }"""
+        )
+        page.wait_for_timeout(400)
+        page.evaluate(
+            """() => {
+              for (let i = 1; i <= 12; i++) {
+                window.__emit("message", JSON.stringify({
+                  text: "다음 문장 " + i, partial: true,
+                }));
+                window.__emit("message", JSON.stringify({text: "확정 " + i}));
+              }
+            }"""
+        )
+        page.wait_for_timeout(400)
+
+        raf = page.evaluate("window.__raf")
+        overlap = f"{raf['max']} rAF callbacks were live at once — expected 1"
+        assert raf["max"] <= 1, overlap
+        idle = f"{raf['live']} rAF callbacks still scheduled after settling"
+        assert raf["live"] == 0, idle
+
+    def test_message_after_session_end_is_ignored(self, page, stage_server):
+        """종료는 최종 상태다 — 늦게 도착한 프레임이 컬럼을 되살리면 안 된다.
+
+        `currentLine = null` 만으로는 message 진입점이 살아 있어서, 한 프레임이
+        `setCaptionState("active")` → 새 라인 → rAF 재시작 → 라이브 리전 쓰기를
+        모두 되돌린다. 닫힌 소켓에서 벌어지는 일이다.
+        """
+        _fake_eventsource(page)
+        page.set_viewport_size({"width": 1920, "height": 1080})
+        page.goto(f"{stage_server}/stage/quarter-room", wait_until="load")
+
+        _emit_message(page, "종료 전 마지막 문장")
+        _settle(
+            page,
+            """() => document.querySelectorAll(".caption-line").length === 1""",
+        )
+        page.evaluate("() => window.__emit('session_end', '')")
+        before = _lines(page)
+
+        _emit_message(page, "유령 자막")
+        page.wait_for_timeout(300)
+
+        state = page.evaluate(
+            """() => ({
+              lines: [...document.querySelectorAll(".caption-line")]
+                       .map(el => el.textContent),
+              endedVisible: !document.getElementById("caption-ended").hidden,
+              liveHidden: document.getElementById("caption-live").hidden,
+            })"""
+        )
+        resurrected = (
+            f"the ended column accepted a late message: {state} (was {before})"
+        )
+        assert state["lines"] == before, resurrected
+        assert state["endedVisible"] is True, resurrected
+        assert state["liveHidden"] is True, resurrected
+
+    def test_empty_final_does_not_blank_the_column(self, page, stage_server):
+        """빈 final 이 대기 문구를 지우고 빈 컬럼을 남기면 안 된다.
+
+        `broadcast` 경로에 비어있음 가드가 없고 AWS Translate 는 구두점만 있는
+        입력에 `""` 를 돌려준다. 그대로 통과시키면 `_ensureCurrentLine()` 이
+        `#caption-empty` 를 제거한 뒤 빈 `.caption-line` 만 쌓여, 행사 중 무대
+        화면이 되돌릴 수 없는 빈 컬럼이 된다.
+        """
+        _fake_eventsource(page)
+        page.set_viewport_size({"width": 1920, "height": 1080})
+        page.goto(f"{stage_server}/stage/quarter-room", wait_until="load")
+
+        for _ in range(3):
+            _emit_message(page, "")
+        page.wait_for_timeout(300)
+
+        state = page.evaluate(
+            """() => ({
+              lines: [...document.querySelectorAll(".caption-line")]
+                       .map(el => el.textContent),
+              placeholder: document.getElementById("caption-empty") === null
+                ? null
+                : document.getElementById("caption-empty").textContent,
+            })"""
+        )
+        blanked = f"empty finals left the column in {state}"
+        assert state["lines"] == [], blanked
+        assert state["placeholder"] == "잠시 후 시작됩니다", blanked
+
+        # 진행 중인 partial 이 있을 때의 빈 final 은 그 라인을 확정하는 신호다.
+        _emit_message(page, "이어지는 문장입니다", partial=True)
+        _emit_message(page, "")
+        _settle(
+            page,
+            """() => {
+              const els = document.querySelectorAll(".caption-line");
+              return els.length === 1 &&
+                     els[0].textContent === "이어지는 문장입니다";
+            }""",
+        )
+        assert _lines(page) == ["이어지는 문장입니다"]
+        announced = page.evaluate(
+            "() => document.getElementById('caption-announcer').textContent"
+        )
+        assert announced == "이어지는 문장입니다", announced
+
+    def test_waiting_state_is_announced_to_screen_readers(self, page, stage_server):
+        """RL-019 의 반대쪽 — 대기 문구도 스크린리더에 닿아야 한다.
+
+        `#caption-empty` 는 `aria-hidden="true"` 인 `#caption-container` **안**에
+        있으므로 보조기술에는 존재하지 않는다. viewer.html 은 waiting 을 별도
+        `aria-live` 섹션으로 두어 공짜로 얻는 접근성인데, 무대 페이지는 한
+        서브트리로 합치면서 잃을 수 있는 자리다. 자막이 흐르기 시작하면 announcer
+        는 다시 비어야 한다 (자막 텍스트 경로는 `_lockLine()` 하나뿐이다).
+        """
+        _fake_eventsource(page)
+        page.goto(f"{stage_server}/stage/quarter-room?lang=en", wait_until="load")
+        page.wait_for_timeout(200)
+
+        state = page.evaluate(
+            """() => ({
+              announced: document.getElementById("caption-announcer").textContent,
+              visible: document.getElementById("caption-empty").textContent,
+              hidden: document
+                .getElementById("caption-container")
+                .getAttribute("aria-hidden"),
+            })"""
+        )
+        silent = (
+            "the waiting copy is inside an aria-hidden subtree and the announcer "
+            f"is empty — screen readers get silence in the waiting state: {state}"
+        )
+        assert state["hidden"] == "true", state
+        assert state["visible"] == "Starting shortly", state
+        assert state["announced"] == "Starting shortly", silent
+
+        _emit_message(page, "first line", partial=True)
+        page.wait_for_timeout(200)
+        stale = "the waiting copy must clear once captions start flowing"
+        announced = page.evaluate(
+            "() => document.getElementById('caption-announcer').textContent"
+        )
+        assert announced == "", stale
 
 
 class TestStageLayoutInBrowser:
