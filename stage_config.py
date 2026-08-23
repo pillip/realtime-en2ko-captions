@@ -144,7 +144,10 @@ def _as_mapping(raw: Any) -> dict[str, Any]:
     if isinstance(raw, str):
         try:
             raw = json.loads(raw) if raw.strip() else None
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
+            # RecursionError: 깊게 중첩된 JSON('[' * 100000)은 JSONDecodeError
+            # 가 아니라 RecursionError 로 터진다. "절대 예외를 던지지 않는다"
+            # 계약을 지키려면 함께 잡아야 한다.
             return {}
     return raw if isinstance(raw, dict) else {}
 

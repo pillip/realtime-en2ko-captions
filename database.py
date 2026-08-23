@@ -1081,7 +1081,10 @@ class Room:
         if isinstance(raw, str) and raw.strip():
             try:
                 raw = json.loads(raw)
-            except json.JSONDecodeError as e:
+            except (json.JSONDecodeError, RecursionError) as e:
+                # RecursionError 도 함께 잡는다 — 깊게 중첩된 JSON 은
+                # JSONDecodeError 가 아니라 RecursionError 로 터지므로,
+                # 이걸 놓치면 무대 페이지가 행사 중에 죽는다.
                 print(f"[Room] stage_config parse failed (room={room_id}): {e!r}")
                 raw = None
         return normalize_stage_config(raw)

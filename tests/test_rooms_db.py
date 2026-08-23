@@ -689,6 +689,22 @@ class TestRoomGetStageConfig:
 
         assert room_model.get_stage_config("no-such-room") == DEFAULT_STAGE_CONFIG
 
+    def test_deeply_nested_json_degrades_without_raising(
+        self, db_manager, room_model, stage_room, capsys
+    ):
+        """깊게 중첩된 컬럼 값이 무대 페이지를 죽이지 않는다.
+
+        json.loads 가 RecursionError 를 던지는 입력. update_stage_config 는
+        정규화 후 저장하므로 이 값을 만들지 않지만, 백업 복원·직접 SQL·향후
+        임포트 경로로 컬럼에 들어올 수 있다. 읽기 경로는 어떤 경우에도
+        degrade 해야 한다.
+        """
+        from stage_config import DEFAULT_STAGE_CONFIG
+
+        self._write_raw(db_manager, stage_room, "[" * 100_000)
+        assert room_model.get_stage_config(stage_room) == DEFAULT_STAGE_CONFIG
+        assert "stage_config parse failed" in capsys.readouterr().out
+
 
 class TestRoomUpdateStageConfig:
     """AC: 검증 통과 시에만 저장되며, 왕복 시 값이 정확히 보존된다."""

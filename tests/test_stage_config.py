@@ -94,6 +94,20 @@ class TestNormalizeFallsBackToDefault:
     def test_returns_default_dict(self, raw):
         assert normalize_stage_config(raw) == DEFAULT_STAGE_CONFIG
 
+    @pytest.mark.parametrize(
+        "raw",
+        ["[" * 100_000, '{"a":' * 100_000],
+        ids=["deep-array", "deep-object"],
+    )
+    def test_deeply_nested_json_degrades_instead_of_raising(self, raw):
+        """깊게 중첩된 JSON 은 RecursionError 를 내지 않고 기본값이 된다.
+
+        json.loads 는 이 입력에 대해 JSONDecodeError 가 아니라 RecursionError
+        를 던진다. 이걸 잡지 않으면 "절대 예외를 던지지 않는다" 계약이 깨지고
+        무대 페이지(ISSUE-40)가 행사 중에 죽는다.
+        """
+        assert normalize_stage_config(raw) == DEFAULT_STAGE_CONFIG
+
     def test_empty_json_object_is_valid_and_normalises_to_default(self):
         """컬럼 DEFAULT 값인 '{}' 도 기본값으로 정규화된다."""
         assert normalize_stage_config("{}") == DEFAULT_STAGE_CONFIG
