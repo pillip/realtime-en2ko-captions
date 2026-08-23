@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import html
 import json
+import re
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -350,7 +351,11 @@ def _json_for_script(obj: Any) -> str:
     unchanged. U+2028 / U+2029 are escaped too: they are legal in JSON strings
     but were illegal in JS string literals before ES2019.
 
-    Every server-rendered JSON literal in this module goes through here.
+    Use this for **every** value injected into a template's ``<script>`` block,
+    scalars included — the output is a complete literal, so the template must
+    not wrap it in quotes of its own. Values injected into markup need
+    :func:`html.escape` instead; SSE frames on the wire need neither and use
+    plain ``json.dumps``.
     """
     return (
         json.dumps(obj, ensure_ascii=False)
@@ -452,6 +457,8 @@ _STAGE_TEMPLATE_PATH = Path(__file__).resolve().parent / "components" / "stage.h
 _CAPTION_WIDTHS = {"1/4": "25%", "1/3": "33.333%"}
 _DEFAULT_CAPTION_WIDTH = _CAPTION_WIDTHS["1/4"]
 
+_PLACEHOLDER_RE = re.compile(r"\{\{(\w+)\}\}")
+
 
 def _render_stage_html(
     *,
@@ -464,11 +471,22 @@ def _render_stage_html(
 ) -> str:
     """Render the stage template with safe substitutions.
 
-    Same rules as :func:`_render_viewer_html` — text fields are HTML-escaped,
-    structured fields go through :func:`_json_for_script`. ``stage_config``
-    must already be normalised (:func:`stage_config.normalize_stage_config`);
-    a render-only ``caption_width`` key is derived here so the template never
-    has to know the ratio→width mapping.
+    The escaper is picked by **sink**, not by "is this user input" (RL-020):
+    ``{{ROOM_NAME}}`` appears only in markup and is HTML-escaped, while every
+    other placeholder appears only inside the inline ``<script>`` and is
+    emitted by :func:`_json_for_script` as a complete JS literal — the
+    template supplies no quotes of its own.
+
+    Substitution is single-pass. Chained ``str.replace`` lets a value written
+    by an earlier step be re-read by a later one, so a room named
+    ``{{STAGE_CONFIG_JSON}}`` would render the config blob into the ``<h1>``
+    (RL-021). The lambda replacement also keeps ``re.sub`` from interpreting
+    backslashes and backreferences in the substituted values.
+
+    ``stage_config`` must already be normalised
+    (:func:`stage_config.normalize_stage_config`); a render-only
+    ``caption_width`` key is derived here so the template never has to know
+    the ratio→width mapping.
     """
     template = _STAGE_TEMPLATE_PATH.read_text(encoding="utf-8")
     payload = {
@@ -477,15 +495,15 @@ def _render_stage_html(
             stage_config.get("caption_ratio"), _DEFAULT_CAPTION_WIDTH
         ),
     }
-
-    return (
-        template.replace("{{ROOM_ID}}", html.escape(room_id, quote=True))
-        .replace("{{ROOM_NAME}}", html.escape(room_name or room_id, quote=True))
-        .replace("{{OUTPUT_LANGS_JSON}}", _json_for_script(output_langs))
-        .replace("{{PRIMARY_LANG}}", html.escape(caption_lang or "ko", quote=True))
-        .replace("{{INITIAL_STATE}}", html.escape(initial_state, quote=True))
-        .replace("{{STAGE_CONFIG_JSON}}", _json_for_script(payload))
-    )
+    values = {
+        "ROOM_NAME": html.escape(room_name or room_id, quote=True),
+        "ROOM_ID": _json_for_script(room_id),
+        "OUTPUT_LANGS_JSON": _json_for_script(output_langs),
+        "PRIMARY_LANG": _json_for_script(caption_lang or "ko"),
+        "INITIAL_STATE": _json_for_script(initial_state),
+        "STAGE_CONFIG_JSON": _json_for_script(payload),
+    }
+    return _PLACEHOLDER_RE.sub(lambda m: values.get(m.group(1), m.group(0)), template)
 
 
 async def _handle_stage(request: web.Request) -> web.Response:

@@ -53,6 +53,12 @@
     /* --- 좌열 3행 (헤더 / 발표 영역 / 로고 바) --------------------------- */
     .stage-main {
       display: grid;
+      /* 열 트랙을 반드시 명시한다. 생략하면 암시적 트랙이 `auto`
+         (= minmax(auto, max-content)) 라서 긴 행사 타이틀이나 룸 이름의
+         max-content 폭만큼 트랙이 자라고, 헤더와 16:9 프레임이 자막 컬럼
+         위에 그려진다. 컨테이너의 min-width: 0 은 컨테이너 박스만 제약할
+         뿐 트랙을 잡지 못한다 (RL-017). */
+      grid-template-columns: minmax(0, 1fr);
       grid-template-rows: auto minmax(0, 1fr) auto;
       min-width: 0;
       min-height: 0;
@@ -182,7 +188,9 @@
     .logo-group-label {
       font-size: clamp(11px, 0.75vw, 16px);
       letter-spacing: 0.1em;
-      color: rgba(255, 255, 255, 0.4);
+      /* 0.4 은 3.80:1 로 WCAG AA(4.5:1) 미달이었다. #0b0b0c 위에서 흰색이
+         4.5:1 을 넘기는 알파 하한은 0.45, 0.5 는 5.34:1 (RL-018). */
+      color: rgba(255, 255, 255, 0.5);
       white-space: nowrap;
     }
     .logo-group img {
@@ -230,14 +238,19 @@
       font-weight: 500;
       line-height: 1.45;
       letter-spacing: -0.01em;
-      color: rgba(255, 255, 255, 0.42);
+      /* clamp 하한이 20px 이라 뷰포트가 좁으면 large-text 완화(3:1)를 쓸 수
+         없다. 0.42 는 4.04:1 로 미달, 0.45 가 4.52:1 로 AA 하한이다
+         (RL-018). 현재 줄의 순백과의 대비는 그대로 유지된다. */
+      color: rgba(255, 255, 255, 0.45);
       word-break: keep-all;
       overflow-wrap: anywhere;
     }
     .caption-container .caption-line:last-child { color: #ffffff; }
     .caption-empty {
       font-size: clamp(14px, 1vw, 19px);
-      color: rgba(255, 255, 255, 0.32);
+      /* 0.32 는 2.81:1 로 WCAG AA 미달이었다 — 행사장 뒤쪽에서 읽어야 하는
+         유일한 문구다. 0.5 → 5.34:1 (RL-018). */
+      color: rgba(255, 255, 255, 0.5);
       text-align: center;
       padding: 24px 0;
       letter-spacing: 0.01em;
@@ -258,15 +271,18 @@
   <script>
     // -----------------------------------------------------------------------
     // Bootstrap config — 서버가 템플릿 치환으로 주입한다.
-    // 텍스트 필드는 html.escape, 구조체는 _json_for_script (RL-016) 로
-    // 이스케이프되므로 이 블록은 사용자 입력으로 탈출되지 않는다.
+    // 이 블록 안의 모든 값은 스칼라까지 포함해 _json_for_script 가 만든
+    // **완성된 JS 리터럴** 이다 — 따옴표도 서버가 붙인다. 템플릿에서 따옴표를
+    // 감싸고 html.escape 를 쓰면 `\` 가 닫는 따옴표를 탈출시켜 부트스트랩이
+    // 통째로 죽고, 따옴표는 HTML 엔티티로 바뀌어 값 자체가 손상된다
+    // (스크립트 블록 안에서는 엔티티가 디코딩되지 않는다 — RL-016/020).
     // <head> 에 두는 이유: 자막 컬럼 폭을 첫 페인트 전에 확정하기 위함.
     // -----------------------------------------------------------------------
     const CONFIG = {
-      room_id: "{{ROOM_ID}}",
+      room_id: {{ROOM_ID}},
       output_langs: {{OUTPUT_LANGS_JSON}},
-      caption_lang: "{{PRIMARY_LANG}}",
-      initial_state: "{{INITIAL_STATE}}", // 'waiting' | 'active' | 'closed'
+      caption_lang: {{PRIMARY_LANG}},
+      initial_state: {{INITIAL_STATE}}, // 'waiting' | 'active' | 'closed'
       stage: {{STAGE_CONFIG_JSON}},
     };
 
@@ -276,12 +292,26 @@
     }
 
     // 없는 에셋은 해당 이미지만 제거해 로고 바 레이아웃을 지킨다 (RL-008).
+    // 다만 그룹의 마지막 이미지가 죽으면 라벨만 떠 있는 빈 그룹이 되고,
+    // 그런 그룹만 남으면 76px 바가 글자만으로 채워진다 — 스크린리더에도
+    // "주최" 만 읽히고 아무것도 없는 상태다. 그래서 비어버린 그룹과, 그룹이
+    // 하나도 남지 않은 바까지 함께 접는다.
     // /branding 라우트는 ISSUE-38 이 제공한다 — 아직 없으면 전부 404 다.
+    function dropBrokenLogo(img) {
+      const group = img.closest(".logo-group");
+      img.remove();
+      if (group && !group.querySelector("img")) group.remove();
+      const bar = document.getElementById("logo-bar");
+      if (bar && !bar.querySelector(".logo-group")) bar.hidden = true;
+    }
+
     function makeLogoImage(filename, alt) {
       const img = document.createElement("img");
       img.alt = alt; // RL-010: 그룹 라벨에서 파생, 반복 표시는 alt=""
       img.decoding = "async";
-      img.addEventListener("error", function () { img.remove(); });
+      img.addEventListener("error", function () { dropBrokenLogo(img); });
+      // URL 컨텍스트 — 파일명은 stage_config 가 검증하지 않고 넘긴 값이므로
+      // 반드시 퍼센트 인코딩한 뒤 src *프로퍼티* 로 넣는다 (마크업 조립 금지).
       img.src = "/branding/" + encodeURIComponent(CONFIG.room_id) +
                 "/" + encodeURIComponent(filename);
       return img;
@@ -341,7 +371,7 @@
 </head>
 <body>
   <div class="stage">
-    <div class="stage-main">
+    <main class="stage-main">
       <header class="event-header" id="event-header">
         <h1 class="event-title" id="event-title">{{ROOM_NAME}}</h1>
         <p class="event-subtitle" id="event-subtitle" hidden></p>
@@ -360,7 +390,7 @@
       </section>
 
       <footer class="logo-bar" id="logo-bar" hidden></footer>
-    </div>
+    </main>
 
     <aside class="caption-column" id="caption-column" aria-label="자막">
       <div class="caption-live" id="caption-live">

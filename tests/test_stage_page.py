@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,72 @@ _STAGE_TEMPLATE = Path(__file__).resolve().parent.parent / "components" / "stage
 # 브레이크아웃 페이로드 — 이 문자열이 응답 본문에 원본 그대로 나타나면
 # 인라인 <script> 블록이 조기 종료된 것이다.
 _BREAKOUT_TITLE = "</script><script>alert(1)</script>"
+
+# 페이지가 칠하는 두 배경. 대비 계산은 합성 후 색으로 한다 (RL-018).
+_CANVAS_RGB = (11, 11, 12)  # --canvas: #0b0b0c
+_FRAME_RGB = (0, 0, 0)  # .stage-frame / .title-card 배경
+
+
+# ---------------------------------------------------------------------------
+# WCAG 대비 계산 (RL-018) — 알파를 눈대중으로 고르지 않기 위해 수치로 검증한다.
+# ---------------------------------------------------------------------------
+def _srgb_to_linear(channel: float) -> float:
+    c = channel / 255
+    return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+
+def _relative_luminance(rgb: tuple[float, float, float]) -> float:
+    r, g, b = (_srgb_to_linear(round(c)) for c in rgb)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def _composite(rgba: tuple[float, float, float, float], backdrop) -> tuple:
+    *rgb, alpha = rgba
+    return tuple(
+        alpha * c + (1 - alpha) * b for c, b in zip(rgb, backdrop, strict=True)
+    )
+
+
+def _contrast_ratio(rgba: tuple[float, float, float, float], backdrop) -> float:
+    """알파 합성 후의 전경색과 배경색 사이 WCAG 2.1 명도 대비."""
+    fg = _relative_luminance(_composite(rgba, backdrop))
+    bg = _relative_luminance(backdrop)
+    hi, lo = max(fg, bg), min(fg, bg)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def _rule_block(css: str, selector: str) -> str:
+    """`selector { ... }` 규칙 본문만 잘라낸다.
+
+    파일 전체 substring 매칭은 다른 규칙이 같은 선언을 갖고 있으면 통과해
+    버린다 (RL-004). 단언을 규칙 블록으로 한정하기 위한 헬퍼.
+    """
+    pattern = rf"(?m)^\s*{re.escape(selector)}\s*\{{(.*?)\}}"
+    match = re.search(pattern, css, re.S)
+    assert match is not None, f"{selector} rule not found in stage.html"
+    return match.group(1)
+
+
+def _rule_rgba(css: str, selector: str) -> tuple[float, float, float, float]:
+    block = _rule_block(css, selector)
+    match = re.search(
+        r"color:\s*rgba\(\s*(\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\s*\)", block
+    )
+    assert match is not None, f"{selector} has no rgba() color declaration"
+    r, g, b, a = match.groups()
+    return (int(r), int(g), int(b), float(a))
+
+
+def _vertical_margin_components(longhand: str, value: str) -> list[str]:
+    """`margin` 선언에서 세로(top/bottom) 성분만 뽑는다 (RL-012 가드용)."""
+    parts = value.split()
+    if longhand:  # margin-top / margin-bottom
+        return parts[:1]
+    if len(parts) == 1:  # margin: a
+        return parts
+    if len(parts) == 2:  # margin: v h
+        return parts[:1]
+    return [parts[0], parts[2]]  # margin: t h b  /  t r b l
 
 
 # ---------------------------------------------------------------------------
@@ -163,9 +230,25 @@ class TestStageHtmlMarkup:
         return _STAGE_TEMPLATE.read_text(encoding="utf-8")
 
     def test_letterbox_css_present(self, stage_html):
-        """16:9 박스 + contain — 잘림/늘어남 없이 레터박스 (AC 3)."""
-        assert "aspect-ratio: 16 / 9" in stage_html
-        assert "object-fit: contain" in stage_html
+        """16:9 박스 + contain — 잘림/늘어남 없이 레터박스 (AC 3).
+
+        `object-fit: contain` 은 파일 안에 3번 등장하므로(로고 규칙 2개 포함)
+        전체 substring 매칭은 `.capture-video` 가 선언을 잃어도 통과한다
+        (RL-004). AC 가 말하는 요소로 단언을 한정한다.
+        """
+        assert "aspect-ratio: 16 / 9" in _rule_block(stage_html, ".stage-frame")
+        assert "object-fit: contain" in _rule_block(stage_html, ".capture-video")
+
+    def test_stage_main_declares_an_explicit_column_track(self, stage_html):
+        """좌측 컬럼의 암시적 `auto` 트랙은 max-content 로 자란다 (RL-017).
+
+        `grid-template-columns` 를 선언하지 않으면 긴 행사 타이틀/룸 이름이
+        트랙을 밀어내 발표 영역이 자막 컬럼 위에 그려진다. 컨테이너의
+        `min-width: 0` 은 트랙을 제약하지 못하므로 트랙을 직접 잡아야 한다.
+        """
+        block = _rule_block(stage_html, ".stage-main")
+        assert "grid-template-columns: minmax(0, 1fr);" in block
+        assert "grid-template-rows: auto minmax(0, 1fr) auto;" in block
 
     def test_every_vh_height_has_dvh_fallback(self, stage_html):
         """RL-011: `height: 100vh;` 바로 다음 줄에 `height: 100dvh;`."""
@@ -177,15 +260,30 @@ class TestStageHtmlMarkup:
             assert nxt == "height: 100dvh;", f"line {i + 2} needs the dvh fallback"
 
     def test_no_vertical_margin_on_full_height_elements(self, stage_html):
-        """RL-012: 세로 margin 대신 padding 을 쓴다."""
+        """RL-012: 세로 margin 대신 padding 을 쓴다.
+
+        longhand 두 개만 막으면 `margin: 12px 0` 이 그대로 통과해 PR #58 이
+        고쳤던 버그가 다시 들어온다. shorthand 의 top/bottom 성분까지 검사한다.
+        """
         assert "margin: 0;" in stage_html
-        assert "margin-top" not in stage_html
-        assert "margin-bottom" not in stage_html
+        declarations = re.findall(r"\bmargin(-top|-bottom)?\s*:\s*([^;}]+)", stage_html)
+        assert declarations, "stage.html must declare margin: 0 somewhere"
+        for longhand, value in declarations:
+            for component in _vertical_margin_components(longhand, value.strip()):
+                assert component == "0", (
+                    f"vertical margin '{component}' in "
+                    f"`margin{longhand}: {value.strip()}` — use padding (RL-012)"
+                )
 
     def test_left_column_grid_rows(self, stage_html):
-        """헤더 / 발표 영역 / 로고 바 3행 + Grid 자식 오버플로 방지."""
-        assert "grid-template-rows: auto minmax(0, 1fr) auto;" in stage_html
-        assert "min-height: 0;" in stage_html
+        """헤더 / 발표 영역 / 로고 바 3행 + Grid 자식 오버플로 방지.
+
+        `min-height: 0;` 은 파일에 4번 등장하므로 발표 영역 규칙으로 한정한다
+        (RL-004).
+        """
+        main = _rule_block(stage_html, ".stage-main")
+        assert "grid-template-rows: auto minmax(0, 1fr) auto;" in main
+        assert "min-height: 0;" in _rule_block(stage_html, ".presentation")
 
     def test_caption_column_width_comes_from_css_variable(self, stage_html):
         """2열 Grid 의 우측 폭은 서버가 주입한 CSS 변수로 결정된다 (AC 2)."""
@@ -233,6 +331,39 @@ class TestStageHtmlMarkup:
         assert "/branding/" in stage_html
         assert "img.alt" in stage_html
 
+    def test_logo_filename_never_reaches_the_dom_as_markup(self, stage_html):
+        """RL-016 두 번째 링크 — 파일명은 검증되지 않은 채 `<img src>` 로 간다.
+
+        `stage_config._as_logo_groups` 가 경로 검증을 ISSUE-38 에 넘겼으므로,
+        렌더러 쪽에서 지켜야 할 불변식은 두 가지다: (1) 파일명을 마크업
+        문자열로 조립하지 않는다, (2) URL 컨텍스트이므로 퍼센트 인코딩한다.
+        """
+        assert "encodeURIComponent(filename)" in stage_html
+        for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write"):
+            assert sink not in stage_html, f"{sink} makes the filename markup"
+
+    @pytest.mark.parametrize(
+        "selector,backdrop",
+        [
+            (".event-subtitle", _CANVAS_RGB),
+            (".title-card-subtitle", _FRAME_RGB),
+            (".logo-group-label", _CANVAS_RGB),
+            (".caption-line", _CANVAS_RGB),
+            (".caption-empty", _CANVAS_RGB),
+            (".caption-ended", _CANVAS_RGB),
+        ],
+    )
+    def test_dim_text_meets_wcag_aa_contrast(self, stage_html, selector, backdrop):
+        """WCAG 1.4.3 — 어두운 캔버스 위 흐린 텍스트도 4.5:1 이상 (RL-018).
+
+        `clamp()` 하한이 전부 24px 미만이라(자막 20px, 라벨 11px, 빈 상태 14px)
+        large-text 3:1 완화를 쓸 수 없다. `#0b0b0c` 위에서 4.5:1 을 넘기는
+        흰색 알파 하한은 0.45 다 — 알파를 다른 페이지에서 복사해 오면 이
+        테스트가 막는다.
+        """
+        ratio = _contrast_ratio(_rule_rgba(stage_html, selector), backdrop)
+        assert ratio >= 4.5, f"{selector} is {ratio:.2f}:1, WCAG AA needs 4.5:1"
+
     def test_state_copy_matches_ux_spec(self, stage_html):
         assert "잠시 후 시작됩니다" in stage_html
         assert "세션이 종료되었습니다" in stage_html
@@ -257,7 +388,7 @@ class TestStageRouteHandler:
     AC ↔ Test mapping (issues.md ISSUE-40 § AC):
       1. 없는 룸 → 404 친화 페이지          → test_unknown_room_returns_friendly_404
       2. caption_ratio → 25% / 33.333%      → test_quarter_ratio_*, test_third_ratio_*
-      4. 빈 event_title → 룸 이름 폴백      → test_empty_event_title_falls_back_to_room_name
+      4. 빈 event_title → 룸 이름 폴백      → test_empty_event_title_gives_the_client_*
       5. 로고 전무 → 빈 그룹만 주입         → test_empty_logo_groups_inject_no_assets
       6. `<script>` 이스케이프              → test_room_name_script_tag_is_escaped
       7. `</script>` 브레이크아웃 차단      → test_event_title_cannot_close_script_block
@@ -344,8 +475,15 @@ class TestStageRouteHandler:
         assert status == 200
         assert "25%" in body
 
-    async def test_empty_event_title_falls_back_to_room_name(self):
-        """AC 4 — 헤더 바가 룸 이름을 대신 표시한다 (서버 렌더 폴백)."""
+    async def test_empty_event_title_gives_the_client_a_room_name_fallback(self):
+        """AC 4 — 빈 타이틀이면 `<h1>` 의 룸 이름이 그대로 남는다.
+
+        `{{ROOM_NAME}}` 존재만 단언하면 event_title 유무와 무관하게 늘 통과한다
+        (RL-004). 폴백을 성립시키는 세 조건을 모두 확인한다:
+        (1) `<h1>` 이 룸 이름을 담고 있고, (2) 주입된 event_title 이 비어 있어
+        클라이언트의 `||` 가 그 이름으로 떨어지며, (3) 폴백 표현식이 실제로
+        페이지에 살아 있다. 렌더 결과(높이 유지 포함)는 e2e 가 맡는다.
+        """
         repo = _StubRoomRepo(
             {"room-1": _room(stage_config=_stage_config(event_title=""))}
         )
@@ -353,6 +491,49 @@ class TestStageRouteHandler:
         assert status == 200
         assert 'id="event-title">Conference Hall A</h1>' in body
         assert '"event_title": ""' in body
+        assert "cfg.event_title || headerTitle.textContent.trim()" in body
+
+    async def test_set_event_title_overrides_the_room_name_client_side(self):
+        """위 폴백 테스트의 대조군 — 타이틀이 있으면 그 값이 주입된다."""
+        repo = _StubRoomRepo(
+            {"room-1": _room(stage_config=_stage_config(event_title="기조연설"))}
+        )
+        status, body, _ = await _get(repo, "/stage/room-1")
+        assert status == 200
+        assert 'id="event-title">Conference Hall A</h1>' in body
+        assert '"event_title": "기조연설"' in body
+
+    @pytest.mark.parametrize(
+        "hostile_name", ["{{STAGE_CONFIG_JSON}}", "{{OUTPUT_LANGS_JSON}}"]
+    )
+    async def test_room_name_cannot_expand_another_placeholder(self, hostile_name):
+        """RL-021 — 룸 이름이 다른 플레이스홀더로 팽창하지 않는다.
+
+        연쇄 `str.replace` 는 앞 단계가 써 넣은 값을 뒤 단계가 다시 본다.
+        룸 이름은 운영자가 자유롭게 쓰는 텍스트이므로 단일 패스 치환이어야
+        한다.
+        """
+        repo = _StubRoomRepo({"room-1": _room(name=hostile_name)})
+        status, body, _ = await _get(repo, "/stage/room-1")
+        assert status == 200
+        assert f'id="event-title">{hostile_name}</h1>' in body
+        assert f"<title>{hostile_name} — 무대 화면</title>" in body
+
+    async def test_script_scalars_survive_backslashes_and_quotes(self):
+        """RL-020 — `<script>` 안 스칼라는 JS 리터럴로 직렬화된다.
+
+        `html.escape` 는 `\\` 를 건드리지 않아 백슬래시로 끝나는 값이 닫는
+        따옴표를 탈출시킨다 — 부트스트랩 전체가 SyntaxError 로 죽는다.
+        `"` 는 `&quot;` 로 바뀌어 값 자체가 조용히 손상된다.
+        """
+        room_id = 'q"b\\'
+        repo = _StubRoomRepo({room_id: _room(id=room_id)})
+        status, body, _ = await _get(repo, "/stage/q%22b%5C")
+        assert status == 200
+        assert "&quot;" not in body  # 스크립트 컨텍스트에 HTML 엔티티 금지
+        literal = re.search(r"^\s*room_id: (.*),$", body, re.M)
+        assert literal is not None, "room_id literal missing from the bootstrap"
+        assert json.loads(literal.group(1)) == room_id
 
     async def test_event_title_is_injected_when_set(self):
         repo = _StubRoomRepo(
