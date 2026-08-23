@@ -211,7 +211,11 @@ class TestPartitionUploads:
         assert "읽을 수 없습니다" in rejected[0][1]
 
     def test_unexpected_exception_is_not_leaked_to_the_admin(self, capsys):
-        """RL-006: ValueError 가 아닌 예외의 str(e) 는 UI 사유가 되면 안 된다."""
+        """AC-8/RL-006: 로고 저장 중 디스크 오류 같은 예기치 못한 예외가 나도
+        사용자에게는 일반 실패 메시지만 보이고 상세는 서버 콘솔에만 남는다.
+
+        ValueError 가 아닌 예외의 ``str(e)`` 는 UI 사유가 되면 안 된다.
+        """
 
         def _boom(room_id, filename, data):
             raise RuntimeError("/srv/secret/path denied")
