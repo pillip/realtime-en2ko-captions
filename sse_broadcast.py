@@ -37,6 +37,7 @@ from typing import Any
 from aiohttp import web
 
 from branding_routes import handle_branding_asset
+from stage_config import normalize_stage_config
 from translation import SUPPORTED_OUTPUT_LANGS
 
 # ---------------------------------------------------------------------------
@@ -261,6 +262,7 @@ def build_sse_app(
     app.router.add_get("/stream/{room_id}", _handle_stream)
     app.router.add_get("/view/{room_id}", _handle_view)
     app.router.add_get("/branding/{room_id}/{filename}", handle_branding_asset)
+    app.router.add_get("/stage/{room_id}", _handle_stage)
     app.router.add_get("/health", _handle_health)
     return app
 
@@ -336,6 +338,30 @@ def _supported_output_langs(primary: str) -> list[str]:
     return langs
 
 
+def _json_for_script(obj: Any) -> str:
+    """Serialise ``obj`` as a JSON literal that is safe inside an inline <script>.
+
+    ``json.dumps`` escapes neither ``<`` nor ``/``, so a persisted string
+    containing ``</script>`` closes the script block early and everything after
+    it is parsed as markup (RL-016 — the hand-off left by the ISSUE-37 review
+    F-2 for the stage page). Escaping ``<`` / ``>`` / ``&`` as ``\\uXXXX``
+    removes every breakout route (script terminator, HTML comment, entity)
+    while keeping the output **valid JSON** — ``json.loads`` round-trips it
+    unchanged. U+2028 / U+2029 are escaped too: they are legal in JSON strings
+    but were illegal in JS string literals before ES2019.
+
+    Every server-rendered JSON literal in this module goes through here.
+    """
+    return (
+        json.dumps(obj, ensure_ascii=False)
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("&", "\\u0026")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
+
+
 def _render_viewer_html(
     *,
     room_id: str,
@@ -348,18 +374,16 @@ def _render_viewer_html(
 
     Text fields (room_id/room_name/primary_lang/initial_state) are HTML-
     escaped so a malicious room name (DB write, not user-facing) cannot
-    inject markup. The output_langs list is rendered as a JSON literal —
-    json.dumps already escapes the dangerous characters for an HTML script
-    context (``<`` / ``>`` / ``&``).
+    inject markup. The output_langs list is rendered as a JSON literal via
+    :func:`_json_for_script` — the list carries the room's
+    ``primary_output_lang``, so it is not a closed token set (RL-016).
     """
     template = _VIEWER_TEMPLATE_PATH.read_text(encoding="utf-8")
     safe_room_id = html.escape(room_id, quote=True)
     safe_room_name = html.escape(room_name or room_id, quote=True)
     safe_primary = html.escape(primary_lang or "ko", quote=True)
     safe_initial = html.escape(initial_state, quote=True)
-    # json.dumps is sufficient for embedding inside <script>; the output is
-    # a valid JS array literal with no closing-tag risk for our token set.
-    langs_json = json.dumps(output_langs, ensure_ascii=False)
+    langs_json = _json_for_script(output_langs)
 
     return (
         template.replace("{{ROOM_ID}}", safe_room_id)
@@ -412,6 +436,106 @@ async def _handle_view(request: web.Request) -> web.Response:
     except Exception as e:
         # Template missing or unreadable — log, do not propagate.
         print(f"[View] viewer template render failed: {e!r}")
+        return web.Response(status=404, text=_NOT_FOUND_HTML, content_type="text/html")
+
+    return web.Response(status=200, text=body, content_type="text/html")
+
+
+# ---------------------------------------------------------------------------
+# Stage composite page (/stage/{room_id}) — ISSUE-40
+# ---------------------------------------------------------------------------
+_STAGE_TEMPLATE_PATH = Path(__file__).resolve().parent / "components" / "stage.html"
+
+# stage_config.caption_ratio → 자막 컬럼 CSS 폭. 매핑이 여기(서버)에만 있으므로
+# 응답 HTML 에는 해당 룸의 폭 하나만 등장한다 — 템플릿이 두 값을 모두 갖고
+# 있으면 렌더 결과로 설정을 구분할 수 없다.
+_CAPTION_WIDTHS = {"1/4": "25%", "1/3": "33.333%"}
+_DEFAULT_CAPTION_WIDTH = _CAPTION_WIDTHS["1/4"]
+
+
+def _render_stage_html(
+    *,
+    room_id: str,
+    room_name: str,
+    output_langs: list[str],
+    caption_lang: str,
+    initial_state: str,
+    stage_config: dict[str, Any],
+) -> str:
+    """Render the stage template with safe substitutions.
+
+    Same rules as :func:`_render_viewer_html` — text fields are HTML-escaped,
+    structured fields go through :func:`_json_for_script`. ``stage_config``
+    must already be normalised (:func:`stage_config.normalize_stage_config`);
+    a render-only ``caption_width`` key is derived here so the template never
+    has to know the ratio→width mapping.
+    """
+    template = _STAGE_TEMPLATE_PATH.read_text(encoding="utf-8")
+    payload = {
+        **stage_config,
+        "caption_width": _CAPTION_WIDTHS.get(
+            stage_config.get("caption_ratio"), _DEFAULT_CAPTION_WIDTH
+        ),
+    }
+
+    return (
+        template.replace("{{ROOM_ID}}", html.escape(room_id, quote=True))
+        .replace("{{ROOM_NAME}}", html.escape(room_name or room_id, quote=True))
+        .replace("{{OUTPUT_LANGS_JSON}}", _json_for_script(output_langs))
+        .replace("{{PRIMARY_LANG}}", html.escape(caption_lang or "ko", quote=True))
+        .replace("{{INITIAL_STATE}}", html.escape(initial_state, quote=True))
+        .replace("{{STAGE_CONFIG_JSON}}", _json_for_script(payload))
+    )
+
+
+async def _handle_stage(request: web.Request) -> web.Response:
+    """Serve the unauthenticated stage composite page for a room.
+
+    Same three branches as :func:`_handle_view`:
+      1. Unknown room (or repo failure) → 404 + the shared friendly body.
+      2. closed room → 200 rendered with initial_state='closed' so the caption
+         column shows the ended state without opening SSE.
+      3. Otherwise → 200.
+
+    The caption language is fixed by ``?lang=`` (the stage screen carries no
+    controls — a form element could intercept presenter remote keys, NFR-025);
+    an unsupported code falls back to the room's primary language.
+    ``stage_config`` is normalised here, so a malformed blob degrades to the
+    documented defaults instead of 500ing during an event.
+    """
+    room_id = request.match_info["room_id"]
+    room_repo = request.app["room_repo"]
+
+    try:
+        room = room_repo.get_by_id(room_id)
+    except Exception as e:
+        # RL-006: log internal detail, return generic 404.
+        print(f"[Stage] room lookup failed: {e!r}")
+        return web.Response(status=404, text=_NOT_FOUND_HTML, content_type="text/html")
+
+    if room is None:
+        return web.Response(status=404, text=_NOT_FOUND_HTML, content_type="text/html")
+
+    primary_lang = room.get("primary_output_lang") or "ko"
+    output_langs = _supported_output_langs(primary_lang)
+    requested_lang = request.query.get("lang")
+    caption_lang = requested_lang if requested_lang in output_langs else primary_lang
+    room_name = room.get("name") or room_id
+    status = room.get("status") or "waiting"
+    initial_state = "closed" if status == "closed" else status
+
+    try:
+        body = _render_stage_html(
+            room_id=room_id,
+            room_name=room_name,
+            output_langs=output_langs,
+            caption_lang=caption_lang,
+            initial_state=initial_state,
+            stage_config=normalize_stage_config(room.get("stage_config")),
+        )
+    except Exception as e:
+        # Template missing or unreadable — log, do not propagate (RL-006).
+        print(f"[Stage] stage template render failed: {e!r}")
         return web.Response(status=404, text=_NOT_FOUND_HTML, content_type="text/html")
 
     return web.Response(status=200, text=body, content_type="text/html")
