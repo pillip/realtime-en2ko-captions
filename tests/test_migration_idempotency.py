@@ -3,10 +3,10 @@ Migration idempotency integration test.
 
 Verifies that the schema migrations introduced this sprint
 (rooms table, usage_logs.room_id, rooms.primary_output_lang,
-rooms.output_langs, rooms.total_viewers, rooms.peak_viewers) can be
-applied to a pre-existing legacy database and are safe to re-run any
-number of times without raising errors, duplicating columns, or
-clobbering existing rows.
+rooms.output_langs, rooms.total_viewers, rooms.peak_viewers,
+rooms.stage_config) can be applied to a pre-existing legacy database and
+are safe to re-run any number of times without raising errors,
+duplicating columns, or clobbering existing rows.
 
 Why this test
 -------------
@@ -32,11 +32,12 @@ from database import DatabaseManager, User
 # ---------------------------------------------------------------------------
 # Legacy schema fixtures
 # ---------------------------------------------------------------------------
-# Schema deliberately predates ALL three sprint migrations:
+# Schema deliberately predates ALL sprint migrations:
 #   1. ISSUE-26 rooms table
 #   2. ISSUE-29 usage_logs.room_id
 #   3. ISSUE-30 rooms.primary_output_lang / rooms.output_langs
 #   4. ISSUE-33 rooms.total_viewers / rooms.peak_viewers
+#   5. ISSUE-37 rooms.stage_config
 # This is the most aggressive "old DB on disk" scenario the migration path
 # can encounter — if it works here, every intermediate state works too.
 _LEGACY_USERS_DDL = """
@@ -66,6 +67,29 @@ CREATE TABLE usage_logs (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     metadata TEXT,
     FOREIGN KEY (user_id) REFERENCES users(id)
+)
+"""
+
+
+# rooms 테이블은 있으나 ISSUE-30/33/37 컬럼이 없는 중간 세대 스키마.
+# "이미 룸 행이 들어 있는 운영 DB" 를 재현하기 위한 별도 시드 — 위의
+# _seed_legacy_db 는 rooms 테이블 자체가 없는 더 오래된 상태를 다룬다.
+_LEGACY_ROOMS_DDL = """
+CREATE TABLE rooms (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'waiting'
+        CHECK (status IN ('waiting','active','inactive','closed')),
+    input_lang TEXT NOT NULL DEFAULT 'auto',
+    output_lang TEXT NOT NULL DEFAULT 'ko',
+    created_by INTEGER NOT NULL,
+    operator_id INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_activity TIMESTAMP,
+    timeout_minutes INTEGER NOT NULL DEFAULT 30,
+    closed_at TIMESTAMP,
+    FOREIGN KEY (created_by) REFERENCES users(id),
+    FOREIGN KEY (operator_id) REFERENCES users(id)
 )
 """
 
@@ -103,6 +127,31 @@ def _seed_legacy_db(db_path: str) -> dict[str, list[int]]:
     conn.commit()
     conn.close()
     return {"user_ids": user_ids, "log_ids": log_ids}
+
+
+def _seed_legacy_db_with_rooms(db_path: str) -> list[str]:
+    """Seed users/usage_logs plus a pre-ISSUE-30 rooms table with rows.
+
+    Returns the seeded room ids. Used by the ISSUE-37 migration test which
+    must assert that *pre-existing* room rows pick up the new column's
+    DEFAULT rather than NULL.
+    """
+    _seed_legacy_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    conn.execute(_LEGACY_ROOMS_DDL)
+    creator = conn.execute("SELECT id FROM users LIMIT 1").fetchone()[0]
+
+    room_ids = ["legacy-hall-a", "legacy-hall-b"]
+    for room_id in room_ids:
+        conn.execute(
+            "INSERT INTO rooms (id, name, status, created_by, timeout_minutes) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (room_id, f"{room_id} 홀", "active", creator, 45),
+        )
+    conn.commit()
+    conn.close()
+    return room_ids
 
 
 def _column_names(db: DatabaseManager, table: str) -> set[str]:
@@ -168,6 +217,7 @@ class TestMigrationFromLegacyDb:
             "output_langs",  # ISSUE-30
             "total_viewers",  # ISSUE-33
             "peak_viewers",  # ISSUE-33
+            "stage_config",  # ISSUE-37
         ):
             assert col in rooms_cols, f"rooms missing column {col!r}"
 
@@ -235,6 +285,7 @@ class TestMigrationIdempotency:
             "output_langs",
             "total_viewers",
             "peak_viewers",
+            "stage_config",
         ):
             assert rooms_col_names.count(col) == 1, (
                 f"rooms.{col} appeared {rooms_col_names.count(col)} times "
@@ -276,6 +327,7 @@ class TestMigrationIdempotency:
             db._migrate_add_usage_logs_room_id()
             db._migrate_add_room_output_lang_columns()
             db._migrate_add_room_viewer_metric_columns()
+            db._migrate_add_room_stage_config()
 
         # Verify no duplicate columns slipped in.
         with db.get_connection() as conn:
@@ -290,6 +342,7 @@ class TestMigrationIdempotency:
             "output_langs",
             "total_viewers",
             "peak_viewers",
+            "stage_config",
         ):
             assert rooms_col_names.count(col) == 1
         assert usage_col_names.count("room_id") == 1
@@ -353,6 +406,97 @@ class TestMigrationOnFreshDatabase:
         assert room["output_langs"] == '["ko"]'
         assert room["total_viewers"] == 0
         assert room["peak_viewers"] == 0
+        assert room["stage_config"] == "{}"
+
+
+class TestStageConfigMigrationOnExistingRooms:
+    """ISSUE-37 / TC-049 — rooms 행이 이미 있는 DB 에 stage_config 추가."""
+
+    def test_double_init_adds_stage_config_exactly_once(self, tmp_path):
+        """init_database() 2회 → duplicate column name 없이 컬럼 1개."""
+        db_path = str(tmp_path / "rooms_legacy.db")
+        _seed_legacy_db_with_rooms(db_path)
+
+        # 마이그레이션 전에는 컬럼이 없다 (테스트가 공허하게 통과하지 않도록).
+        legacy_conn = sqlite3.connect(db_path)
+        legacy_cols = {r[1] for r in legacy_conn.execute("PRAGMA table_info(rooms)")}
+        legacy_conn.close()
+        assert "stage_config" not in legacy_cols
+
+        db = DatabaseManager(db_path)  # 1st init
+        db.init_database()  # 2nd init — 여기서 예외가 나면 실패
+
+        with db.get_connection() as conn:
+            rooms_info = list(conn.execute("PRAGMA table_info(rooms)"))
+        names = [row["name"] for row in rooms_info]
+        assert names.count("stage_config") == 1
+
+        col = next(row for row in rooms_info if row["name"] == "stage_config")
+        assert col["type"].upper() == "TEXT"
+        assert col["notnull"] == 1
+
+    def test_existing_room_rows_get_empty_object_default(self, tmp_path):
+        """기존 룸 행의 stage_config 는 NULL 이 아니라 '{}' 이다."""
+        db_path = str(tmp_path / "rooms_legacy.db")
+        room_ids = _seed_legacy_db_with_rooms(db_path)
+
+        db = DatabaseManager(db_path)
+        db.init_database()
+
+        with db.get_connection() as conn:
+            rows = {
+                r["id"]: dict(r)
+                for r in conn.execute(
+                    "SELECT id, name, status, timeout_minutes, stage_config FROM rooms"
+                )
+            }
+
+        assert set(rows) == set(room_ids)
+        for room_id in room_ids:
+            row = rows[room_id]
+            assert row["stage_config"] == "{}"
+            # 기존 컬럼 값이 마이그레이션으로 훼손되지 않았다.
+            assert row["name"] == f"{room_id} 홀"
+            assert row["status"] == "active"
+            assert row["timeout_minutes"] == 45
+
+    def test_existing_rows_normalise_to_default_config(self, tmp_path):
+        """'{}' 는 Room.get_stage_config() 를 통해 기본 설정으로 읽힌다."""
+        db_path = str(tmp_path / "rooms_legacy.db")
+        room_ids = _seed_legacy_db_with_rooms(db_path)
+
+        from database import Room
+        from stage_config import DEFAULT_STAGE_CONFIG
+
+        db = DatabaseManager(db_path)
+        room_model = Room(db)
+        assert room_model.get_stage_config(room_ids[0]) == DEFAULT_STAGE_CONFIG
+
+    def test_stored_config_survives_repeated_init(self, tmp_path):
+        """마이그레이션 재실행이 이미 저장된 설정을 덮어쓰지 않는다."""
+        db_path = str(tmp_path / "rooms_legacy.db")
+        room_ids = _seed_legacy_db_with_rooms(db_path)
+
+        from database import Room
+
+        db = DatabaseManager(db_path)
+        room_model = Room(db)
+        config = {
+            "event_title": "2026 개발자 콘퍼런스",
+            "event_subtitle": "A홀 기조연설",
+            "caption_ratio": "1/3",
+            "logo_groups": [
+                {"label": "주최", "assets": ["host-1.png"]},
+                {"label": "주관", "assets": []},
+                {"label": "후원", "assets": []},
+            ],
+        }
+        assert room_model.update_stage_config(room_ids[0], config) is True
+
+        db.init_database()
+        db.init_database()
+
+        assert room_model.get_stage_config(room_ids[0]) == config
 
 
 @pytest.mark.parametrize(
@@ -385,6 +529,7 @@ def test_init_database_idempotent_parametrised(tmp_path, extra_init_calls):
         "output_langs",
         "total_viewers",
         "peak_viewers",
+        "stage_config",
     }
     assert expected_rooms.issubset(rooms_cols)
     assert "room_id" in usage_cols

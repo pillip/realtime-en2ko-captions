@@ -12,6 +12,8 @@ from typing import Any
 
 import bcrypt
 
+from stage_config import normalize_stage_config, validate_stage_config
+
 
 class InvalidRoomTransition(ValueError):
     """Raised when a room status transition violates the lifecycle diagram.
@@ -167,6 +169,40 @@ class DatabaseManager:
         # admin dashboard can show cumulative/peak viewer counts even after
         # the in-memory BroadcastManager has been reset to zero.
         self._migrate_add_room_viewer_metric_columns()
+
+        # ISSUE-37: idempotent ALTER TABLE to add rooms.stage_config. Same
+        # PRAGMA table_info pattern. Holds the per-room stage-screen branding
+        # (행사 타이틀/부제, 자막 컬럼 비율, 로고 그룹) as a JSON blob so the
+        # stage page can be rendered per room without hardcoding.
+        self._migrate_add_room_stage_config()
+
+    def _migrate_add_room_stage_config(self):
+        """Add rooms.stage_config — idempotent.
+
+        Schema impact (ISSUE-37):
+          stage_config TEXT NOT NULL DEFAULT '{}'
+            -- 무대 화면 브랜딩 설정 JSON blob (stage_config.py 가 형태 소유)
+
+        '{}' is a *valid* value: stage_config.normalize_stage_config() maps it
+        to the documented default, so legacy rows need no backfill. JSON-in-
+        TEXT matches the output_langs (ISSUE-30) convention — SQLite has no
+        JSON column type and the invariant lives in application code.
+        """
+        with self.get_connection() as conn:
+            cursor = conn.execute("PRAGMA table_info(rooms)")
+            existing = {row["name"] for row in cursor.fetchall()}
+
+            added = []
+            if "stage_config" not in existing:
+                conn.execute(
+                    "ALTER TABLE rooms "
+                    "ADD COLUMN stage_config TEXT NOT NULL DEFAULT '{}'"
+                )
+                added.append("stage_config")
+
+            if added:
+                conn.commit()
+                print(f"[Migration] Added rooms columns: {', '.join(added)}")
 
     def _migrate_add_room_viewer_metric_columns(self):
         """Add rooms.total_viewers and rooms.peak_viewers — idempotent.
@@ -1018,6 +1054,67 @@ class Room:
             "total_viewers": row["total_viewers"] or 0,
             "peak_viewers": row["peak_viewers"] or 0,
         }
+
+    # ------------------------------------------------------------------
+    # Stage config (ISSUE-37)
+    # ------------------------------------------------------------------
+    def get_stage_config(self, room_id: str) -> dict[str, Any]:
+        """룸의 무대 브랜딩 설정을 정규화된 dict 로 반환한다.
+
+        절대 예외를 던지지 않는다 — 무대 화면은 행사 중에 죽으면 안 되므로
+        읽기 실패는 항상 문서화된 기본값으로 degrade 한다:
+
+          - 존재하지 않는 room_id → 기본 설정 (None 이 아니다. 호출자는
+            이 값을 그대로 렌더링하면 되고, 룸 존재 여부는 get_by_id 로
+            따로 확인한다.)
+          - NULL / 빈 문자열 / 깨진 JSON → 기본 설정
+
+        파싱 실패는 서버 stdout 에만 남기고 호출자에게 전파하지 않는다
+        (RL-006: 내부 예외 문자열이 클라이언트로 새어 나가지 않게 한다).
+        """
+        with self.db.get_connection() as conn:
+            row = conn.execute(
+                "SELECT stage_config FROM rooms WHERE id = ?", (room_id,)
+            ).fetchone()
+
+        raw = row["stage_config"] if row else None
+        if isinstance(raw, str) and raw.strip():
+            try:
+                raw = json.loads(raw)
+            except (json.JSONDecodeError, RecursionError) as e:
+                # RecursionError 도 함께 잡는다 — 깊게 중첩된 JSON 은
+                # JSONDecodeError 가 아니라 RecursionError 로 터지므로,
+                # 이걸 놓치면 무대 페이지가 행사 중에 죽는다.
+                print(f"[Room] stage_config parse failed (room={room_id}): {e!r}")
+                raw = None
+        return normalize_stage_config(raw)
+
+    def update_stage_config(self, room_id: str, config: dict[str, Any]) -> bool:
+        """무대 브랜딩 설정을 저장한다. 검증 실패 시 DB 는 그대로 둔다.
+
+        검증(validate_stage_config) → 정규화(normalize_stage_config) 순서다.
+        먼저 검증해야 관리자가 잘못 입력한 값이 조용히 보정되어 저장되는 일이
+        없다. 저장은 ensure_ascii=False 로 직렬화해 한글/이모지가 \\uXXXX 로
+        부풀지 않게 한다.
+
+        Returns:
+            True  — 검증 통과 + 해당 room_id 행 갱신 성공
+            False — 검증 실패(사유는 서버 로그) 또는 존재하지 않는 room_id.
+                    어느 쪽이든 예외를 던지지 않는다.
+        """
+        ok, reason = validate_stage_config(config)
+        if not ok:
+            print(f"[Room] stage_config rejected (room={room_id}): {reason}")
+            return False
+
+        payload = json.dumps(normalize_stage_config(config), ensure_ascii=False)
+        with self.db.get_connection() as conn:
+            cursor = conn.execute(
+                "UPDATE rooms SET stage_config = ? WHERE id = ?",
+                (payload, room_id),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
 
     def touch(self, room_id: str) -> bool:
         """Update last_activity = CURRENT_TIMESTAMP. No status change."""
