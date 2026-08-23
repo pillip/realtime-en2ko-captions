@@ -47,8 +47,9 @@ from database import (
 from qr_generator import build_stage_url, build_view_url, make_qr_png
 from stage_config import (
     CAPTION_RATIOS,
+    EVENT_SUBTITLE_MAX_LEN,
+    EVENT_TITLE_MAX_LEN,
     LOGO_GROUP_LABELS,
-    normalize_stage_config,
     validate_stage_config,
 )
 
@@ -741,7 +742,11 @@ def _render_admin_room_stage_config(room_model, visible_rooms):
     Streamlit 제약상 ``st.form`` 안에는 ``st.form_submit_button`` 외의
     버튼을 둘 수 없으므로 로고 삭제 버튼은 폼 **바깥**에 배치한다.
 
-    a11y (RL-010): 삭제 버튼은 "삭제" 텍스트 라벨 + 파일명을 담은 ``help``,
+    a11y (RL-010): 삭제 버튼은 ``"삭제 · {파일명}"`` 처럼 **보이는 라벨에
+    파일명을 담는다** — Streamlit 의 ``help=`` 는 버튼을 감싸는 wrapper div 에
+    aria-describedby 로 붙어서 <button> 자체의 접근 가능한 이름에는 들어가지
+    않는다. 라벨을 "삭제" 로만 두면 로고가 여러 개일 때 모든 버튼이 똑같이
+    읽혀 스크린리더/Tab 사용자가 어느 파일인지 구분할 수 없다.
     미리보기 ``st.image`` 는 ``caption=파일명``, 모든 위젯에 한국어 라벨.
     """
     st.divider()
@@ -778,6 +783,7 @@ def _render_admin_room_stage_config(room_model, visible_rooms):
 
     _seed_stage_form_state(room_id, config)
     _warn_stage_asset_drift(config, disk_names)
+    _warn_stage_config_drops(room_model, room_id, config)
     _render_stage_logo_manager(room_model, room_id, config)
 
     submitted, form_values = _render_stage_config_form(room_id)
@@ -816,6 +822,29 @@ def _warn_stage_asset_drift(config, disk_names):
         )
 
 
+def _warn_stage_config_drops(room_model, room_id, config):
+    """DB 원본에만 있는 값을 **저장 전에** 알린다 (ISSUE-37 리뷰 F-5).
+
+    ``get_stage_config`` 는 알 수 없는 그룹 라벨이나 문자열이 아닌 에셋을
+    말없이 버리고, 이 폼은 그렇게 정규화된 설정을 그대로 다시 저장한다.
+    즉 관리자가 "저장" 을 한 번 누르는 순간 원본에만 있던 값이 영구히
+    사라진다 — 경고는 그 왕복 **전** 인 로드 시점에 나와야 의미가 있다.
+    그래서 정규화된 config 가 아니라 원본 블롭을 따로 읽어 비교한다.
+    """
+    try:
+        raw = room_model.get_raw_stage_config(room_id)
+    except Exception as e:
+        # RL-006: 내부 예외는 server-side 로그만, 사용자에게는 generic.
+        # 경고를 만들지 못한 것이 폼 자체를 막을 이유는 되지 않으므로
+        # st.error + 조기 반환이 아니라 경고 한 줄로 degrade 한다.
+        print(f"[Admin] 무대 설정 원본 조회 실패 (room={room_id}): {e!r}")
+        st.warning("저장 시 사라지는 값이 있는지 확인하지 못했습니다.")
+        return
+
+    for warning in describe_stage_config_drops(raw, config):
+        st.warning(f"{warning} — 이 폼에서 저장하면 원본에서도 사라집니다.")
+
+
 def _render_stage_logo_manager(room_model, room_id, config):
     """현재 등록된 로고 미리보기 + 개별 삭제 버튼 (폼 바깥에 있어야 한다)."""
     groups = config.get("logo_groups") or []
@@ -830,15 +859,27 @@ def _render_stage_logo_manager(room_model, room_id, config):
             continue
         label = group.get("label", "")
         st.markdown(f"*{label}*")
-        for filename in assets:
-            col1, col2 = st.columns([4, 1])
+        for index, filename in enumerate(assets):
+            col1, col2 = st.columns([3, 2])
             with col1:
                 _render_logo_preview(room_id, filename)
             with col2:
                 # RL-010: 아이콘 전용 버튼이 아니라 "삭제" 텍스트 + help.
+                # ``help=`` 는 버튼 자신이 아니라 감싸는 wrapper div 에
+                # aria-describedby 로 붙는다(Streamlit 1.48 실측) — 포커스된
+                # <button> 자체의 접근 가능한 이름에는 포함되지 않으므로,
+                # 같은 화면에 로고가 여러 개면 모든 버튼이 "삭제" 로 동일하게
+                # 읽혀 스크린리더/Tab 사용자가 어느 파일인지 구분할 수 없다.
+                # 버튼 라벨 자체에 파일명을 넣어 접근 가능한 이름을 구분한다.
+                # key 에 index 를 넣는 이유: 같은 그룹에 같은 파일명이 두 번
+                # 들어오면 파일명만으로 만든 key 가 충돌해
+                # StreamlitDuplicateElementKey 로 섹션 이후 전체(배정/강제
+                # 종료/기록)가 렌더되지 않는다. build_stage_config_from_form
+                # 이 중복을 합치므로 정상 경로에서는 발생하지 않지만, 저장
+                # 경로를 거치지 않은 config 에도 견디게 한다.
                 clicked = st.button(
-                    "삭제",
-                    key=f"stage_cfg_del_{room_id}_{label}_{filename}",
+                    f"삭제 · {filename}",
+                    key=f"stage_cfg_del_{room_id}_{label}_{index}_{filename}",
                     help=f"'{filename}' 로고를 삭제합니다",
                 )
                 if clicked:
@@ -880,15 +921,17 @@ def _render_stage_config_form(room_id):
     nonce = st.session_state.get(_STAGE_UPLOAD_NONCE_KEY, 0)
     uploads = {}
     with st.form("stage_config_form"):
+        # 길이 제한 문구는 stage_config 상수에서 만든다 — 숫자를 여기에
+        # 적어 두면 규칙이 바뀔 때 도움말만 조용히 거짓말을 한다.
         title = st.text_input(
             "행사 타이틀",
             key=_STAGE_TITLE_KEY,
-            help="무대 화면 상단 헤더 바에 표시됩니다 (최대 120자).",
+            help=f"무대 화면 상단 헤더 바에 표시됩니다 (최대 {EVENT_TITLE_MAX_LEN}자).",
         )
         subtitle = st.text_input(
             "행사 부제",
             key=_STAGE_SUBTITLE_KEY,
-            help="타이틀 아래 보조 문구 (최대 80자).",
+            help=f"타이틀 아래 보조 문구 (최대 {EVENT_SUBTITLE_MAX_LEN}자).",
         )
         ratio = st.radio(
             "자막 컬럼 비율",
@@ -1004,12 +1047,10 @@ def _save_stage_config(room_model, room_id, current_config, values):
         st.error("무대 설정을 저장하지 못했습니다.")
         return
 
-    # (F-5) 정규화가 조용히 버린 값이 있으면 알린다 — "저장했는데 없어짐" 방지.
-    for warning in describe_stage_config_drops(
-        candidate, normalize_stage_config(candidate)
-    ):
-        st.warning(warning)
-
+    # (F-5) 저장 후 경고는 두지 않는다 — 여기 candidate 는 정규화된 config 와
+    # 저장된 파일명(문자열)으로만 만들어져 정규화가 버릴 값이 구조적으로 없다.
+    # 실제로 값이 사라지는 지점은 "원본 블롭을 읽어 정규화본을 되쓰는" 로드 →
+    # 저장 왕복이므로, 경고는 로드 시점의 _warn_stage_config_drops 가 낸다.
     if any(accepted_by_label.values()):
         # 반영된 파일이 업로더에 남아 다음 저장 때 중복 업로드되지 않도록 초기화.
         st.session_state[_STAGE_UPLOAD_NONCE_KEY] = (

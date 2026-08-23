@@ -1089,6 +1089,39 @@ class Room:
                 raw = None
         return normalize_stage_config(raw)
 
+    def get_raw_stage_config(self, room_id: str) -> Any:
+        """정규화 **전** 의 stage_config 블롭을 그대로 반환한다 (읽기 전용).
+
+        ``get_stage_config`` 는 무대 화면이 죽지 않도록 알 수 없는 그룹 라벨,
+        문자열이 아닌 에셋을 말없이 버린다. 관리자 폼은 그렇게 정규화된 설정을
+        다시 저장하므로(normalize → save 왕복), 원본에만 있던 값은 저장 한
+        번으로 영구히 사라진다. 이 접근자는 그 왕복 **전에** 무엇이 사라질지
+        경고할 수 있도록 원본을 보여 주기 위해 존재한다 (ISSUE-37 리뷰 F-5).
+
+        Returns:
+            ``json.loads`` 결과 그대로. dict 가 아닐 수도 있으며(구버전 스키마,
+            수동 DB 수정) 해석은 호출자 몫이다. 존재하지 않는 room_id / NULL /
+            빈 값 / 깨진 JSON 은 모두 ``None``.
+
+        ``get_stage_config`` 와 같은 계약으로 **절대 예외를 던지지 않는다.**
+        파싱 실패는 서버 stdout 에만 남긴다 (RL-006).
+        """
+        with self.db.get_connection() as conn:
+            row = conn.execute(
+                "SELECT stage_config FROM rooms WHERE id = ?", (room_id,)
+            ).fetchone()
+
+        raw = row["stage_config"] if row else None
+        if not isinstance(raw, str) or not raw.strip():
+            return None
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, RecursionError) as e:
+            # get_stage_config 와 같은 이유로 RecursionError 도 함께 잡는다 —
+            # 깊게 중첩된 JSON 은 JSONDecodeError 가 아니라 RecursionError 다.
+            print(f"[Room] stage_config parse failed (room={room_id}): {e!r}")
+            return None
+
     def update_stage_config(self, room_id: str, config: dict[str, Any]) -> bool:
         """무대 브랜딩 설정을 저장한다. 검증 실패 시 DB 는 그대로 둔다.
 

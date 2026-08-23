@@ -463,6 +463,26 @@ def _clean_text(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+def _dedupe_preserving_order(names: Any) -> list[Any]:
+    """같은 그룹 안의 중복 파일명을 순서를 지키며 하나로 합친다.
+
+    한 그룹이 같은 파일을 두 번 참조해도 가리키는 실제 파일은 하나뿐이라
+    의미가 없고, 관리자 화면에서는 파일명으로 만든 위젯 key 가 충돌해
+    섹션 전체가 죽는다. 중복은 실제로 만들어질 수 있다 — 디스크에서 파일이
+    사라진 뒤(볼륨 교체/수동 정리) 관리자가 드리프트 경고를 보고 같은 이름을
+    다시 올리면 ``save_asset`` 이 충돌 회피를 하지 않아 기존 참조와 같은
+    이름이 한 번 더 들어온다.
+
+    ``set`` 이 아니라 리스트 멤버십으로 비교한다 — 호출자가 넘기는 값이
+    해시 불가능할 수도 있고, 룸당 상한이 12개라 비용이 무시할 수준이다.
+    """
+    unique: list[Any] = []
+    for name in names or []:
+        if name not in unique:
+            unique.append(name)
+    return unique
+
+
 def build_stage_config_from_form(
     *,
     event_title: str,
@@ -480,6 +500,8 @@ def build_stage_config_from_form(
             거절해야 관리자가 무엇이 틀렸는지 알 수 있다.
         logo_groups: ``{그룹 라벨: [파일명, ...]}``. 알려진 라벨 3종이 항상
             고정 순서로 먼저 오고, 알 수 없는 라벨이 있으면 뒤에 덧붙인다.
+            그룹 안의 중복 파일명은 순서를 지키며 하나로 합친다
+            (:func:`_dedupe_preserving_order` 참고).
 
     알 수 없는 라벨을 여기서 조용히 지우지 않는 것은 의도다.
     ``normalize_stage_config`` 가 그것을 버릴 때
@@ -497,7 +519,7 @@ def build_stage_config_from_form(
         "event_subtitle": _clean_text(event_subtitle),
         "caption_ratio": caption_ratio,
         "logo_groups": [
-            {"label": label, "assets": list(groups.get(label) or [])}
+            {"label": label, "assets": _dedupe_preserving_order(groups.get(label))}
             for label in ordered_labels
         ],
     }

@@ -11,6 +11,8 @@ Streamlit 위젯 호출은 ``admin.py`` 에 남기고, 폼 ↔ ``stage_config`` 
 - ``describe_stage_config_drops``  : normalize 가 조용히 버린 값 경고 (F-5)
 - ``find_asset_drift``             : config ↔ 디스크 불일치 감지
 - ``Room.update_stage_config`` / ``get_stage_config`` DB 왕복 (AC-2 / AC-3)
+- F-5 경고가 **DB 원본 블롭** 에서 실제로 발화하는지 (production 경로)
+- ``admin._warn_stage_config_drops`` : 그 경고가 화면에 뜨는지 / 실패 degrade
 
 에셋을 건드리는 테스트는 모두 ``BRANDING_DIR`` 을 ``tmp_path`` 로 돌린다 —
 실제 ``data/branding/`` 에는 어떤 파일도 쓰지 않는다. 외부 네트워크 호출 없음.
@@ -18,6 +20,7 @@ Streamlit 위젯 호출은 ``admin.py`` 에 남기고, 폼 ↔ ``stage_config`` 
 
 from __future__ import annotations
 
+import json
 import sys
 from unittest.mock import MagicMock
 
@@ -147,6 +150,36 @@ class TestBuildStageConfigFromForm:
             logo_groups=None,
         )
         assert [g["assets"] for g in cfg["logo_groups"]] == [[], [], []]
+
+    def test_duplicate_filenames_in_a_group_are_collapsed(self):
+        """회귀 방지 (코드 리뷰 R-01): 같은 그룹의 중복 파일명은 하나로 합친다.
+
+        디스크에서 파일이 사라진 뒤 관리자가 드리프트 경고를 보고 같은 이름을
+        다시 업로드하면 ``save_asset`` 이 충돌 회피를 하지 않아 기존 참조와
+        같은 이름이 한 번 더 들어온다. 중복을 그대로 저장하면 관리자 화면의
+        삭제 버튼 key 가 충돌해(StreamlitDuplicateElementKey) 무대 설정
+        섹션 이후 전체가 렌더되지 않는다.
+        """
+        cfg = build_stage_config_from_form(
+            event_title="t",
+            event_subtitle="",
+            caption_ratio="1/4",
+            logo_groups={"주최": ["a.png", "logo.png", "a.png"], "주관": ["b.png"]},
+        )
+        by_label = {g["label"]: g["assets"] for g in cfg["logo_groups"]}
+        # 순서는 첫 등장 순서를 유지해야 무대 하단 로고 바 순서가 흔들리지 않는다.
+        assert by_label["주최"] == ["a.png", "logo.png"]
+        assert by_label["주관"] == ["b.png"]
+
+    def test_duplicates_do_not_consume_the_room_asset_budget(self):
+        """중복이 12개 상한을 갉아먹어 정상 업로드가 거절되면 안 된다."""
+        cfg = build_stage_config_from_form(
+            event_title="t",
+            event_subtitle="",
+            caption_ratio="1/4",
+            logo_groups={"주최": ["dup.png"] * 20},
+        )
+        assert validate_stage_config(cfg) == (True, "")
 
     def test_too_long_title_is_rejected_by_validator(self):
         cfg = build_stage_config_from_form(
@@ -432,6 +465,19 @@ class TestDescribeStageConfigDrops:
     def test_malformed_inputs_return_empty_list(self, bad):
         assert describe_stage_config_drops(bad, DEFAULT_STAGE_CONFIG) == []
 
+    @pytest.mark.parametrize(
+        "raw",
+        [None, [], "문자열 블롭", {"logo_groups": {"주최": ["a.png"]}}],
+        ids=["none", "array", "string", "logo_groups-as-dict"],
+    )
+    def test_raw_db_blob_shapes_degrade_to_no_warning(self, raw):
+        """DB 원본 블롭은 dict 가 아닐 수도 있다 (빈 컬럼/깨진 값/구버전 스키마).
+
+        관리자 폼 로드 경로가 이 함수에 DB 원본을 그대로 넘기므로, 어떤
+        모양이 들어와도 예외 없이 빈 목록으로 degrade 해야 폼이 열린다.
+        """
+        assert describe_stage_config_drops(raw, DEFAULT_STAGE_CONFIG) == []
+
     def test_non_dict_group_entry_is_skipped_not_crashing(self):
         """깨진 항목이 섞여 있어도 나머지 그룹의 경고는 계속 만들어진다."""
         candidate = self._candidate(
@@ -546,3 +592,192 @@ class TestStageConfigRoundTrip:
 
         assert room_model.update_stage_config("r-bad", cfg) is False
         assert room_model.get_stage_config("r-bad") == DEFAULT_STAGE_CONFIG
+
+
+# ---------------------------------------------------------------------------
+# F-5 경고가 **production 경로**에서 발화하는가 (코드 리뷰 R-02)
+# ---------------------------------------------------------------------------
+_RAW_ROOM_ID = "r-rawblob"
+
+# 알 수 없는 그룹 라벨이 섞인 원본 블롭 — 구버전 빌드/수동 DB 수정/백업
+# 복원으로 실제 컬럼에 들어올 수 있는 모양이다.
+_UNKNOWN_LABEL_BLOB = {
+    "event_title": "2026 개발자 콘퍼런스",
+    "event_subtitle": "",
+    "caption_ratio": "1/3",
+    "logo_groups": [
+        {"label": "주최", "assets": ["host.png"]},
+        {"label": "협찬", "assets": ["ghost.png"]},
+    ],
+}
+
+# 문자열이 아닌 에셋 항목 — 정규화가 조용히 버리는 두 번째 경우.
+_BAD_ASSET_BLOB = {
+    "event_title": "타이틀",
+    "event_subtitle": "",
+    "caption_ratio": "1/4",
+    "logo_groups": [{"label": "주최", "assets": ["host.png", {"src": "ghost.png"}]}],
+}
+
+
+def _seed_raw_stage_config(db_manager, room_model, admin_user_id, blob):
+    """stage_config 컬럼에 정규화되지 않은 블롭을 직접 넣고 room_id 를 준다.
+
+    ``update_stage_config`` 는 정규화 후 저장하므로 이 상태를 만들 수 없다 —
+    실제 위험(원본에만 있는 값이 폼 저장 한 번으로 사라짐)을 재현하려면
+    SQL 로 직접 써야 한다.
+    """
+    room_model.create(room_id=_RAW_ROOM_ID, name="A홀", created_by=admin_user_id)
+    with db_manager.get_connection() as conn:
+        conn.execute(
+            "UPDATE rooms SET stage_config = ? WHERE id = ?",
+            (json.dumps(blob, ensure_ascii=False), _RAW_ROOM_ID),
+        )
+        conn.commit()
+    return _RAW_ROOM_ID
+
+
+class TestStageConfigDropWarningsFromDatabase:
+    """F-5 경고가 손으로 만든 fixture 가 아니라 DB 원본에서 나오는지 확인한다.
+
+    호출부가 이미 정규화된 값만 넘기면 이 경고는 영원히 빈 목록이고, 단위
+    테스트만 초록으로 남는다(리뷰 R-02). 그래서 여기서는 admin.py 로드 경로와
+    **같은 순서** 로 DB → (원본, 정규화) → 경고를 흘려 보낸다.
+    """
+
+    def test_unknown_group_label_in_db_blob_produces_a_warning(
+        self, db_manager, room_model, admin_user_id
+    ):
+        room_id = _seed_raw_stage_config(
+            db_manager, room_model, admin_user_id, _UNKNOWN_LABEL_BLOB
+        )
+
+        current_config = room_model.get_stage_config(room_id)
+        raw = room_model.get_raw_stage_config(room_id)
+        warnings = describe_stage_config_drops(raw, current_config)
+
+        assert len(warnings) == 1
+        assert "협찬" in warnings[0]
+        assert "ghost.png" in warnings[0]
+
+    def test_non_string_asset_in_db_blob_produces_a_warning(
+        self, db_manager, room_model, admin_user_id
+    ):
+        room_id = _seed_raw_stage_config(
+            db_manager, room_model, admin_user_id, _BAD_ASSET_BLOB
+        )
+
+        current_config = room_model.get_stage_config(room_id)
+        raw = room_model.get_raw_stage_config(room_id)
+        warnings = describe_stage_config_drops(raw, current_config)
+
+        assert len(warnings) == 1
+        assert "주최" in warnings[0]
+        assert "ghost.png" in warnings[0]
+
+    def test_normalised_db_blob_produces_no_warning(
+        self, db_manager, room_model, admin_user_id
+    ):
+        """판별력 확인 — 정상 룸에서는 경고가 나오면 안 된다 (RL-004)."""
+        room_id = _seed_raw_stage_config(
+            db_manager, room_model, admin_user_id, DEFAULT_STAGE_CONFIG
+        )
+        room_model.update_stage_config(
+            room_id,
+            build_stage_config_from_form(
+                event_title="정상",
+                event_subtitle="",
+                caption_ratio="1/4",
+                logo_groups={"주최": ["host.png"]},
+            ),
+        )
+
+        current_config = room_model.get_stage_config(room_id)
+        raw = room_model.get_raw_stage_config(room_id)
+
+        assert describe_stage_config_drops(raw, current_config) == []
+
+
+class TestStageConfigLoadPathWarnings:
+    """admin.py 로드 경로가 그 경고를 실제로 화면에 띄우는지 (Streamlit mock)."""
+
+    def _admin_with_mock_st(self, monkeypatch):
+        import admin
+
+        fake_st = MagicMock()
+        monkeypatch.setattr(admin, "st", fake_st)
+        return admin, fake_st
+
+    def _messages(self, fake_st):
+        return [call.args[0] for call in fake_st.warning.call_args_list]
+
+    def test_warning_states_the_consequence_of_saving(
+        self, monkeypatch, db_manager, room_model, admin_user_id
+    ):
+        """저장 **전에** "저장하면 사라진다" 를 알려야 의미가 있다."""
+        admin, fake_st = self._admin_with_mock_st(monkeypatch)
+        room_id = _seed_raw_stage_config(
+            db_manager, room_model, admin_user_id, _UNKNOWN_LABEL_BLOB
+        )
+
+        admin._warn_stage_config_drops(
+            room_model, room_id, room_model.get_stage_config(room_id)
+        )
+
+        messages = self._messages(fake_st)
+        assert len(messages) == 1
+        assert "협찬" in messages[0]
+        assert "저장하면" in messages[0]
+
+    def test_clean_room_shows_no_warning(self, monkeypatch, room_model, admin_user_id):
+        admin, fake_st = self._admin_with_mock_st(monkeypatch)
+        room_model.create(room_id="r-clean", name="B홀", created_by=admin_user_id)
+
+        admin._warn_stage_config_drops(
+            room_model, "r-clean", room_model.get_stage_config("r-clean")
+        )
+
+        assert self._messages(fake_st) == []
+
+    def test_raw_read_failure_does_not_break_the_form(self, monkeypatch, capsys):
+        """RL-006: 원본을 못 읽어도 폼은 열리고 내부 상세는 화면에 없다."""
+        admin, fake_st = self._admin_with_mock_st(monkeypatch)
+        model = MagicMock()
+        model.get_raw_stage_config.side_effect = RuntimeError("sqlite3 /var/db/app.db")
+
+        admin._warn_stage_config_drops(model, "r-1", DEFAULT_STAGE_CONFIG)
+
+        messages = self._messages(fake_st)
+        assert len(messages) == 1
+        assert "/var/db/app.db" not in messages[0]
+        assert "sqlite3" not in messages[0]
+        # 폼 렌더를 막는 st.error / 조기 반환이 아니라 경고로만 degrade 한다.
+        fake_st.error.assert_not_called()
+        captured = capsys.readouterr().out
+        assert "[Admin]" in captured
+        assert "sqlite3 /var/db/app.db" in captured
+
+
+class TestStageFormHelpText:
+    """R-04: 길이 제한 문구는 ``stage_config`` 상수에서 파생되어야 한다.
+
+    admin 계층이 "최대 120자" 를 하드코딩하면 규칙이 바뀌는 순간 도움말만
+    조용히 거짓말을 한다 (검증 규칙의 소유자는 ``stage_config`` 다).
+    """
+
+    def test_length_limits_come_from_stage_config_constants(self, monkeypatch):
+        import admin
+
+        fake_st = MagicMock()
+        monkeypatch.setattr(admin, "st", fake_st)
+        monkeypatch.setattr(admin, "EVENT_TITLE_MAX_LEN", 7)
+        monkeypatch.setattr(admin, "EVENT_SUBTITLE_MAX_LEN", 5)
+
+        admin._render_stage_config_form("r-1")
+
+        helps = [
+            call.kwargs.get("help", "") for call in fake_st.text_input.call_args_list
+        ]
+        assert len(helps) == 2
+        assert "7자" in helps[0]
+        assert "5자" in helps[1]
