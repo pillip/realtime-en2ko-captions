@@ -600,6 +600,18 @@ def _raw_stage_config(db_manager, room_id):
     return row["stage_config"] if row else None
 
 
+def _write_raw_stage_config(db_manager, room_id, value):
+    """stage_config 컬럼에 임의의 문자열을 직접 쓴다.
+
+    update_stage_config 는 정규화 후 저장하므로 '정규화되지 않은 블롭' 상태를
+    만들 수 없다 — 구버전 빌드/수동 DB 수정/백업 복원이 만들어 내는 실제
+    상황을 재현하려면 SQL 로 직접 넣어야 한다.
+    """
+    with db_manager.get_connection() as conn:
+        conn.execute("UPDATE rooms SET stage_config = ? WHERE id = ?", (value, room_id))
+        conn.commit()
+
+
 _VALID_CONFIG = {
     "event_title": "2026 개발자 콘퍼런스 🎉",
     "event_subtitle": "A홀 기조연설",
@@ -704,6 +716,98 @@ class TestRoomGetStageConfig:
         self._write_raw(db_manager, stage_room, "[" * 100_000)
         assert room_model.get_stage_config(stage_room) == DEFAULT_STAGE_CONFIG
         assert "stage_config parse failed" in capsys.readouterr().out
+
+
+class TestRoomGetRawStageConfig:
+    """정규화 **전** 블롭 접근자 (ISSUE-37 리뷰 F-5).
+
+    관리자 폼은 읽은 설정을 정규화된 형태로 다시 저장한다 — 원본에만 있던
+    값(알 수 없는 그룹 라벨, 문자열이 아닌 에셋)은 저장 한 번으로 영구히
+    사라진다. 그 왕복 전에 무엇이 사라질지 경고하려면 원본을 읽을 수 있어야
+    한다. get_stage_config 와 같은 계약으로 절대 예외를 던지지 않는다.
+    """
+
+    def test_returns_values_that_get_stage_config_silently_drops(
+        self, db_manager, room_model, stage_room
+    ):
+        """같은 룸을 두 접근자로 읽어 **차이 자체**를 단언한다 (RL-004)."""
+        blob = {
+            "event_title": "타이틀",
+            "event_subtitle": "부제",
+            "caption_ratio": "1/3",
+            "logo_groups": [
+                {"label": "주최", "assets": ["a.png", 12345]},
+                {"label": "협찬", "assets": ["ghost.png"]},
+            ],
+        }
+        _write_raw_stage_config(
+            db_manager, stage_room, json.dumps(blob, ensure_ascii=False)
+        )
+
+        raw = room_model.get_raw_stage_config(stage_room)
+        normalized = room_model.get_stage_config(stage_room)
+
+        # 원본은 손대지 않은 그대로여야 한다.
+        assert raw == blob
+        assert [g["label"] for g in raw["logo_groups"]] == ["주최", "협찬"]
+
+        # 정규화 쪽에서는 조용히 사라진다 — 이 차이가 F-5 경고의 근거다.
+        assert [g["label"] for g in normalized["logo_groups"]] == [
+            "주최",
+            "주관",
+            "후원",
+        ]
+        assert normalized["logo_groups"][0]["assets"] == ["a.png"]
+        assert "ghost.png" not in json.dumps(normalized, ensure_ascii=False)
+
+    def test_default_column_value_returns_empty_mapping(self, room_model, stage_room):
+        """기본값 '{}' 은 유효한 JSON — None 이 아니라 빈 dict 로 온다."""
+        assert room_model.get_raw_stage_config(stage_room) == {}
+
+    @pytest.mark.parametrize("stored", ["", "   "], ids=["empty", "whitespace"])
+    def test_empty_column_returns_none(
+        self, db_manager, room_model, stage_room, stored
+    ):
+        _write_raw_stage_config(db_manager, stage_room, stored)
+        assert room_model.get_raw_stage_config(stage_room) is None
+
+    def test_unknown_room_returns_none(self, room_model):
+        assert room_model.get_raw_stage_config("no-such-room") is None
+
+    def test_broken_json_returns_none_and_logs_to_stdout_only(
+        self, db_manager, room_model, stage_room, capsys
+    ):
+        """RL-006: 파싱 실패는 서버 로그로만 남고 예외로 전파되지 않는다."""
+        _write_raw_stage_config(db_manager, stage_room, "{")
+        assert room_model.get_raw_stage_config(stage_room) is None
+        captured = capsys.readouterr().out
+        assert "stage_config parse failed" in captured
+        assert stage_room in captured
+
+    def test_deeply_nested_json_returns_none_without_raising(
+        self, db_manager, room_model, stage_room, capsys
+    ):
+        """RecursionError 도 잡아야 관리자 페이지가 로드 중에 죽지 않는다."""
+        _write_raw_stage_config(db_manager, stage_room, "[" * 100_000)
+        assert room_model.get_raw_stage_config(stage_room) is None
+        assert "stage_config parse failed" in capsys.readouterr().out
+
+    def test_json_array_is_returned_as_is(self, db_manager, room_model, stage_room):
+        """dict 가 아닌 블롭도 그대로 준다 — 해석은 호출자 몫이다."""
+        _write_raw_stage_config(db_manager, stage_room, "[]")
+        assert room_model.get_raw_stage_config(stage_room) == []
+
+    def test_read_does_not_modify_the_stored_blob(
+        self, db_manager, room_model, stage_room
+    ):
+        """읽기 전용 — 접근자가 컬럼을 정규화해서 덮어쓰면 안 된다."""
+        stored = '{"logo_groups": [{"label": "협찬", "assets": ["x.png"]}]}'
+        _write_raw_stage_config(db_manager, stage_room, stored)
+
+        room_model.get_raw_stage_config(stage_room)
+        room_model.get_stage_config(stage_room)
+
+        assert _raw_stage_config(db_manager, stage_room) == stored
 
 
 class TestRoomUpdateStageConfig:

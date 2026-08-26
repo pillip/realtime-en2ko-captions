@@ -89,6 +89,11 @@ SVG_CSP = "default-src 'none'; style-src 'unsafe-inline'"
 
 _CACHE_CONTROL = "public, max-age=300"  # 행사 중 로고 교체가 5분 내 반영되도록 짧게.
 
+# 사용자가 올린 바이트를 서빙하므로, 브라우저가 Content-Type 을 무시하고
+# 내용을 스니핑해 다른 타입(HTML/스크립트)으로 해석하는 경로를 막는다.
+# 확장자·매직바이트 검증과 SVG CSP 에 더한 심층 방어다 (ISSUE-38 리뷰 R-04).
+_NOSNIFF = "nosniff"
+
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 _JPEG_SIGNATURE = b"\xff\xd8\xff"
 _SVG_PREFIXES = (b"<?xml", b"<svg")
@@ -278,12 +283,16 @@ def build_asset_headers(filename: str) -> dict[str, str]:
     - Content-Type: 확장자 매핑. 알 수 없으면 ``application/octet-stream``
       (브라우저가 추측해서 실행 가능한 타입으로 해석하지 못하게 한다).
     - Cache-Control: ``public, max-age=300`` — 행사 중 로고 교체가 5분 내 반영.
+    - X-Content-Type-Options: ``nosniff`` — 선언한 Content-Type 을 브라우저가
+      무시하고 내용을 추측하지 못하게 막는다 (ISSUE-38 리뷰 R-04). 확장자는
+      모든 자산에 붙으므로 SVG 전용 CSP 와 달리 조건 없이 항상 포함한다.
     - SVG 에 한해 :data:`SVG_CSP` — 업로드 마크업 안의 스크립트/외부 참조 차단.
     """
     suffix = Path(str(filename)).suffix.lower()
     headers = {
         "Content-Type": _CONTENT_TYPES.get(suffix, "application/octet-stream"),
         "Cache-Control": _CACHE_CONTROL,
+        "X-Content-Type-Options": _NOSNIFF,
     }
     if suffix == ".svg":
         headers["Content-Security-Policy"] = SVG_CSP

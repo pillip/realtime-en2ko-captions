@@ -815,3 +815,17 @@ class TestAssetHeaders:
             build_asset_headers("weird.bin")["Content-Type"]
             == "application/octet-stream"
         )
+
+    @pytest.mark.parametrize(
+        "name",
+        ["logo.png", "logo.jpg", "logo.jpeg", "sponsor.svg", "weird.bin"],
+    )
+    def test_nosniff_is_always_present(self, name):
+        """R-04 (ISSUE-38 리뷰): 업로드 바이트의 content sniffing 을 막는다.
+
+        확장자와 무관하게 항상 붙어야 한다 — 알 수 없는 확장자야말로
+        브라우저가 타입을 추측할 여지가 가장 큰 경우다.
+        """
+        from branding_assets import build_asset_headers
+
+        assert build_asset_headers(name)["X-Content-Type-Options"] == "nosniff"

@@ -19,8 +19,10 @@ import 한다.
 
 from __future__ import annotations
 
+import ast
 import csv
 import io
+import pathlib
 import sys
 from unittest.mock import MagicMock
 
@@ -986,3 +988,87 @@ class TestValidateRoomNameOnly:
 
         valid, _ = validate_room_creation_input("x" * 101)
         assert valid is False
+
+
+# ============================================================
+# ISSUE-39: 무대 설정 섹션은 admin 분기 안에서만 호출된다 (RL-002)
+# ============================================================
+def _parse_admin_module() -> ast.Module:
+    """admin.py 를 import 하지 않고 AST 로만 읽는다.
+
+    admin.py 는 streamlit/pandas 를 import-time 에 끌고 오므로, 호출 위치
+    검증에는 소스 파싱이 더 안전하고 빠르다 (RL-001).
+    """
+    source = pathlib.Path(__file__).resolve().parents[1] / "admin.py"
+    return ast.parse(source.read_text(encoding="utf-8"))
+
+
+def _find_function(tree: ast.Module, name: str) -> ast.FunctionDef:
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return node
+    raise AssertionError(f"{name} 이(가) admin.py 에 정의되어 있지 않습니다.")
+
+
+def _calls_named(nodes, name: str) -> list[ast.Call]:
+    found = []
+    for node in nodes:
+        for child in ast.walk(node):
+            if (
+                isinstance(child, ast.Call)
+                and isinstance(child.func, ast.Name)
+                and child.func.id == name
+            ):
+                found.append(child)
+    return found
+
+
+class TestStageConfigSectionIsAdminOnly:
+    """AC: operator 경로에서는 무대 설정 섹션이 렌더되지 않는다.
+
+    RL-004: 소스 문자열 grep 은 호출이 분기 밖으로 빠져도 통과하므로,
+    AST 로 "``if is_role_admin:`` 의 body 안에 있는가" 를 직접 확인한다.
+    ``if not is_role_admin:`` 의 body 나 ``else:`` 절은 admin 전용 구간이
+    아니므로 의도적으로 제외한다.
+    """
+
+    TARGET = "_render_admin_room_stage_config"
+
+    def _admin_only_statements(self, func: ast.FunctionDef) -> list[ast.stmt]:
+        statements: list[ast.stmt] = []
+        for node in ast.walk(func):
+            is_admin_guard = (
+                isinstance(node, ast.If)
+                and isinstance(node.test, ast.Name)
+                and node.test.id == "is_role_admin"
+            )
+            if is_admin_guard:
+                statements.extend(node.body)
+        return statements
+
+    def test_function_is_defined_at_module_level(self):
+        tree = _parse_admin_module()
+        assert _find_function(tree, self.TARGET) is not None
+
+    def test_called_inside_the_is_role_admin_branch(self):
+        tree = _parse_admin_module()
+        func = _find_function(tree, "show_room_management")
+        guarded = self._admin_only_statements(func)
+        assert guarded, "show_room_management 에 `if is_role_admin:` 분기가 없습니다."
+        assert len(_calls_named(guarded, self.TARGET)) == 1
+
+    def test_never_called_outside_the_admin_branch(self):
+        """모듈 전체 호출 수 == admin 분기 안 호출 수 (밖에 하나도 없다)."""
+        tree = _parse_admin_module()
+        func = _find_function(tree, "show_room_management")
+        inside = _calls_named(self._admin_only_statements(func), self.TARGET)
+        everywhere = _calls_named(tree.body, self.TARGET)
+        assert len(everywhere) == len(inside) == 1
+
+    def test_receives_the_role_filtered_room_list(self):
+        """전체 룸(all_rooms)이 아니라 visible_rooms 를 넘겨야 한다."""
+        tree = _parse_admin_module()
+        func = _find_function(tree, "show_room_management")
+        call = _calls_named(self._admin_only_statements(func), self.TARGET)[0]
+        arg_names = [a.id for a in call.args if isinstance(a, ast.Name)]
+        assert arg_names == ["room_model", "visible_rooms"]

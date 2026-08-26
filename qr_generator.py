@@ -18,6 +18,7 @@ QR 코드 PNG 와 data URL 을 생성하는 순수 함수들을 제공한다.
 Public API
 ----------
 - :func:`build_view_url` : ``viewer_base_url + /view/{room_id}`` 정규화.
+- :func:`build_stage_url` : ``viewer_base_url + /stage/{room_id}`` 정규화 (ISSUE-39).
 - :func:`make_qr_png` : 임의의 URL 을 PNG 바이트로 변환.
 - :func:`make_qr_data_url` : ``data:image/png;base64,...`` URL 생성.
   webrtc.html 의 ``<img src>`` 에 직접 삽입할 수 있도록 인라인 데이터를
@@ -31,20 +32,41 @@ import io
 
 import qrcode
 
-# 뷰어 페이지 경로 — sse_broadcast.build_sse_app 의 ``/view/{room_id}`` 와 일치.
+# 룸 페이지 경로 — sse_broadcast.build_sse_app 의 라우트와 1:1 로 일치해야 한다.
 # 한 군데에서만 정의해 두어 라우트 변경 시 동기화 누락을 막는다.
 _VIEW_PATH_TEMPLATE = "/view/{room_id}"
+# 무대 합성 페이지 (ISSUE-39/40) — 청중용 뷰어와 같은 오리진에서 서빙된다.
+_STAGE_PATH_TEMPLATE = "/stage/{room_id}"
 
 
-def build_view_url(room_id: str, base_url: str) -> str:
-    """``base_url`` + ``/view/{room_id}`` 로 정규화된 뷰어 URL 을 만든다.
+def _build_room_url(room_id: str, base_url: str, path_template: str) -> str:
+    """``base_url`` + ``path_template`` 로 정규화된 절대 URL 을 만든다.
+
+    ``build_view_url`` / ``build_stage_url`` 의 공통 본문 — 두 함수의 정규화
+    규칙이 시간이 지나며 갈라지지 않도록 한 곳에만 둔다.
 
     다음 입력 변종을 모두 동일한 결과로 매핑해 호출자가 환경변수 형식을
     너무 신경 쓰지 않게 한다:
 
-      - 끝에 ``/`` 가 있든 없든 동일 결과.
+      - 끝에 ``/`` 가 있든 없든 (여러 개여도) 동일 결과.
       - http/https 모두 그대로 전달.
       - host:port 형태도 그대로 보존.
+
+    Raises:
+        ValueError: room_id / base_url 이 비어 있거나 공백만 있는 경우.
+    """
+    if not room_id or not room_id.strip():
+        raise ValueError("room_id must be non-empty")
+    if not base_url or not base_url.strip():
+        raise ValueError("base_url must be non-empty")
+
+    cleaned_base = base_url.strip().rstrip("/")
+    cleaned_room = room_id.strip()
+    return cleaned_base + path_template.format(room_id=cleaned_room)
+
+
+def build_view_url(room_id: str, base_url: str) -> str:
+    """``base_url`` + ``/view/{room_id}`` 로 정규화된 뷰어 URL 을 만든다.
 
     Args:
         room_id: ``Room.id`` 값. 빈 문자열은 ``ValueError``.
@@ -58,14 +80,27 @@ def build_view_url(room_id: str, base_url: str) -> str:
     Raises:
         ValueError: 입력이 비어 있거나 공백만 있는 경우.
     """
-    if not room_id or not room_id.strip():
-        raise ValueError("room_id must be non-empty")
-    if not base_url or not base_url.strip():
-        raise ValueError("base_url must be non-empty")
+    return _build_room_url(room_id, base_url, _VIEW_PATH_TEMPLATE)
 
-    cleaned_base = base_url.strip().rstrip("/")
-    cleaned_room = room_id.strip()
-    return cleaned_base + _VIEW_PATH_TEMPLATE.format(room_id=cleaned_room)
+
+def build_stage_url(room_id: str, base_url: str) -> str:
+    """``base_url`` + ``/stage/{room_id}`` 로 정규화된 무대 화면 URL 을 만든다 (ISSUE-39).
+
+    무대 화면은 행사장 PC 브라우저가 여는 페이지이므로 청중용 뷰어와 같은
+    오리진(= 같은 ``VIEWER_BASE_URL``)을 쓴다. 정규화 규칙은
+    :func:`build_view_url` 과 완전히 동일하다.
+
+    Args:
+        room_id: ``Room.id`` 값. 빈 문자열은 ``ValueError``.
+        base_url: ``VIEWER_BASE_URL`` 환경변수 값 또는 기본 fallback.
+
+    Returns:
+        ``https://example.com/stage/abc123`` 형식의 절대 URL.
+
+    Raises:
+        ValueError: 입력이 비어 있거나 공백만 있는 경우.
+    """
+    return _build_room_url(room_id, base_url, _STAGE_PATH_TEMPLATE)
 
 
 def make_qr_png(url: str) -> bytes:

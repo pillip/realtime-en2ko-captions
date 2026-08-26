@@ -1,13 +1,24 @@
 """
 admin.py에서 추출한 순수 비즈니스 로직 함수들
 Streamlit 의존성 없이 테스트 가능
+
+ISSUE-39: 무대 화면 설정 폼(관리자 전용)의 변환/분류 로직을 추가한다.
+검증 규칙 자체는 재구현하지 않는다 — 값 제약은 ``stage_config`` 가,
+업로드 제약은 ``branding_assets`` 가 소유하고 여기서는 그 결과를 관리자에게
+보여줄 수 있는 형태로 묶어 주기만 한다 (RL-001/RL-005).
+RL-006: ValueError 가 아닌 예외의 상세는 서버 콘솔에만 남기고 UI 에는
+일반 메시지만 돌려준다.
 """
 
 from __future__ import annotations
 
 import csv
 import io
+from collections.abc import Iterable, MutableMapping
 from typing import Any
+
+from branding_assets import delete_asset, save_asset
+from stage_config import LOGO_GROUP_LABELS
 
 # 관리자 대시보드 룸 표시용 한글 라벨 — operator_ui._ROOM_STATUS_LABELS
 # 와 동일 정의이지만, admin_logic 은 operator_ui 에 의존하지 않도록 자체
@@ -431,3 +442,314 @@ def validate_room_creation_input(name: str) -> tuple[bool, str]:
     if len(name) > 100:
         return False, "룸 이름은 100자 이하여야 합니다."
     return True, ""
+
+
+# ============================================================
+# ISSUE-39: 무대 화면 설정 폼 (관리자 전용, Streamlit-free)
+# ============================================================
+
+# RL-006: ValueError 가 아닌 예외(디스크 오류 등)에 붙이는 일반 메시지.
+# branding_assets 가 OSError 를 변환할 때 쓰는 문구와 같은 표현을 써서
+# 관리자가 보는 실패 안내가 경로별로 달라지지 않게 한다.
+UPLOAD_FAILED_MESSAGE = "로고 파일을 저장하지 못했습니다. 잠시 후 다시 시도해 주세요."
+
+_DELETE_FAILED_MESSAGE = "로고 삭제에 실패했습니다."
+_DELETE_CONFIG_ONLY_MESSAGE = "파일이 이미 없어 설정에서만 제거했습니다."
+_DELETE_OK_MESSAGE = "로고를 삭제했습니다."
+
+
+def _clean_text(value: Any) -> str:
+    """문자열이 아니면 빈 문자열. 앞뒤 공백 제거 (stage_config 와 같은 규칙)."""
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _dedupe_preserving_order(names: Any) -> list[Any]:
+    """같은 그룹 안의 중복 파일명을 순서를 지키며 하나로 합친다.
+
+    한 그룹이 같은 파일을 두 번 참조해도 가리키는 실제 파일은 하나뿐이라
+    의미가 없고, 관리자 화면에서는 파일명으로 만든 위젯 key 가 충돌해
+    섹션 전체가 죽는다. 중복은 실제로 만들어질 수 있다 — 디스크에서 파일이
+    사라진 뒤(볼륨 교체/수동 정리) 관리자가 드리프트 경고를 보고 같은 이름을
+    다시 올리면 ``save_asset`` 이 충돌 회피를 하지 않아 기존 참조와 같은
+    이름이 한 번 더 들어온다.
+
+    ``set`` 이 아니라 리스트 멤버십으로 비교한다 — 호출자가 넘기는 값이
+    해시 불가능할 수도 있고, 룸당 상한이 12개라 비용이 무시할 수준이다.
+    """
+    unique: list[Any] = []
+    for name in names or []:
+        if name not in unique:
+            unique.append(name)
+    return unique
+
+
+def build_stage_config_from_form(
+    *,
+    event_title: str,
+    event_subtitle: str,
+    caption_ratio: str,
+    logo_groups: dict[str, list[str]] | None,
+) -> dict[str, Any]:
+    """폼 입력을 ``stage_config`` 후보 dict 로 조립한다 (검증은 하지 않는다).
+
+    Args:
+        event_title: 행사 타이틀 입력값.
+        event_subtitle: 행사 부제 입력값.
+        caption_ratio: 자막 컬럼 비율 라디오 선택값. **보정하지 않고 그대로**
+            담는다 — 잘못된 값은 ``validate_stage_config`` 가 사유와 함께
+            거절해야 관리자가 무엇이 틀렸는지 알 수 있다.
+        logo_groups: ``{그룹 라벨: [파일명, ...]}``. 알려진 라벨 3종이 항상
+            고정 순서로 먼저 오고, 알 수 없는 라벨이 있으면 뒤에 덧붙인다.
+            그룹 안의 중복 파일명은 순서를 지키며 하나로 합친다
+            (:func:`_dedupe_preserving_order` 참고).
+
+    알 수 없는 라벨을 여기서 조용히 지우지 않는 것은 의도다.
+    ``normalize_stage_config`` 가 그것을 버릴 때
+    :func:`describe_stage_config_drops` 가 관리자에게 알릴 수 있어야 한다.
+
+    Returns:
+        ``DEFAULT_STAGE_CONFIG`` 와 같은 키를 가진 새 dict.
+    """
+    groups = dict(logo_groups or {})
+    ordered_labels = list(LOGO_GROUP_LABELS) + [
+        label for label in groups if label not in LOGO_GROUP_LABELS
+    ]
+    return {
+        "event_title": _clean_text(event_title),
+        "event_subtitle": _clean_text(event_subtitle),
+        "caption_ratio": caption_ratio,
+        "logo_groups": [
+            {"label": label, "assets": _dedupe_preserving_order(groups.get(label))}
+            for label in ordered_labels
+        ],
+    }
+
+
+def partition_uploads(
+    room_id: str,
+    uploads: Iterable[tuple[str, bytes | None]] | None,
+    *,
+    save_fn=None,
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """업로드 목록을 저장 시도해 (수락, 거부) 로 나눈다.
+
+    Args:
+        room_id: 대상 룸 id.
+        uploads: ``(파일명, 바이트)`` 쌍의 이터러블. Streamlit 의
+            ``UploadedFile`` 을 여기까지 끌고 오지 않기 위해 호출자가 미리
+            쌍으로 변환한다 (이 모듈은 Streamlit 타입을 모른다).
+        save_fn: 저장 함수. 기본값은 ``branding_assets.save_asset``.
+
+    Returns:
+        ``(accepted, rejected)``.
+        ``accepted`` 는 **실제 저장된 파일명** 목록 — 충돌 회피로 이름이
+        바뀔 수 있으므로 config 에는 반드시 이 값을 기록해야 한다.
+        ``rejected`` 는 ``(원본 파일명, 사람이 읽는 사유)`` 목록이며, 사유는
+        ``save_asset`` 이 만든 한국어 문자열을 그대로 전달한다 (용량/확장자
+        /개수 규칙을 admin 계층에서 재구현하지 않기 위해서다).
+
+    한 건이 거부되어도 나머지 업로드는 계속 처리한다.
+    """
+    save = save_fn or save_asset
+    accepted: list[str] = []
+    rejected: list[tuple[str, str]] = []
+
+    for filename, data in uploads or []:
+        try:
+            accepted.append(save(room_id, filename, data))
+        except ValueError as e:
+            # save_asset 이 관리자에게 그대로 보여줄 수 있는 사유를 만든다.
+            rejected.append((filename, str(e)))
+        except Exception as e:
+            # RL-006: 예상치 못한 예외의 str(e) 는 내부 경로를 담을 수 있다.
+            print(f"[Admin] 로고 저장 실패 (room={room_id} name={filename!r}): {e!r}")
+            rejected.append((filename, UPLOAD_FAILED_MESSAGE))
+
+    return accepted, rejected
+
+
+def delete_stage_logo(
+    *,
+    room_model: Any,
+    room_id: str,
+    filename: str,
+    delete_fn=None,
+) -> tuple[bool, str]:
+    """로고 파일을 지우고 ``stage_config`` 에서도 제거한다.
+
+    파일 삭제 결과와 **무관하게** config 갱신을 수행한다 — 디스크에서 이미
+    사라진 파일이 설정에는 남아 무대 페이지가 깨진 이미지를 참조하는 상태를
+    막기 위해서다 (파일만 지우고 config 를 두는 회귀 방지).
+
+    Args:
+        room_model: ``get_stage_config`` / ``update_stage_config`` 를 가진 모델.
+        room_id: 대상 룸 id.
+        filename: 삭제할 파일명.
+        delete_fn: 삭제 함수. 기본값은 ``branding_assets.delete_asset``.
+
+    Returns:
+        ``(ok, 메시지)``. ``ok`` 는 **설정 갱신 성공 여부** 다 — 파일이 이미
+        없었더라도 설정이 정리되었으면 성공으로 본다.
+    """
+    delete = delete_fn or delete_asset
+
+    try:
+        file_removed = bool(delete(room_id, filename))
+
+        config = room_model.get_stage_config(room_id)
+        for group in config.get("logo_groups") or []:
+            if isinstance(group, dict) and isinstance(group.get("assets"), list):
+                group["assets"] = [name for name in group["assets"] if name != filename]
+
+        updated = room_model.update_stage_config(room_id, config)
+    except Exception as e:
+        # RL-006: DB/파일시스템 예외 상세는 서버 콘솔에만.
+        print(f"[Admin] 로고 삭제 실패 (room={room_id} name={filename!r}): {e!r}")
+        return False, _DELETE_FAILED_MESSAGE
+
+    if not updated:
+        return False, _DELETE_FAILED_MESSAGE
+    return True, _DELETE_OK_MESSAGE if file_removed else _DELETE_CONFIG_ONLY_MESSAGE
+
+
+# ------------------------------------------------------------------
+# 로고 삭제 2단계 확인 상태 (A11Y-03 / WCAG 2.1 SC 3.3.4 Error Prevention)
+# ------------------------------------------------------------------
+# 삭제 버튼 라벨에 파일명이 들어가면서 비슷한 버튼이 세로로 늘어서므로, 한 번의
+# 오클릭이나 스트레이 키 입력이 되돌릴 수 없는 파일 삭제가 되면 안 된다.
+# 상태는 admin.py 의 ``st.session_state`` 에 살지만 "어느 행이 확인 대기인가"
+# 판단 규칙은 여기 둔다 — admin.py 는 커버리지 제외 대상이라 규칙이 조용히
+# 어긋나도 테스트가 잡지 못한다 (RL-001/RL-005).
+STAGE_DELETE_ARMED_KEY = "stage_cfg_delete_armed"
+
+
+def _stage_delete_target(
+    room_id: str, label: str, index: int, filename: str
+) -> tuple[str, str, int, str]:
+    """확인 대상 행의 좌표. 위젯 key 와 같은 (룸, 그룹, 순번, 파일명)이다.
+
+    문자열로 이어 붙이지 않고 튜플로 두어 구분자 모호성을 없앤다 — 라벨이나
+    파일명에 구분자가 들어가도 다른 행과 섞이지 않는다.
+    """
+    return (room_id, label, index, filename)
+
+
+def arm_stage_logo_delete(
+    state: MutableMapping[str, Any],
+    *,
+    room_id: str,
+    label: str,
+    index: int,
+    filename: str,
+) -> None:
+    """그 행 **하나만** 삭제 확인 대기 상태로 만든다 (기존 대기 상태는 대체)."""
+    state[STAGE_DELETE_ARMED_KEY] = _stage_delete_target(
+        room_id, label, index, filename
+    )
+
+
+def is_stage_logo_delete_armed(
+    state: MutableMapping[str, Any],
+    *,
+    room_id: str,
+    label: str,
+    index: int,
+    filename: str,
+) -> bool:
+    """그 행이 삭제 확인 대기 상태인지."""
+    armed = state.get(STAGE_DELETE_ARMED_KEY)
+    return armed == _stage_delete_target(room_id, label, index, filename)
+
+
+def clear_stage_logo_delete(state: MutableMapping[str, Any]) -> None:
+    """삭제 확인 대기 상태를 해제한다 (취소 / 삭제 완료 / 룸 변경)."""
+    state.pop(STAGE_DELETE_ARMED_KEY, None)
+
+
+def describe_stage_config_drops(
+    candidate: Any,
+    normalized: Any,
+) -> list[str]:
+    """``normalize_stage_config`` 가 조용히 버린 값을 한국어 경고로 설명한다.
+
+    정규화는 무대 화면이 절대 죽지 않도록 알 수 없는 값을 말없이 폐기한다.
+    저장 경로에서는 그 침묵이 곧 "저장한 줄 알았는데 없어진" 상황이 되므로,
+    관리자에게 무엇이 빠졌는지 알려 준다 (ISSUE-37 리뷰 F-5).
+
+    Args:
+        candidate: 정규화 전 후보 config.
+        normalized: ``normalize_stage_config(candidate)`` 결과.
+
+    Returns:
+        경고 문자열 목록. 버려진 값이 없으면 빈 리스트.
+    """
+    if not isinstance(candidate, dict) or not isinstance(normalized, dict):
+        return []
+
+    candidate_groups = candidate.get("logo_groups")
+    if not isinstance(candidate_groups, list):
+        return []
+
+    kept: dict[str, list[Any]] = {}
+    for group in normalized.get("logo_groups") or []:
+        if isinstance(group, dict) and isinstance(group.get("assets"), list):
+            kept[group.get("label")] = group["assets"]
+
+    warnings: list[str] = []
+    seen_labels: set[str] = set()
+    for group in candidate_groups:
+        if not isinstance(group, dict):
+            continue
+        label = group.get("label")
+        assets = group.get("assets") if isinstance(group.get("assets"), list) else []
+
+        if label not in kept or label in seen_labels:
+            # 알 수 없는 라벨이거나, 같은 라벨이 중복돼 뒤엣것이 폐기된 경우.
+            kind = "중복된" if label in seen_labels else "알 수 없는"
+            names = ", ".join(str(asset) for asset in assets)
+            detail = (
+                f"의 항목이 저장되지 않았습니다: {names}"
+                if names
+                else "은(는) 저장되지 않았습니다."
+            )
+            warnings.append(f"{kind} 로고 그룹 '{label}' {detail}")
+            continue
+
+        seen_labels.add(label)
+        dropped = [asset for asset in assets if asset not in kept[label]]
+        if dropped:
+            names = ", ".join(str(asset) for asset in dropped)
+            warnings.append(f"'{label}' 그룹에서 저장되지 않은 항목: {names}")
+
+    return warnings
+
+
+def find_asset_drift(
+    config: Any,
+    disk_names: Iterable[str] | None,
+) -> tuple[list[str], list[str]]:
+    """``stage_config`` 와 실제 디스크 파일 목록의 불일치를 찾는다.
+
+    Args:
+        config: 정규화된 무대 설정 dict.
+        disk_names: ``branding_assets.list_assets(room_id)`` 결과.
+
+    Returns:
+        ``(missing, orphaned)``.
+        ``missing`` — 설정이 참조하지만 디스크에 없는 파일 (무대 페이지에서
+        깨진 이미지가 되어 조용히 숨겨진다).
+        ``orphaned`` — 업로드는 되었지만 어느 그룹에서도 참조하지 않는 파일
+        (룸당 12개 상한만 갉아먹는다).
+        둘 다 이름순 정렬 + 중복 제거.
+    """
+    referenced: set[str] = set()
+    groups = config.get("logo_groups") if isinstance(config, dict) else None
+    for group in groups or []:
+        if not isinstance(group, dict):
+            continue
+        for name in group.get("assets") or []:
+            if isinstance(name, str):
+                referenced.add(name)
+
+    on_disk = {name for name in (disk_names or []) if isinstance(name, str)}
+    return sorted(referenced - on_disk), sorted(on_disk - referenced)
