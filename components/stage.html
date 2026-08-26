@@ -48,6 +48,16 @@
       height: 100vh;
       height: 100dvh;
       width: 100%;
+      /* 연결 전에는 커서가 보여야 한다 — 연결 버튼을 눌러야 하기 때문. */
+      cursor: default;
+    }
+    /* 캡처가 연결되면 커서를 감춘다. 커서는 프로젝터 화면의 시각적 오염이자
+       "여기를 클릭할 수 있다" 는 어포던스다. 무대 창이 클릭당하는 순간 OS
+       포커스가 되돌아오고 프레젠터 리모컨이 죽는다 (NFR-025). 재선택 제스처로
+       컨트롤이 돌아오면 클래스가 벗겨지며 커서도 함께 복원된다 — 두 상태는
+       _showControls() 한 곳에서만 바뀐다. */
+    .stage.capture-live {
+      cursor: none;
     }
 
     /* --- 좌열 3행 (헤더 / 발표 영역 / 로고 바) --------------------------- */
@@ -167,6 +177,152 @@
       object-fit: contain;
     }
 
+    /* --- 캡처 컨트롤 / 상태 배너 (ISSUE-42) ------------------------------ */
+    /* 무대 화면의 클릭 표면은 여기 하나뿐이고, 연결되면 렌더 트리에서 통째로
+       빠진다. `pointer-events: none` 으로 죽이는 것만으로는 부족하다 — 그것은
+       문서 안의 히트테스트만 바꿀 뿐, OS 가 그 창에 포커스를 주는 것 자체는
+       막지 못한다 (NFR-025). */
+    .capture-controls {
+      position: absolute;
+      left: 50%;
+      bottom: 5%;
+      transform: translateX(-50%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      max-width: 82%;
+      text-align: center;
+    }
+    .capture-controls[hidden] { display: none; }
+
+    /* 불투명 흰 pill 위 #0b0b0c 글자 = 19.67:1. clamp(15px, 1vw, 22px) 는
+       1920px 에서 19.2px, 1280px 에서 15px 로 resolve 된다 — 어느 뷰포트에서도
+       24px 미만이므로 large-text 3:1 완화에 기대지 않고 본문 기준 4.5:1 을
+       그대로 넘긴다. 알파 눈대중 대신 계산한 값이다 (RL-018). */
+    .capture-button {
+      font-family: inherit;
+      font-size: clamp(15px, 1vw, 22px);
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      color: #0b0b0c;
+      background: #ffffff;
+      border: 0;
+      border-radius: 999px;
+      padding: 12px 26px;
+      cursor: pointer;
+    }
+    /* RL-010: 클릭 표면을 줄이더라도 키보드 접근성은 해치지 않는다. */
+    .capture-button:focus-visible {
+      outline: 3px solid #7cc4ff;
+      outline-offset: 3px;
+    }
+
+    /* 실패 안내. 문구는 이 파일 안의 상수뿐이고 예외 문자열은 오지 않는다
+       (RL-006).
+
+       배경을 **불투명**으로 두는 이유는 .capture-warning 과 똑같다 — 이 문구는
+       타이틀 카드 위에만 뜨는 것이 아니다. 캡처가 연결된 상태에서 코너
+       더블클릭으로 재선택 컨트롤을 되부른 뒤 소스 선택을 취소하면,
+       startCapture() 가 옛 트랙을 그대로 둔 채 되돌아오므로 <video> 는 계속
+       재생 중이고 이 문구는 **캡처 영상 위**에 그려진다. 조상의 #000000 은
+       <video> 에 가려져 실제 배경이 아니다 (RL-018 — 합성된 실제 배경으로
+       계산할 것). 배경 없이 두면 흰 슬라이드에서 rgba(255,255,255,0.75) 가
+       1.00:1 이 되어 안내가 통째로 사라진다 — 실측 결과 힌트 박스 안의 모든
+       픽셀이 #ffffff 였다. 불투명 배경을 깔면 어떤 영상 위에서도 결정적이다:
+       #0b0b0c 위 rgba(255,255,255,0.75) = 11.05:1, 17.28px @1920 / 13px @1280. */
+    .capture-hint {
+      margin: 0;
+      max-width: 100%;
+      padding: 10px 20px;
+      border-radius: 999px;
+      background: #0b0b0c;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      font-size: clamp(13px, 0.9vw, 20px);
+      line-height: 1.5;
+      color: rgba(255, 255, 255, 0.75);
+    }
+    .capture-hint[hidden] { display: none; }
+
+    /* 자기 캡처(무한 거울) 경고. 배경을 **불투명**으로 두는 이유는 임의의 캡처
+       영상 위에 뜨기 때문이다 — 반투명이면 대비가 영상에 따라 달라져 계산
+       자체가 성립하지 않는다. #0b0b0c 위 rgba(255,208,128,0.95) = 12.34:1,
+       18.24px @1920 / 13px @1280 (RL-018). */
+    .capture-warning {
+      position: absolute;
+      top: 5%;
+      left: 50%;
+      transform: translateX(-50%);
+      max-width: 82%;
+      padding: 10px 20px;
+      border-radius: 999px;
+      background: #0b0b0c;
+      border: 1px solid rgba(255, 196, 84, 0.45);
+      color: rgba(255, 208, 128, 0.95);
+      font-size: clamp(13px, 0.95vw, 20px);
+      letter-spacing: 0.01em;
+      text-align: center;
+    }
+    .capture-warning[hidden] { display: none; }
+
+    /* 포커스 핸드오프 안내 (1회). 컨트롤과 세로로 겹치지 않게 18% 지점에 둔다.
+       #0b0b0c 위 rgba(255,255,255,0.92) = 16.51:1. clamp 는 1920px 에서
+       21.12px, 1280px 에서 15px — 상한 24px 에 닿지 않으므로 본문 기준
+       4.5:1 을 적용했다 (RL-018). */
+    .handoff-prompt {
+      position: absolute;
+      left: 50%;
+      bottom: 18%;
+      transform: translateX(-50%);
+      max-width: 82%;
+      padding: 12px 24px;
+      border-radius: 999px;
+      background: #0b0b0c;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      color: rgba(255, 255, 255, 0.92);
+      font-size: clamp(15px, 1.1vw, 24px);
+      font-weight: 500;
+      text-align: center;
+    }
+    .handoff-prompt[hidden] { display: none; }
+
+    /* 소스 재선택 복귀 지점. 보이는 어포던스를 두지 않는 이유가 NFR-025 다 —
+       상시 보이는 컨트롤은 그 자체로 포커스를 부르는 클릭 표면이다. 좌상단
+       코너를 더블클릭하는 명시적 제스처로만 컨트롤이 돌아온다.
+       포커스 가능한 요소가 아니므로 키보드로는 닿지 않는다 (RL-010 과의
+       **의도적** 트레이드오프). 키보드/보조기술 사용자를 위한 동등 경로는 두
+       가지가 남아 있다: 트랙이 끝나면 진짜 버튼 요소가 자동으로 돌아오고,
+       페이지 새로고침은 언제나 초기 상태로 되돌린다. */
+    .reselect-zone {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: clamp(80px, 10%, 200px);
+      height: clamp(60px, 14%, 160px);
+    }
+
+    /* `?debug=1` 리허설 진단 오버레이. DOM 자체가 쿼리 파라미터가 있을 때만
+       만들어지므로 본 행사 화면에는 존재하지 않는다. 라이브 리전이 아니다 —
+       키를 누를 때마다 낭독되면 #caption-announcer 와 경쟁한다 (RL-019).
+       #0b0b0c 위 rgba(255,255,255,0.85) = 14.08:1 @14px (RL-018). */
+    .debug-overlay {
+      position: fixed;
+      top: 12px;
+      left: 12px;
+      z-index: 10;
+      padding: 8px 12px;
+      border-radius: 8px;
+      background: #0b0b0c;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      color: rgba(255, 255, 255, 0.85);
+      font-size: 14px;
+      line-height: 1.6;
+      letter-spacing: 0.02em;
+      font-variant-numeric: tabular-nums;
+      /* 진단 표시일 뿐 조작 대상이 아니다 — 클릭 표면을 늘리지 않는다. */
+      pointer-events: none;
+    }
+
     /* --- 로고 바: 자산 없는 그룹은 숨기고, 전 그룹이 비면 바가 접힌다 ---- */
     .logo-bar {
       display: flex;
@@ -212,6 +368,12 @@
       /* 연결 배너(.conn-error)의 컨테이닝 블록. 배너를 뷰포트에 앵커하면
          발표 영역 위로 떠오른다 — 컬럼 안에 가둔다. */
       position: relative;
+      /* NFR-025 (부드러움): 자막이 매 프레임 바뀌어도 그 레이아웃/페인트가
+         이 컬럼 밖으로 새어 나가지 않는다. 이 선언이 없으면 자막 한 줄이
+         자랄 때마다 브라우저가 발표 영역까지 무효화 후보에 넣는다. 캡처
+         <video> 쪽에는 합성 레이어 강제 힌트를 **넣지 않는다** — 비디오는
+         이미 자체 레이어이고, 힌트는 VRAM만 태운다. */
+      contain: layout paint;
     }
     .caption-live {
       display: flex;
@@ -515,8 +677,10 @@
 
     // 숨김 탭에서는 rAF 가 멈춘다. 남은 글자를 즉시 스냅해 두지 않으면 복귀
     // 순간 수백 자가 한꺼번에 몰아친다.
-    // NFR-025: 이 페이지가 새로 등록하는 유일한 document 레벨 리스너다 —
-    // 키 이벤트는 프레젠터 리모컨의 것이므로 끝까지 건드리지 않는다.
+    // NFR-025: 이 페이지가 등록하는 유일한 document 레벨 리스너다. keydown 은
+    // 여기에도, 다른 어디에도 없다 — 유일한 예외가 `?debug=1` 리허설 계수기이며
+    // 그것은 setupDebugOverlay() 안에서만 등록된다. 키 이벤트는 프레젠터
+    // 리모컨의 것이므로 끝까지 건드리지 않는다.
     document.addEventListener("visibilitychange", function () {
       if (document.hidden) {
         _twStop();
@@ -528,8 +692,258 @@
         }
       } else {
         _twStart();
+        // NFR-027: 화면이 숨겨지는 동안 브라우저가 wake lock 을 자동 해제한다.
+        // 돌아오면 다시 요청한다 — 리스너를 새로 달지 않고 이미 있는 이
+        // 분기를 확장하는 것이 요점이다 (RL-009).
+        if (document.visibilityState === "visible") requestWakeLock();
       }
     });
+
+    // -----------------------------------------------------------------------
+    // 발표자료 화면 캡처 (ISSUE-42) — FR-074 / FR-075 / FR-081, NFR-025..027
+    //
+    // 이 블록의 설계 원칙은 하나다: **무대 창이 OS 포커스를 쥐지 않는다.**
+    // 브라우저는 다른 앱에 키를 주입할 수 없으므로, 기본 동작 취소를
+    // 생략한다고 해서 방향키가 PowerPoint 로 전달되지는 않는다. 실제 요구사항은
+    // 발표가 진행되는 동안 이 창이 포커스를 갖지 않는 것이고, 그래서 포커스를
+    // 얻는 경로를 전부 없앤다 — 연결 후 보이는 클릭 표면 0개, `cursor: none`,
+    // `surfaceSwitching: "exclude"`, 포커스/전체화면 API 자동 호출 금지,
+    // 그리고 캡처 시작 직후의 `document.activeElement?.blur()`.
+    // keydown 리스너 부재는 그 전제가 깨졌을 때를 위한 2차 방어선이다.
+    // -----------------------------------------------------------------------
+    const CAPTURE_CONSTRAINTS = {
+      // 30fps 는 발표자료(정적 슬라이드)에 충분하고, 60fps 를 요구해 인코더와
+      // 메인 스레드를 자막 애니메이션과 경쟁시키지 않는다 (NFR-025).
+      video: { frameRate: { ideal: 30 } },
+      audio: false,
+      // 무한 거울 방지. Chromium 계열만 보장하므로 _detectSelfCapture() 가
+      // 휴리스틱으로 뒤를 받친다.
+      selfBrowserSurface: "exclude",
+      // Chrome 의 "다른 탭 공유" 전환 위젯은 무대 화면 위에 클릭 표면을 하나
+      // 더 얹는다. 소스 변경은 우리 재선택 경로로만 처리한다 (NFR-025).
+      surfaceSwitching: "exclude",
+      systemAudio: "exclude",
+    };
+
+    const HANDOFF_MS = 8000; // 안내가 무대에 영구히 남지 않도록 하는 상한
+    const CONNECT_LABEL = "발표자료 연결";
+    const RECONNECT_LABEL = "발표자료 다시 연결";
+    // RL-006: 화면에 나가는 문구는 이 파일 안의 상수뿐이다. 무대 화면은 곧
+    // 관객 화면이므로 예외 메시지·이름·스택은 어떤 경로로도 DOM 에 닿지 않는다.
+    const CAPTURE_FAIL_MSG =
+      "발표자료 화면을 가져오지 못했습니다. 다시 연결을 눌러 창을 선택하세요";
+    const CAPTURE_UNSUPPORTED_MSG =
+      "이 브라우저는 발표자료 화면 공유를 지원하지 않습니다. Chrome 또는 Edge 최신 버전을 사용하세요";
+
+    let stageRoot = null;
+    let captureVideo = null;
+    let titleCard = null;
+    let captureControls = null;
+    let connectButton = null;
+    let captureHint = null;
+    let captureWarning = null;
+    let handoffPrompt = null;
+    let debugFocus = null;
+
+    let captureTrack = null;
+    let captureStarted = false; // 한 번이라도 연결된 적이 있는가 (버튼 문구용)
+    let handoffTimer = 0;
+    let wakeLockSentinel = null;
+
+    // 컨트롤 가시성과 커서를 **한 곳에서만** 뒤집는다. 두 상태가 어긋나면
+    // 커서만 사라진 채 버튼이 남아 클릭 표면이 그대로 살아 있게 된다.
+    // `display: none` 인 이유는 `pointer-events: none` 이 문서 안의 히트테스트만
+    // 바꿀 뿐 OS 가 그 창에 포커스를 주는 것 자체는 막지 못하기 때문이다.
+    function _showControls(show) {
+      if (captureControls) captureControls.hidden = !show;
+      if (stageRoot) stageRoot.classList.toggle("capture-live", !show);
+    }
+
+    function _setCaptureError(message) {
+      if (!captureHint) return;
+      captureHint.textContent = message;
+      captureHint.hidden = !message;
+    }
+
+    function _showHandoff() {
+      if (!handoffPrompt) return;
+      handoffPrompt.hidden = false;
+      if (handoffTimer) clearTimeout(handoffTimer);
+      handoffTimer = setTimeout(_hideHandoff, HANDOFF_MS);
+    }
+
+    function _hideHandoff() {
+      if (handoffTimer) {
+        clearTimeout(handoffTimer);
+        handoffTimer = 0;
+      }
+      if (handoffPrompt) handoffPrompt.hidden = true;
+    }
+
+    function _updateDebugFocus() {
+      if (!debugFocus) return;
+      debugFocus.textContent =
+        document.hasFocus() ? "이 창 포커스 있음" : "이 창 포커스 없음";
+    }
+
+    // 창이 포커스를 잃었다는 것은 사용자가 발표 앱으로 넘어갔다는 뜻 —
+    // 핸드오프가 성공한 신호이므로 안내를 그 즉시 거둔다.
+    function onWindowBlur() {
+      _hideHandoff();
+      _updateDebugFocus();
+    }
+
+    function onWindowFocus() {
+      _updateDebugFocus();
+    }
+
+    // 옛 트랙의 리스너를 **먼저** 떼고 나서 멈춘다. 순서를 바꾸면 재선택 때
+    // 옛 트랙의 정리가 방금 붙인 새 캡처를 도로 철거한다 (RL-009).
+    function _releaseCapture() {
+      if (!captureTrack) return;
+      captureTrack.removeEventListener("ended", onCaptureEnded);
+      try {
+        captureTrack.stop();
+      } catch (e) {
+        /* 이미 끝난 트랙 — 무해하다 */
+      }
+      captureTrack = null;
+    }
+
+    // FR-075: 검은 화면 대신 타이틀 카드로 되돌아가고 재연결 경로를 연다.
+    // 우측 자막 컬럼은 이 함수가 전혀 건드리지 않는다 — 발표 영역의 사고가
+    // 자막을 끊으면 안 된다.
+    function onCaptureEnded() {
+      _releaseCapture();
+      captureVideo.srcObject = null;
+      captureVideo.hidden = true;
+      titleCard.hidden = false;
+      captureWarning.hidden = true;
+      _hideHandoff();
+      _setCaptureError("");
+      connectButton.textContent = RECONNECT_LABEL;
+      _showControls(true);
+      _releaseWakeLock();
+    }
+
+    // FR-081: `selfBrowserSurface` 를 무시하는 브라우저(Safari 등)를 위한 폴백.
+    // `displaySurface` 만 보면 정상적인 다른 탭 공유까지 전부 경고가 뜨므로,
+    // 캡처 해상도가 이 창의 크기와 겹치는지까지 함께 본다.
+    function _detectSelfCapture(track) {
+      const s = (track.getSettings && track.getSettings()) || {};
+      if (s.displaySurface !== "browser") return false;
+      const dpr = window.devicePixelRatio || 1;
+      const near = function (got, want) {
+        return got > 0 && Math.abs(got - want) <= Math.max(8, want * 0.05);
+      };
+      return near(s.width, Math.round(window.innerWidth * dpr)) &&
+             near(s.height, Math.round(window.innerHeight * dpr));
+    }
+
+    // NFR-027 / RL-008: 미지원 브라우저에서 예외 없이 degrade 한다.
+    // 살아 있는 트랙(`captureTrack`)이 조건이지 "한 번이라도 연결했는가"
+    // (`captureStarted`)가 아니다 — 트랙이 끝난 뒤 탭을 오갔다고 해서 아무것도
+    // 표시하지 않는 화면을 계속 깨워 둘 이유는 없다.
+    async function requestWakeLock() {
+      if (!("wakeLock" in navigator)) return;
+      if (!captureTrack || wakeLockSentinel) return;
+      try {
+        wakeLockSentinel = await navigator.wakeLock.request("screen");
+        wakeLockSentinel.addEventListener("release", function () {
+          wakeLockSentinel = null;
+        });
+      } catch (e) {
+        wakeLockSentinel = null; // 거부도 정상 경로다 — 조용히 넘어간다
+      }
+    }
+
+    function _releaseWakeLock() {
+      if (!wakeLockSentinel) return;
+      try {
+        wakeLockSentinel.release();
+      } catch (e) {
+        /* noop */
+      }
+      wakeLockSentinel = null;
+    }
+
+    async function startCapture() {
+      // RL-008: 비보안 컨텍스트에서는 navigator.mediaDevices 자체가 없다.
+      const md = navigator.mediaDevices;
+      if (!md || typeof md.getDisplayMedia !== "function") {
+        _setCaptureError(CAPTURE_UNSUPPORTED_MSG);
+        return;
+      }
+      let stream = null;
+      try {
+        stream = await md.getDisplayMedia(CAPTURE_CONSTRAINTS);
+      } catch (e) {
+        // 사용자가 다이얼로그를 취소한 경우를 포함한 모든 거부. 예외의
+        // 메시지와 이름은 내부 경로나 정책 이름을 담고 있으므로 DOM 에
+        // 옮기지 않는다 — 무대 화면은 곧 관객 화면이다 (RL-006).
+        _setCaptureError(CAPTURE_FAIL_MSG);
+        return;
+      }
+      _setCaptureError("");
+      _releaseCapture();
+
+      const track = stream.getVideoTracks()[0];
+      captureTrack = track || null;
+      if (track) track.addEventListener("ended", onCaptureEnded);
+
+      captureVideo.srcObject = stream;
+      captureVideo.hidden = false;
+      titleCard.hidden = true;
+      captureStarted = true;
+      connectButton.textContent = RECONNECT_LABEL;
+
+      // 자기 캡처는 경고만 하고 캡처를 강제로 끊지 않는다 (FR-081). 경고가 뜬
+      // 동안에는 재선택 컨트롤을 남겨 둔다 — 그것이 곧 재선택 액션이다.
+      const mirrored = track ? _detectSelfCapture(track) : false;
+      captureWarning.hidden = !mirrored;
+      _showControls(mirrored);
+
+      // 권한 다이얼로그를 브라우저에서 조작했으므로 이 순간 포커스는 반드시
+      // 이 창에 있다. 그대로 발표를 시작하면 첫 슬라이드부터 넘어가지 않는다.
+      document.activeElement?.blur();
+      _showHandoff();
+      requestWakeLock();
+    }
+
+    // 리허설 진단 오버레이. 쿼리 플래그가 없으면 DOM 도 리스너도 만들지 않는다 —
+    // 본 행사 화면에는 이 경로 자체가 존재하지 않는다. 판정 기준은
+    // "발표 앱이 포커스를 쥔 상태에서 리모컨 20회 → 카운터 0" 이다.
+    function setupDebugOverlay() {
+      if (new URLSearchParams(location.search).get("debug") !== "1") return;
+      const box = document.createElement("div");
+      box.className = "debug-overlay";
+      box.id = "debug-overlay";
+
+      debugFocus = document.createElement("div");
+      debugFocus.id = "debug-focus";
+
+      const keys = document.createElement("div");
+      keys.textContent = "keydown ";
+      const counter = document.createElement("span");
+      counter.id = "debug-key-count";
+      counter.textContent = "0";
+      keys.appendChild(counter);
+
+      box.appendChild(debugFocus);
+      box.appendChild(keys);
+      document.body.appendChild(box);
+      _updateDebugFocus();
+
+      // 이 페이지 전체에서 유일한 keydown 등록이다. `{ passive: true }` 로
+      // 브라우저에 "절대 취소하지 않는다" 고 미리 약속하고, 실제로 세기만 한다.
+      // 카운터가 올라간다는 것은 무대 창이 포커스를 쥐고 있다는 뜻이며 세팅이
+      // 잘못된 것이다 — 그 사실을 알려 주는 것이 이 오버레이의 목적이다.
+      let seen = 0;
+      document.addEventListener("keydown", function () {
+        seen += 1;
+        counter.textContent = String(seen);
+      }, { passive: true });
+    }
 
     function showError(visible) {
       if (connError) connError.classList.toggle("visible", !!visible);
@@ -661,11 +1075,44 @@
       connError = $("conn-error");
       applyWaitingText(CONFIG.caption_lang);
 
+      // --- 발표자료 화면 캡처 부트스트랩 (ISSUE-42) -------------------------
+      stageRoot = $("stage-root");
+      captureVideo = $("capture-video");
+      titleCard = $("title-card");
+      captureControls = $("capture-controls");
+      connectButton = $("capture-connect");
+      captureHint = $("capture-hint");
+      captureWarning = $("capture-warning");
+      handoffPrompt = $("handoff-prompt");
+
+      connectButton.textContent = CONNECT_LABEL;
+      _showControls(true); // 연결 전에는 버튼과 커서가 모두 살아 있어야 한다
+
+      // 브라우저 정책상 getDisplayMedia 는 사용자 제스처 1회를 요구한다.
+      connectButton.addEventListener("click", function () {
+        startCapture();
+      });
+
+      // 재선택 복귀는 보이는 어포던스 없는 코너 더블클릭으로만 한다. 상시 보이는
+      // 컨트롤은 그 자체가 무대 창이 포커스를 되찾는 경로다 (NFR-025).
+      $("reselect-zone").addEventListener("dblclick", function () {
+        if (!captureStarted) return;
+        connectButton.textContent = RECONNECT_LABEL;
+        _hideHandoff();
+        _showControls(true);
+      });
+
+      // blur 는 핸드오프 성공 신호이자 진단 오버레이의 갱신 트리거다. 두 이벤트
+      // 모두 키 이벤트가 아니므로 프레젠터 리모컨과 무관하다.
+      window.addEventListener("blur", onWindowBlur);
+      window.addEventListener("focus", onWindowFocus);
+      setupDebugOverlay();
+
       // 종료된 룸은 종료 상태로 시작하고 EventSource 를 아예 열지 않는다.
-      // (화면 캡처는 ISSUE-42 가 담당한다.
-      //  NFR-025: 이 페이지는 document/window 레벨 키 이벤트를 등록하지 않고
-      //  포커스/전체화면 API 도 자동 호출하지 않는다 — 프레젠터 리모컨이
-      //  무대 창에 가로채이면 행사장에서 슬라이드가 넘어가지 않는다.)
+      // NFR-025: 이 페이지는 기본 경로에서 document/window 레벨 키 이벤트를
+      // 등록하지 않고 포커스/전체화면 API 도 자동 호출하지 않는다 — 전체화면은
+      // 조작자가 F11 로 직접 넣는다. 페이지가 스스로 전체화면에 진입하면
+      // 포커스가 무대 창으로 되돌아와 행사장에서 슬라이드가 넘어가지 않는다.
       if (CONFIG.initial_state === "closed") {
         setCaptionState("ended");
       } else {
@@ -676,7 +1123,7 @@
   </script>
 </head>
 <body>
-  <div class="stage">
+  <div class="stage" id="stage-root">
     <main class="stage-main">
       <header class="event-header" id="event-header">
         <h1 class="event-title" id="event-title">{{ROOM_NAME}}</h1>
@@ -685,13 +1132,39 @@
 
       <section class="presentation" id="presentation" aria-label="발표 화면">
         <div class="stage-frame" id="stage-frame">
-          <!-- ISSUE-42 가 getDisplayMedia 스트림을 여기에 연결한다. -->
+          <!-- ISSUE-42 의 캡처 스트림이 여기에 붙는다. object-fit: contain 이라
+               16:9 가 아닌 소스도 잘리거나 늘어나지 않고 레터박스로 들어간다. -->
           <video class="capture-video" id="capture-video" autoplay muted playsinline hidden></video>
           <div class="title-card" id="title-card">
             <div class="title-card-title" id="card-title"></div>
             <div class="title-card-subtitle" id="card-subtitle" hidden></div>
             <div class="title-card-logos" id="card-logos"></div>
           </div>
+
+          <!-- 자기 캡처(무한 거울) 경고. 캡처를 끊지 않고 재선택만 안내한다
+               (FR-081). 라이브 리전이 아니다 — 무대는 프로젝터 출력이고,
+               라이브 리전 소유자는 #caption-announcer 하나뿐이다 (RL-019). -->
+          <div class="capture-warning" id="capture-warning" hidden>
+            무대 화면이 캡처되었습니다. 발표자료 창을 선택하세요
+          </div>
+
+          <!-- 포커스 핸드오프 안내(1회). HANDOFF_MS 후 또는 창이 포커스를 잃는
+               즉시 사라진다 — 무대 화면에 영구적으로 남지 않는다. -->
+          <div class="handoff-prompt" id="handoff-prompt" hidden>
+            발표 앱을 클릭해 포커스를 넘기세요
+          </div>
+
+          <!-- 무대 화면의 유일한 클릭 표면. 연결되면 통째로 렌더 트리에서
+               빠진다(display: none) — OS 포커스를 부르는 경로를 없애는 것이
+               목적이므로 pointer-events 로 죽이는 것만으로는 부족하다. -->
+          <div class="capture-controls" id="capture-controls">
+            <button class="capture-button" id="capture-connect" type="button">발표자료 연결</button>
+            <p class="capture-hint" id="capture-hint" hidden></p>
+          </div>
+
+          <!-- 재선택 복귀 지점. 보이는 어포던스도 포커스 가능성도 없는 코너
+               더블클릭 제스처다 (NFR-025). -->
+          <div class="reselect-zone" id="reselect-zone"></div>
         </div>
       </section>
 
@@ -702,7 +1175,7 @@
       <div class="caption-live" id="caption-live">
         <div class="caption-scroll" id="caption-scroll">
           <!-- aria-hidden 은 의도된 것이다. 되돌리지 말 것 (RL-019).
-               ISSUE-40(PR #122 UI-6)은 이 노드에 aria-live="polite" 를 붙인 채
+               ISSUE-40(PR #122 UI-6)은 이 노드를 polite 라이브 리전으로 둔 채
                셸을 출하했지만, ISSUE-41 의 타자기가 바로 이 노드에
                .caption-line 을 append 하고 마지막 라인의 textContent 를 매
                requestAnimationFrame 마다 바꾸며 MAX_LINES 로 앞쪽 자식을

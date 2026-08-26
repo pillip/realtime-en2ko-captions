@@ -9,6 +9,9 @@
   부재(RL-012), 프레젠터 키보드 비간섭(NFR-025), 로고 degrade 경로(RL-008).
 - `stage.html` 자막 컬럼 (ISSUE-41): rAF 타자기, `MAX_LINES`, 좁은 컬럼 타이포,
   라이브 리전 소유권(RL-019), 배너 위치와 합성 대비(RL-018).
+- `stage.html` 화면 캡처 (ISSUE-42, TC-060 / TC-061): getDisplayMedia 제약,
+  클릭 표면 최소화, 트랙 수명주기, Wake Lock capability guard(RL-008),
+  `?debug=1` 진단 오버레이의 유일한 keydown 등록.
 - aiohttp `/stage/{room_id}` 핸들러: 404 / closed / caption_ratio → 폭 매핑 /
   깨진 stage_config → 기본값 / 이스케이프.
 
@@ -41,6 +44,17 @@ _BREAKOUT_TITLE = "</script><script>alert(1)</script>"
 # 페이지가 칠하는 두 배경. 대비 계산은 합성 후 색으로 한다 (RL-018).
 _CANVAS_RGB = (11, 11, 12)  # --canvas: #0b0b0c
 _FRAME_RGB = (0, 0, 0)  # .stage-frame / .title-card 배경
+
+# ISSUE-42 가 출하하는 `<button>` 의 전부. 개수와 id 를 한 곳에 못 박아 두고
+# `test_no_interactive_controls` 가 그것과 대조한다 — 무대 화면에 클릭 표면이
+# 하나 늘어나는 것은 곧 무대 창이 OS 포커스를 뺏길 경로가 하나 늘어나는 것이다.
+_EXPECTED_BUTTON_IDS = ("capture-connect",)
+
+# `?debug=1` 진단 오버레이의 진입 가드. keydown 리스너가 **이 한 줄 뒤에만**
+# 등록된다는 사실이 NFR-025 정적 가드의 핵심이다.
+_DEBUG_GUARD_LINE = (
+    'if (new URLSearchParams(location.search).get("debug") !== "1") return;'
+)
 
 
 # ---------------------------------------------------------------------------
@@ -81,6 +95,21 @@ def _rule_block(css: str, selector: str) -> str:
     match = re.search(pattern, css, re.S)
     assert match is not None, f"{selector} rule not found in stage.html"
     return match.group(1)
+
+
+def _hex_rgb(value: str) -> tuple[int, int, int]:
+    """`#rrggbb` → (r, g, b). 불투명 색은 알파 1.0 으로 대비 계산에 넘긴다."""
+    digits = value.strip().lstrip("#")
+    assert len(digits) == 6, f"expected a #rrggbb colour, got {value!r}"
+    return (int(digits[0:2], 16), int(digits[2:4], 16), int(digits[4:6], 16))
+
+
+def _rule_hex(css: str, selector: str, prop: str) -> tuple[int, int, int]:
+    """규칙 블록에서 `prop: #rrggbb` 를 뽑는다."""
+    block = _rule_block(css, selector)
+    match = re.search(rf"(?<![-\w]){re.escape(prop)}:\s*(#[0-9a-fA-F]{{6}})", block)
+    assert match is not None, f"{selector} has no `{prop}: #rrggbb` declaration"
+    return _hex_rgb(match.group(1))
 
 
 def _rule_rgba(css: str, selector: str) -> tuple[float, float, float, float]:
@@ -315,18 +344,111 @@ class TestStageHtmlMarkup:
             assert placeholder in stage_html, f"{placeholder} missing from stage.html"
 
     def test_no_presenter_keyboard_interference(self, stage_html):
-        """NFR-025 회귀 가드 — 이게 깨지면 행사장에서 프레젠터 리모컨이 죽는다."""
-        assert "keydown" not in stage_html
-        assert "keyup" not in stage_html
-        assert "preventDefault" not in stage_html
+        """NFR-025 회귀 가드 — 이게 깨지면 행사장에서 프레젠터 리모컨이 죽는다.
+
+        TC-060. ISSUE-40 은 파일 전체에서 `keydown` 이라는 **문자열**을 금지했다.
+        `docs/requirements.md` NFR-025 가 `?debug=1` 의 `{ passive: true }` 계수기
+        하나를 명시적으로 승인하므로, 규격을 지킨 ISSUE-42 구현은 그 어휘적 금지를
+        필연적으로 깨뜨린다. 그래서 **삭제하지 않고 더 좁은 구조적 단언으로 강화**
+        한다 — 등록이 정확히 1건이고, 그 1건이 `?debug=1` 가드 블록 안에 있으며,
+        `{ passive: true }` 로 등록되고, 기본 동작 취소/전파 중단 호출이 파일 전체에
+        0건이라는 것까지 센다. 개수(`== 1` / `== 0`)로 단언하는 이유는 RL-004 다 —
+        `in` / `not in` 은 두 번째 리스너가 들어와도 통과한다.
+
+        `requestFullscreen` 과 `.focus()` 금지는 이 이슈를 지나도 의도가 그대로이므로
+        **문구 그대로** 남긴다: 둘 다 무대 창으로 OS 포커스를 되돌리는 호출이다.
+
+        행동 기반 짝: `tests/e2e/test_stage_capture_e2e.py::TestPresenterKeys`.
+        """
+        # (1) 포커스/전체화면 자동 강탈 경로 — ISSUE-40 문구 그대로 유지한다.
         assert "requestFullscreen" not in stage_html
         assert ".focus()" not in stage_html
 
+        # (2) keydown 등록은 정확히 1건이다.
+        registrations = list(re.finditer(r'addEventListener\(\s*"keydown"', stage_html))
+        assert len(registrations) == 1, (
+            f"stage.html registers {len(registrations)} keydown listener(s); "
+            "NFR-025 allows exactly one — the ?debug=1 rehearsal counter. Any "
+            "other listener means the stage window can eat a presenter remote key"
+        )
+
+        # (3) 그 1건은 `?debug=1` 가드 블록 **안**에 있다.
+        guard = re.search(
+            r"function setupDebugOverlay\(\) \{(.*?)\n    \}", stage_html, re.S
+        )
+        assert guard is not None, "setupDebugOverlay() not found in stage.html"
+        body = guard.group(1)
+        first_line = body.strip().splitlines()[0].strip()
+        assert first_line == _DEBUG_GUARD_LINE, (
+            "setupDebugOverlay() must bail out on the query flag as its very "
+            f"first statement, got: {first_line!r}"
+        )
+        start, end = guard.start(1), guard.end(1)
+        assert start < registrations[0].start() < end, (
+            "the keydown registration sits outside the ?debug=1 guard block — "
+            "it would run on the live event screen"
+        )
+
+        # (4) 그 1건은 `{ passive: true }` 로 등록되고 가드 블록을 벗어나지 않는다.
+        passive = re.compile(
+            r'addEventListener\(\s*"keydown",.*?\{\s*passive:\s*true\s*\}\s*\)',
+            re.S,
+        ).match(stage_html, registrations[0].start())
+        assert passive is not None, (
+            "the ?debug=1 keydown counter is not registered with "
+            "{ passive: true } — the browser must be told it never cancels"
+        )
+        assert passive.end() <= end, "the keydown registration escapes the guard"
+
+        # (5) 취소/전파중단 호출과 keyup 은 파일 전체에서 0건이다. 0건이면
+        #     "keydown 문맥에 취소 호출이 없다" 가 자명하게 성립한다.
+        for banned in ("preventDefault", "stopPropagation", "stopImmediatePropagation"):
+            hits = len(re.findall(rf"\b{banned}\b", stage_html))
+            assert hits == 0, (
+                f"{banned} appears {hits} time(s) in stage.html — the stage page "
+                "must never cancel a key the presenter remote emitted (NFR-025)"
+            )
+        assert len(re.findall(r"\bkeyup\b", stage_html)) == 0
+        inline = len(
+            re.findall(r"\bonkeydown\b|\bonkeyup\b|\bonkeypress\b", stage_html)
+        )
+        assert inline == 0, f"{inline} inline key handler attribute(s) in stage.html"
+
     def test_no_interactive_controls(self, stage_html):
-        """ISSUE-40 무대 페이지에는 조작 UI 가 없다 (캡처 버튼은 ISSUE-42)."""
-        assert "<button" not in stage_html
-        assert "<select" not in stage_html
-        assert "<input" not in stage_html
+        """무대 화면의 클릭 표면은 ISSUE-42 의 캡처 버튼 하나뿐이다.
+
+        TC-060. ISSUE-40 의 `"<button" not in stage_html` 은 이 이슈의 필수 요소인
+        "발표자료 연결" 버튼이 첫날 깨뜨린다. 삭제하지 않고 **개수와 id 를 못 박는**
+        형태로 강화한다 — `<button>` 이 하나라도 더 들어오거나 링크/폼 요소가
+        생기면 여기서 걸린다. 존재 단언(`not in`)이 아니라 개수 단언인 이유는
+        RL-004 다.
+
+        브라우저는 다른 앱에 키를 주입할 수 없다. 실제 불변식은 "무대 창이 OS
+        포커스를 쥐지 않는다" 이고, 보이는 클릭 표면 하나하나가 그 전제를 깨뜨릴
+        경로다 (NFR-025). 연결 후 이 버튼이 실제로 사라지는지는 e2e 가 본다.
+        """
+        assert len(re.findall(r"<select\b", stage_html)) == 0
+        assert len(re.findall(r"<input\b", stage_html)) == 0
+        assert len(re.findall(r"<textarea\b", stage_html)) == 0
+        assert len(re.findall(r"<a\s+href", stage_html)) == 0
+
+        buttons = re.findall(r"<button\b[^>]*>", stage_html)
+        assert len(buttons) == len(_EXPECTED_BUTTON_IDS), (
+            f"stage.html ships {len(buttons)} <button> element(s), ISSUE-42 allows "
+            f"exactly {len(_EXPECTED_BUTTON_IDS)} "
+            f"({', '.join(_EXPECTED_BUTTON_IDS)}). Every extra clickable surface is "
+            f"another route for the stage window to steal OS focus: {buttons}"
+        )
+        for tag, expected_id in zip(buttons, _EXPECTED_BUTTON_IDS, strict=True):
+            has_id = f'id="{expected_id}"' in tag
+            assert has_id, f"expected the button id {expected_id!r}, got: {tag}"
+            typed = 'type="button"' in tag
+            assert typed, f"{tag} lacks type=button — a bare button defaults to submit"
+
+        # 커서를 되돌리는 유일한 복귀 경로는 코너 더블클릭 제스처다. 보이는
+        # 어포던스를 두면 그 자체가 상시 클릭 표면이 된다.
+        assert 'id="reselect-zone"' in stage_html
+        assert 'addEventListener("dblclick"' in stage_html
 
     def test_logo_images_degrade_and_carry_alt(self, stage_html):
         """RL-008: 없는 에셋은 해당 이미지만 제거. RL-010: alt 는 그룹 라벨 기반."""
@@ -354,18 +476,60 @@ class TestStageHtmlMarkup:
             (".caption-line", _CANVAS_RGB),
             (".caption-empty", _CANVAS_RGB),
             (".caption-ended", _CANVAS_RGB),
+            # ISSUE-42 가 추가한 캡처 상태들. 배경은 전부 **불투명**이라
+            # 임의의 캡처 영상 위에서도 대비가 결정적이다.
+            # .capture-hint 의 backdrop 이 _FRAME_RGB 가 아닌 이유는
+            # test_capture_surfaces_declare_an_opaque_background 를 볼 것 —
+            # 이 문구는 재생 중인 <video> **위**에 뜨므로 조상의 #000000 은
+            # 실제 배경이 아니다.
+            (".capture-hint", _CANVAS_RGB),
+            (".capture-warning", _CANVAS_RGB),
+            (".handoff-prompt", _CANVAS_RGB),
+            (".debug-overlay", _CANVAS_RGB),
         ],
     )
     def test_dim_text_meets_wcag_aa_contrast(self, stage_html, selector, backdrop):
         """WCAG 1.4.3 — 어두운 캔버스 위 흐린 텍스트도 4.5:1 이상 (RL-018).
 
         `clamp()` 하한이 전부 24px 미만이라(자막 20px, 라벨 11px, 빈 상태 14px)
-        large-text 3:1 완화를 쓸 수 없다. `#0b0b0c` 위에서 4.5:1 을 넘기는
-        흰색 알파 하한은 0.45 다 — 알파를 다른 페이지에서 복사해 오면 이
-        테스트가 막는다.
+        large-text 3:1 완화를 쓸 수 없다. ISSUE-42 가 추가한 네 상태도 마찬가지로
+        1920px 뷰포트에서 resolve 된 크기가 전부 24px 미만이다 — 눈대중 대신
+        수치로 확인한다. `#0b0b0c` 위에서 4.5:1 을 넘기는 흰색 알파 하한은
+        0.45 다.
         """
         ratio = _contrast_ratio(_rule_rgba(stage_html, selector), backdrop)
         assert ratio >= 4.5, f"{selector} is {ratio:.2f}:1, WCAG AA needs 4.5:1"
+
+    @pytest.mark.parametrize(
+        "selector",
+        [".capture-hint", ".capture-warning", ".handoff-prompt", ".debug-overlay"],
+    )
+    def test_capture_surfaces_declare_an_opaque_background(self, stage_html, selector):
+        """캡처 상태 문구는 **자기 배경**을 갖는다 — 조상 배경에 기대지 않는다.
+
+        위 대비 테스트가 통과한다고 해서 화면에서 읽힌다는 보장이 없다. 그 계산은
+        backdrop 을 상수로 **가정**하는데, 이 네 문구는 재생 중인 `<video>` 위에
+        뜰 수 있고 그 순간 조상의 `#000000` 은 화면에 없다. `.capture-hint` 가
+        실제로 그랬다 — 배경 선언이 없어 흰 슬라이드 위에서 1.00:1 로 완전히
+        사라졌는데(연결 후 코너 더블클릭 → 재선택 → 선택 취소 경로), 대비
+        테스트는 `_FRAME_RGB` 를 가정했기 때문에 11.42:1 로 통과했다.
+
+        그래서 backdrop 가정을 **구조적 사실**로 바꾼다: 네 규칙 모두 알파 1의
+        배경을 직접 선언해야 한다. 그러면 위 테스트의 `_CANVAS_RGB` 가정이
+        비로소 참이 된다 (RL-018 — 합성된 실제 배경으로 계산할 것).
+        """
+        block = _rule_block(stage_html, selector)
+        match = re.search(r"background:\s*([^;]+);", block)
+        assert match is not None, (
+            f"{selector} declares no background; its contrast would be decided by "
+            "whatever the capture <video> happens to be showing"
+        )
+        value = match.group(1).strip()
+        assert not re.match(r"(?i)rgba?\(", value) or re.search(
+            r",\s*1(?:\.0+)?\s*\)$", value
+        ), f"{selector} background {value!r} is semi-transparent — alpha must be 1"
+        blank = {"none", "transparent"}
+        assert value.lower() not in blank, f"{selector} background is {value!r}"
 
     def test_state_copy_matches_ux_spec(self, stage_html):
         assert "잠시 후 시작됩니다" in stage_html
@@ -640,6 +804,292 @@ class TestStageCaptionColumn:
         """
         assert "실시간으로" not in stage_html
         assert "isUserAtBottom" not in stage_html
+
+
+# ---------------------------------------------------------------------------
+# 발표자료 화면 캡처 — components/stage.html (ISSUE-42)
+# ---------------------------------------------------------------------------
+class TestStageDisplayCapture:
+    """getDisplayMedia 캡처의 정적 계약 (test_plan TC-060 / TC-061).
+
+    AC ↔ Test mapping (issues.md ISSUE-42 § Tests):
+      - "frameRate / ideal: 30 / selfBrowserSurface / object-fit: contain"
+          → test_capture_constraints_are_pinned, test_letterbox_css_present
+      - "cursor: none 과 surfaceSwitching 의 값이 exclude"
+          → test_cursor_is_hidden_only_while_capture_is_live,
+            test_capture_constraints_are_pinned
+      - "navigator.wakeLock 접근이 존재 여부 가드 안에 있다" (RL-008)
+          → test_wake_lock_sits_behind_a_capability_guard
+      - "requestFullscreen() 자동 호출이 없다"
+          → test_no_presenter_keyboard_interference (문구 그대로 유지)
+      - 트랙 수명주기 (RL-009)
+          → test_track_ended_is_registered_exactly_once
+      - 내부 예외 문자열 미노출 (RL-006)
+          → test_capture_failure_copy_is_a_literal_never_an_exception
+      - 부드러움 (NFR-025)
+          → test_no_gratuitous_compositing_hints,
+            test_caption_column_is_paint_contained
+    """
+
+    @pytest.fixture
+    def stage_html(self) -> str:
+        assert _STAGE_TEMPLATE.exists(), f"stage.html missing: {_STAGE_TEMPLATE}"
+        return _STAGE_TEMPLATE.read_text(encoding="utf-8")
+
+    @pytest.fixture
+    def constraints(self, stage_html) -> str:
+        """`CAPTURE_CONSTRAINTS = { … }` 리터럴 본문만 잘라낸다.
+
+        파일 전체 substring 매칭은 값이 다른 곳에 있어도 통과한다 (RL-004) —
+        단언을 실제로 `getDisplayMedia` 에 넘어가는 객체로 한정한다.
+        """
+        match = re.search(
+            r"const CAPTURE_CONSTRAINTS = \{(.*?)\n    \};", stage_html, re.S
+        )
+        assert match is not None, (
+            "stage.html must declare `const CAPTURE_CONSTRAINTS = { … };` so the "
+            "constraint object can be asserted as a unit"
+        )
+        return match.group(1)
+
+    def test_capture_constraints_are_pinned(self, stage_html, constraints):
+        """AC — 제약 객체에 프레임레이트·자기캡처·서피스 전환 정책이 모두 박혀 있다.
+
+        `surfaceSwitching: "exclude"` 를 빼면 Chrome 이 "다른 탭 공유" 전환 위젯을
+        무대 화면 위에 띄운다 — 클릭 표면이 하나 늘어나고, 그것을 클릭하는 순간
+        무대 창이 포커스를 되찾는다 (NFR-025).
+        """
+        fps = re.search(r"frameRate:\s*\{\s*ideal:\s*30\s*\}", constraints)
+        assert fps, constraints
+        assert re.search(r'selfBrowserSurface:\s*"exclude"', constraints), constraints
+        assert re.search(r'surfaceSwitching:\s*"exclude"', constraints), constraints
+        assert re.search(r'systemAudio:\s*"exclude"', constraints), constraints
+        assert re.search(r"audio:\s*false", constraints), constraints
+        # 실제로 이 객체가 getDisplayMedia 로 간다 (선언만 하고 안 쓰면 무의미).
+        assert "getDisplayMedia(CAPTURE_CONSTRAINTS)" in stage_html
+
+    def test_get_display_media_sits_behind_a_capability_guard(self, stage_html):
+        """RL-008 — 비보안 컨텍스트에서는 `navigator.mediaDevices` 자체가 없다."""
+        assert 'typeof md.getDisplayMedia !== "function"' in stage_html, (
+            "getDisplayMedia must be capability-checked; an undefined "
+            "navigator.mediaDevices throws a TypeError and kills the page"
+        )
+
+    def test_cursor_is_hidden_only_while_capture_is_live(self, stage_html):
+        """AC — 연결 중에는 커서가 없고, 컨트롤이 돌아오면 복원된다.
+
+        `cursor: none` 이 무대 루트에 **항상** 걸려 있으면 연결 버튼을 누를 수
+        없다. 두 규칙이 짝으로 존재해야 AC 가 성립한다.
+        """
+        assert "cursor: default;" in _rule_block(stage_html, ".stage")
+        assert "cursor: none;" in _rule_block(stage_html, ".stage.capture-live")
+        # 클래스 토글이 컨트롤 표시 여부와 같은 함수에서 일어난다 — 두 상태가
+        # 어긋나면 커서만 사라진 채 버튼이 남는다.
+        assert 'classList.toggle("capture-live"' in stage_html
+
+    def test_controls_leave_the_click_surface_via_display_none(self, stage_html):
+        """AC / NFR-025 — `pointer-events: none` 로는 창 포커스를 못 막는다.
+
+        `pointer-events` 는 문서 안의 히트테스트만 바꿀 뿐, OS 가 그 창에 포커스를
+        주는 것 자체는 막지 못한다. 컨트롤은 DOM 렌더 트리에서 빠져야 한다.
+        """
+        hidden_rule = _rule_block(stage_html, ".capture-controls[hidden]")
+        assert "display: none;" in hidden_rule, hidden_rule
+        controls = _rule_block(stage_html, ".capture-controls")
+        assert "pointer-events" not in controls, (
+            "the capture controls must be removed with display:none, not merely "
+            f"made unclickable: {controls}"
+        )
+
+    def test_capture_button_keeps_a_focus_visible_ring(self, stage_html):
+        """RL-010 — 클릭 표면을 줄이더라도 키보드 접근성은 해치지 않는다."""
+        ring = _rule_block(stage_html, ".capture-button:focus-visible")
+        assert "outline:" in ring, ring
+
+    def test_capture_button_meets_wcag_aa_contrast(self, stage_html):
+        """RL-018 — 버튼은 hex 불투명 색이므로 알파 합성 없이 직접 계산한다.
+
+        `clamp(15px, 1vw, 22px)` 는 1920px 뷰포트에서 19.2px 로 resolve 되어
+        large-text(24px) 완화를 쓸 수 없다 — 4.5:1 이 하한이다.
+        """
+        block = _rule_block(stage_html, ".capture-button")
+        assert "font-size: clamp(15px, 1vw, 22px);" in block, block
+        fg = _rule_hex(stage_html, ".capture-button", "color")
+        bg = _rule_hex(stage_html, ".capture-button", "background")
+        ratio = _contrast_ratio((*fg, 1.0), bg)
+        assert ratio >= 4.5, f".capture-button is {ratio:.2f}:1, WCAG AA needs 4.5:1"
+
+    def test_track_ended_is_registered_exactly_once(self, stage_html):
+        """RL-009 — 벤더 프리픽스도, 중복 리스너도 두지 않는다.
+
+        FR-075: 트랙이 끝나면 검은 화면이 아니라 타이틀 카드로 되돌아간다.
+        """
+        ended = re.findall(r'addEventListener\(\s*"ended"', stage_html)
+        assert len(ended) == 1, f"{len(ended)} 'ended' listeners registered: {ended}"
+        assert "getVideoTracks()[0]" in stage_html
+        assert len(re.findall(r"\bonended\b", stage_html)) == 0
+        assert len(re.findall(r"webkit[A-Z]", stage_html)) == 0
+        # 재선택으로 트랙을 교체할 때 옛 트랙의 리스너를 먼저 떼지 않으면
+        # 옛 트랙의 stop() 이 방금 붙인 새 캡처를 도로 철거한다.
+        assert 'removeEventListener("ended", onCaptureEnded)' in stage_html
+
+    def test_capture_ended_restores_the_title_card_and_reconnect_action(
+        self, stage_html
+    ):
+        """FR-075 — 폴백 경로가 한 함수 안에서 끝난다 (검은 화면 금지)."""
+        body = re.search(
+            r"function onCaptureEnded\(\) \{(.*?)\n    \}", stage_html, re.S
+        )
+        assert body is not None, "onCaptureEnded() not found"
+        handler = body.group(1)
+        assert "srcObject = null" in handler, handler
+        assert "captureVideo.hidden = true" in handler, handler
+        assert "titleCard.hidden = false" in handler, handler
+        assert "RECONNECT_LABEL" in handler, handler
+        assert "_showControls(true)" in handler, handler
+        assert "발표자료 다시 연결" in stage_html
+
+    def test_self_capture_heuristic_does_not_terminate_the_stream(self, stage_html):
+        """FR-081 — Chromium 밖에서는 `selfBrowserSurface` 가 무시된다.
+
+        휴리스틱은 `displaySurface === "browser"` **그리고** 캡처 해상도가 이 창의
+        크기와 일치할 때만 경고한다. `displaySurface` 만 보면 정상적인 다른 탭
+        공유도 전부 경고가 뜬다. 그리고 캡처를 강제로 끊지 않는다.
+        """
+        body = re.search(
+            r"function _detectSelfCapture\(track\) \{(.*?)\n    \}", stage_html, re.S
+        )
+        assert body is not None, "_detectSelfCapture() not found"
+        detect = body.group(1)
+        assert 'displaySurface !== "browser"' in detect, detect
+        assert "innerWidth" in detect and "innerHeight" in detect, detect
+        assert "track.stop()" not in detect, (
+            "the self-capture banner must guide the operator to reselect, not "
+            f"force-terminate the capture (FR-081): {detect}"
+        )
+        assert "무대 화면이 캡처되었습니다. 발표자료 창을 선택하세요" in stage_html
+
+    def test_wake_lock_sits_behind_a_capability_guard(self, stage_html):
+        """NFR-027 / RL-008 — 미지원 브라우저에서 예외 없이 degrade 한다."""
+        body = re.search(
+            r"async function requestWakeLock\(\) \{(.*?)\n    \}", stage_html, re.S
+        )
+        assert body is not None, "requestWakeLock() not found"
+        wake = body.group(1)
+        guard = wake.index('if (!("wakeLock" in navigator)) return;')
+        request = wake.index('navigator.wakeLock.request("screen")')
+        assert guard < request, (
+            "navigator.wakeLock.request must be reached only after the capability "
+            f"guard: {wake}"
+        )
+        guarded = "try {" in wake and "catch" in wake
+        assert guarded, f"a rejected wake-lock request must degrade silently: {wake}"
+
+    def test_wake_lock_reuses_the_existing_visibilitychange_listener(self, stage_html):
+        """RL-009 — `visibilitychange` 리스너는 여전히 이 페이지에 하나뿐이다."""
+        listeners = re.findall(r'addEventListener\(\s*"visibilitychange"', stage_html)
+        assert len(listeners) == 1, (
+            f"{len(listeners)} visibilitychange listeners — extend the existing "
+            "one instead of adding a second (RL-009)"
+        )
+        branch = re.search(
+            r"if \(document\.hidden\) \{.*?\n      \} else \{(.*?)\n      \}",
+            stage_html,
+            re.S,
+        )
+        assert branch is not None, "the visibilitychange else-branch was not found"
+        shown = branch.group(1)
+        assert 'document.visibilityState === "visible"' in shown, shown
+        rerequested = "requestWakeLock()" in shown
+        assert rerequested, f"the wake lock is dropped when the tab hides: {shown}"
+
+    def test_capture_failure_copy_is_a_literal_never_an_exception(self, stage_html):
+        """RL-006 — 내부 예외 문자열이 무대 화면(=관객 화면)에 뜨면 안 된다.
+
+        `_setCaptureError` 가 받는 값은 이 파일 안의 상수뿐이어야 한다.
+        """
+        for leak in ("e.message", "e.name", "String(e)", "err.message", "e.stack"):
+            assert leak not in stage_html, f"{leak} would leak an exception (RL-006)"
+        assert "CAPTURE_FAIL_MSG" in stage_html
+        calls = re.findall(r"_setCaptureError\(([^)]*)\)", stage_html)
+        assert calls, "no _setCaptureError() call sites found"
+        allowed = {'""', "CAPTURE_FAIL_MSG", "CAPTURE_UNSUPPORTED_MSG", "message"}
+        for arg in calls:
+            assert arg.strip() in allowed, (
+                f"_setCaptureError({arg}) is not a literal from this file — only "
+                f"{sorted(allowed)} may reach the DOM (RL-006)"
+            )
+
+    def test_no_gratuitous_compositing_hints(self, stage_html):
+        """NFR-025 — 캡처 컨테이너에 불필요한 합성 레이어 힌트를 넣지 않는다."""
+        hints = len(re.findall(r"will-change", stage_html))
+        assert hints == 0, (
+            f"{hints} will-change declaration(s) — promoting the capture container "
+            "to its own layer costs VRAM and does not make capture smoother"
+        )
+
+    def test_caption_column_is_paint_contained(self, stage_html):
+        """NFR-025 — 자막 리페인트가 발표 영역 리페인트를 유발하지 않는다."""
+        block = _rule_block(stage_html, ".caption-column")
+        assert "contain: layout paint;" in block, block
+
+    def test_the_page_owns_exactly_one_live_region(self, stage_html):
+        """RL-019 — 캡처 상태 문구가 두 번째 라이브 리전을 만들지 않는다.
+
+        핸드오프 안내/경고 배너/진단 오버레이는 전부 평문이다. 무대 화면은
+        스크린리더 사용자가 없는 프로젝터 출력이고, 라이브 리전을 하나 더 두면
+        확정 자막을 읽는 `#caption-announcer` 와 경쟁한다.
+        """
+        live = re.findall(r'aria-live="([^"]*)"', stage_html)
+        assert live == ["polite"], f"expected one aria-live region, found {live}"
+        announcer = re.search(
+            r"<[a-zA-Z]+[^>]*\bid=\"caption-announcer\"[^>]*>", stage_html
+        )
+        assert announcer is not None and 'aria-live="polite"' in announcer.group(0)
+        # 진단 오버레이는 절대 라이브 리전이 아니다 — 키를 누를 때마다 낭독된다.
+        overlay = re.search(
+            r"function setupDebugOverlay\(\) \{(.*?)\n    \}", stage_html, re.S
+        )
+        assert overlay is not None
+        for attr in ("aria-live", 'setAttribute("role"', "role="):
+            assert attr not in overlay.group(1), overlay.group(1)
+
+    def test_debug_overlay_reports_focus_and_counts_keys(self, stage_html):
+        """AC — 리허설 판정 기준은 "발표 앱 포커스 + 리모컨 20회 → 카운터 0"."""
+        assert "document.hasFocus()" in stage_html
+        assert "이 창 포커스 있음" in stage_html
+        assert "이 창 포커스 없음" in stage_html
+        assert 'id="debug-key-count"' in stage_html or "debug-key-count" in stage_html
+        # focus/blur 로 갱신된다 — 폴링 타이머를 두지 않는다.
+        assert 'addEventListener("blur", onWindowBlur)' in stage_html
+        assert 'addEventListener("focus", onWindowFocus)' in stage_html
+
+    def test_handoff_prompt_is_one_shot(self, stage_html):
+        """AC — 안내는 8초 뒤 또는 창이 포커스를 잃는 즉시 사라진다."""
+        assert "발표 앱을 클릭해 포커스를 넘기세요" in stage_html
+        match = re.search(r"const HANDOFF_MS = (\d+);", stage_html)
+        assert match is not None, "stage.html must declare `const HANDOFF_MS = <n>;`"
+        value = int(match.group(1))
+        assert 4000 <= value <= 12000, f"HANDOFF_MS is {value}ms, the AC says ~8s"
+        blur = re.search(r"function onWindowBlur\(\) \{(.*?)\n    \}", stage_html, re.S)
+        assert blur is not None, "onWindowBlur() not found"
+        dismissed = "_hideHandoff()" in blur.group(1)
+        assert dismissed, "losing focus IS the hand-off succeeding — drop it at once"
+
+    def test_focus_is_returned_to_the_document_body_after_capture_starts(
+        self, stage_html
+    ):
+        """NFR-025 1차 방어선 — 권한 다이얼로그가 남긴 포커스를 되돌린다."""
+        assert "document.activeElement?.blur();" in stage_html
+        # 되찾는 방향의 호출은 어디에도 없다 (guard test 와 이중으로 막는다).
+        assert "window.focus" not in stage_html
+
+    def test_setinterval_stays_absent_and_line_cap_stays_sixty(self, stage_html):
+        """ISSUE-41 의 프레임 예산 계약이 이 이슈에서 후퇴하지 않았다 (TC-061)."""
+        assert "setInterval" not in stage_html
+        assert "requestAnimationFrame(" in stage_html
+        match = re.search(r"const MAX_LINES = (\d+)", stage_html)
+        assert match is not None and int(match.group(1)) == 60
 
 
 # ---------------------------------------------------------------------------
