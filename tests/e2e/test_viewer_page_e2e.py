@@ -10,6 +10,11 @@ aiohttp /view/{room_id} 엔드포인트를 실제 TCP 포트에 띄우고, Playw
      (Traceback, 파일 경로) 은 노출하지 않는다 (RL-006).
   3. closed 룸: ended 상태가 즉시 활성화되고 종료 카피가 보인다.
 
+ISSUE-46 이 추가한 ``TestViewerCaptionStream`` 은 자막 파이프라인의 네 결함
+(연속 final 유실 / 빈 final 공백화 / 줄어든 partial 잔상 / DOM 리셋·트리밍)을
+브라우저에서 값으로 검증한다 — stage 쪽 대응 테스트는
+``tests/e2e/test_stage_page_e2e.py`` 의 ``TestStageCaptionStream`` 이다.
+
 Streamlit 서버가 필요 없는 e2e — aiohttp TestServer 는 session-scope 로
 띄워두고 Playwright 가 그 위에 직접 접속한다. fullscreen e2e 와 동일하게
 ``e2e`` 마크가 기본 deselect 되어 일반 ``pytest -q`` 실행을 막지 않는다.
@@ -18,6 +23,7 @@ Streamlit 서버가 필요 없는 e2e — aiohttp TestServer 는 session-scope �
 from __future__ import annotations
 
 import asyncio
+import json
 import socket
 import sys
 import threading
@@ -129,6 +135,89 @@ def viewer_server():
 
 
 # ---------------------------------------------------------------------------
+# ISSUE-46 — 자막 파이프라인 하네스
+# ---------------------------------------------------------------------------
+# 진짜 EventSource 를 쓰면 SSE 프레임 타이밍이 테스트에 섞여 flaky 해지고,
+# 201건 주입 같은 시나리오를 서버 쪽에서 만들어야 한다. 네트워크 레벨에서
+# 생성 URL 만 기록하고 이벤트를 손으로 밀어 넣는 스텁으로 대체한다.
+# (tests/e2e/test_stage_page_e2e.py 의 같은 하네스를 옮겨 온 것 — 두 e2e 모듈은
+# 서로를 import 하지 않는다.)
+_FAKE_EVENTSOURCE = """
+(() => {
+  window.__sse = { urls: [], last: null };
+  class FakeEventSource {
+    constructor(url) {
+      this.url = String(url);
+      this.readyState = 0;
+      this.closed = false;
+      this._listeners = {};
+      window.__sse.urls.push(this.url);
+      window.__sse.last = this;
+    }
+    addEventListener(type, fn) {
+      if (!this._listeners[type]) this._listeners[type] = [];
+      this._listeners[type].push(fn);
+    }
+    removeEventListener(type, fn) {
+      const fns = this._listeners[type];
+      if (!fns) return;
+      const i = fns.indexOf(fn);
+      if (i !== -1) fns.splice(i, 1);
+    }
+    close() {
+      this.closed = true;
+      this.readyState = 2;
+    }
+    _emit(type, data) {
+      const event = { type: type, data: data };
+      for (const fn of (this._listeners[type] || []).slice()) fn(event);
+    }
+  }
+  window.EventSource = FakeEventSource;
+  window.__emit = (type, data) => {
+    const es = window.__sse.last;
+    if (!es) throw new Error("no EventSource was constructed by the viewer page");
+    es._emit(type, data);
+  };
+})();
+"""
+
+
+def _fake_eventsource(page) -> None:
+    """Replace `window.EventSource` with a recording stub (must precede goto)."""
+    page.add_init_script(_FAKE_EVENTSOURCE)
+
+
+def _settle(page, predicate: str, timeout: int = 4000) -> None:
+    """Wait until `predicate` holds, swallowing the timeout.
+
+    On failure we want the test's own assertion to report what the DOM
+    actually looks like, not an opaque Playwright timeout.
+    """
+    from playwright.sync_api import TimeoutError as PlaywrightTimeout
+
+    try:
+        page.wait_for_function(predicate, timeout=timeout)
+    except PlaywrightTimeout:
+        pass
+
+
+def _lines(page) -> list[str]:
+    return page.eval_on_selector_all(
+        ".caption-line", "els => els.map(el => el.textContent)"
+    )
+
+
+def _emit_message(page, text: str, *, partial: bool = False) -> None:
+    payload = {"text": text}
+    if partial:
+        payload["partial"] = True
+    page.evaluate(
+        "(payload) => window.__emit('message', JSON.stringify(payload))", payload
+    )
+
+
+# ---------------------------------------------------------------------------
 # Browser-driven assertions
 # ---------------------------------------------------------------------------
 class TestViewerPageInBrowser:
@@ -223,3 +312,251 @@ class TestViewerPageInBrowser:
 
         assert page.locator("#room-name").inner_text().strip() == _AMPERSAND_NAME
         assert page.locator("#waiting-room").inner_text().strip() == _AMPERSAND_NAME
+
+# ---------------------------------------------------------------------------
+# ISSUE-46 — 자막 파이프라인 파리티 (stage.html `cc0681f` 와 동일 동작)
+# ---------------------------------------------------------------------------
+class TestViewerCaptionStream:
+    """공개 뷰어(`/view/{room_id}`)의 자막 파이프라인 결함 회귀 가드.
+
+    ISSUE-41 은 이 로직을 stage 로 복사하면서 복사본에서만 고쳤다 (RL-001).
+    여기서는 원본을 **값으로** 검증한다 — 개수만 세거나 "라인이 존재한다" 로
+    끝내면 결함이 살아 있는 구현도 통과한다 (RL-004).
+    """
+
+    def test_back_to_back_finals_keep_both_lines(self, page, viewer_server):
+        """결함 1 — 연속 final 이 앞 자막을 유실시키면 안 된다 (헤드라인).
+
+        두 final 을 **한 evaluate 안에서** 밀어 넣는다 — 28ms 인터벌 틱이
+        사이에 낄 수 없는, SSE 가 몰아치는 실제 행사의 모양이다. 확정 분기가
+        없으면 라인 1이 두 번째 자막으로 덮여 첫 자막이 한 글자도 남지 않는다.
+        """
+        _fake_eventsource(page)
+        page.goto(f"{viewer_server}/view/active-room", wait_until="load")
+
+        page.evaluate(
+            """() => {
+              window.__emit("message", JSON.stringify({text: "첫 문장"}));
+              window.__emit("message", JSON.stringify({text: "둘째 문장"}));
+            }"""
+        )
+        _settle(
+            page,
+            """() => {
+              const els = document.querySelectorAll(".caption-line");
+              return els.length === 2 && els[1].textContent === "둘째 문장";
+            }""",
+        )
+
+        lines = _lines(page)
+        dropped = (
+            f"back-to-back finals rendered {lines!r} — the first caption was "
+            "dropped (finalizeCaption must lock the pending line first)"
+        )
+        assert lines == ["첫 문장", "둘째 문장"], dropped
+
+    def test_a_final_after_a_locked_line_opens_a_new_line(self, page, viewer_server):
+        """결함 1 — partial 이 흐르던 라인이 확정된 뒤 다음 final 은 새 줄이다.
+
+        partial 이 정착한 뒤 두 final 을 연속 주입한다: 첫 final 은 진행 중인
+        라인을 확정하고, 둘째 final 은 **새 라인**을 열어야 한다. 두 자막이
+        한 줄로 합쳐지면 실패한다.
+        """
+        _fake_eventsource(page)
+        page.goto(f"{viewer_server}/view/active-room", wait_until="load")
+
+        _emit_message(page, "진행 중", partial=True)
+        _settle(
+            page,
+            """() => {
+              const els = document.querySelectorAll(".caption-line");
+              return els.length === 1 && els[0].textContent === "진행 중";
+            }""",
+        )
+
+        page.evaluate(
+            """() => {
+              window.__emit("message", JSON.stringify({text: "첫 자막"}));
+              window.__emit("message", JSON.stringify({text: "둘째 자막"}));
+            }"""
+        )
+        _settle(
+            page,
+            """() => {
+              const els = document.querySelectorAll(".caption-line");
+              return els.length === 2 && els[1].textContent === "둘째 자막";
+            }""",
+        )
+
+        lines = _lines(page)
+        merged = f"the two finals merged into {lines!r} instead of two lines"
+        assert lines == ["첫 자막", "둘째 자막"], merged
+
+    def test_empty_finals_do_not_blank_the_column(self, page, viewer_server):
+        """결함 2 — 빈 final 이 대기 문구를 지우고 컬럼을 공백화하면 안 된다.
+
+        `broadcast_translation_for_room` 에 비어있음 가드가 없고 AWS Translate
+        는 구두점만 있는 입력에 `""` 를 돌려준다. 그대로 통과시키면
+        `_ensureCurrentLine()` 이 `#caption-empty` 를 제거한 뒤 빈
+        `.caption-line` 만 쌓인다 (test_stage_page_e2e.py 의
+        `test_empty_final_does_not_blank_the_column` 미러링).
+        """
+        _fake_eventsource(page)
+        page.goto(f"{viewer_server}/view/active-room", wait_until="load")
+
+        for _ in range(3):
+            _emit_message(page, "")
+        page.wait_for_timeout(300)
+
+        state = page.evaluate(
+            """() => ({
+              lines: [...document.querySelectorAll(".caption-line")]
+                       .map(el => el.textContent),
+              placeholder: document.getElementById("caption-empty") === null
+                ? null
+                : document.getElementById("caption-empty").textContent,
+            })"""
+        )
+        blanked = f"empty finals left the column in {state}"
+        assert state["lines"] == [], blanked
+        assert state["placeholder"] == "잠시 후 시작됩니다", blanked
+
+        # 진행 중인 partial 이 있을 때의 빈 final 은 그 라인을 확정하는 신호다.
+        _emit_message(page, "이어지는 문장입니다", partial=True)
+        _emit_message(page, "")
+        _settle(
+            page,
+            """() => {
+              const els = document.querySelectorAll(".caption-line");
+              return els.length === 1 &&
+                     els[0].textContent === "이어지는 문장입니다";
+            }""",
+        )
+        fallback = f"the empty-final fallback left {_lines(page)!r}"
+        assert _lines(page) == ["이어지는 문장입니다"], fallback
+
+        # 확정된 라인이므로 다음 final 은 **두 번째** 줄로 열려야 한다.
+        _emit_message(page, "다음")
+        _settle(
+            page,
+            """() => {
+              const els = document.querySelectorAll(".caption-line");
+              return els.length === 2 && els[1].textContent === "다음";
+            }""",
+        )
+        reopened = f"the next final did not open a new line: {_lines(page)!r}"
+        assert _lines(page) == ["이어지는 문장입니다", "다음"], reopened
+
+    def test_a_shrinking_partial_repaints_instead_of_leaving_stale_text(
+        self, page, viewer_server
+    ):
+        """결함 3 — 짧아진 partial 은 화면을 즉시 줄여야 한다.
+
+        번역 후처리는 문자열을 깎기도 한다. `twShown` 을 클램프만 하면 `gap`
+        이 0 이 되어 쓰기 분기를 건너뛰므로 이전의 더 긴 텍스트가 잔상으로
+        남는다. `startswith` / 길이 비교가 아니라 완전 일치로 단언한다.
+        """
+        _fake_eventsource(page)
+        page.goto(f"{viewer_server}/view/active-room", wait_until="load")
+
+        long_text = "안녕하세요 반갑습니다"
+        _emit_message(page, long_text, partial=True)
+        _settle(
+            page,
+            f"""() => {{
+              const els = document.querySelectorAll(".caption-line");
+              return els.length === 1 && els[0].textContent === {json.dumps(long_text)};
+            }}""",
+        )
+        revealed = f"the long partial never fully revealed: {_lines(page)!r}"
+        assert _lines(page) == [long_text], revealed
+
+        _emit_message(page, "안녕하세요", partial=True)
+        _settle(
+            page,
+            """() => {
+              const els = document.querySelectorAll(".caption-line");
+              return els.length === 1 && els[0].textContent === "안녕하세요";
+            }""",
+        )
+        stale = f"line still reads {_lines(page)!r} after the target shrank"
+        assert _lines(page) == ["안녕하세요"], stale
+
+    def test_two_hundred_one_finals_trim_to_two_hundred_lines(
+        self, page, viewer_server
+    ):
+        """결함 1/4 — DOM 상한 200. 개수와 **값** 을 함께 단언한다 (RL-004).
+
+        살아남은 첫 줄이 2번째 페이로드여야 가장 오래된 **요소**가 지워졌음이
+        증명된다 — `firstChild` 로 지우면 공백 텍스트 노드부터 걷어낸다.
+        """
+        _fake_eventsource(page)
+        page.goto(f"{viewer_server}/view/active-room", wait_until="load")
+
+        page.evaluate(
+            """() => {
+              for (let i = 1; i <= 201; i++) {
+                window.__emit("message", JSON.stringify({text: "자막 " + i}));
+              }
+            }"""
+        )
+        _settle(
+            page,
+            """() => {
+              const els = document.querySelectorAll(".caption-line");
+              return els.length === 200 &&
+                     els[els.length - 1].textContent === "자막 201";
+            }""",
+            timeout=10000,
+        )
+
+        lines = _lines(page)
+        capped = f"expected exactly 200 caption lines, got {len(lines)}"
+        assert len(lines) == 200, capped
+        oldest = f"oldest surviving line is {lines[0]!r}, want the 2nd payload"
+        assert lines[0] == "자막 2", oldest
+        newest = f"newest line is {lines[-1]!r}, want the 201st payload"
+        assert lines[-1] == "자막 201", newest
+
+    def test_language_switch_clears_captions_and_restores_the_placeholder(
+        self, page, viewer_server
+    ):
+        """결함 4 회귀 가드 — `replaceChildren()` 전환 후에도 언어 전환이 같다.
+
+        자막 스택은 비워지고, 새 언어의 대기 문구를 담은 `#caption-empty` 가
+        **정확히 1개** 다시 생긴다. 비움 단언이 공허하지 않도록 전환 직전에
+        자막이 실제로 쌓여 있었음을 먼저 확인한다 (RL-026).
+        """
+        _fake_eventsource(page)
+        page.goto(f"{viewer_server}/view/active-room", wait_until="load")
+
+        page.evaluate(
+            """() => {
+              for (const t of ["첫 줄", "둘째 줄", "셋째 줄"]) {
+                window.__emit("message", JSON.stringify({text: t}));
+              }
+            }"""
+        )
+        _settle(
+            page,
+            """() => document.querySelectorAll(".caption-line").length >= 1""",
+        )
+        seeded = "no captions were rendered — the clear assertion would be vacuous"
+        assert len(_lines(page)) >= 1, seeded
+
+        page.select_option("#lang-select", "en")
+        page.wait_for_timeout(200)
+
+        state = page.evaluate(
+            """() => ({
+              lines: document.querySelectorAll(".caption-line").length,
+              placeholders: document.querySelectorAll("#caption-empty").length,
+              text: document.getElementById("caption-empty") === null
+                ? null
+                : document.getElementById("caption-empty").textContent,
+            })"""
+        )
+        cleared = f"language switch left the column in {state}"
+        assert state["lines"] == 0, cleared
+        assert state["placeholders"] == 1, cleared
+        assert state["text"] == "Starting shortly", cleared
