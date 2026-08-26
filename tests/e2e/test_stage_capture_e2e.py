@@ -214,10 +214,33 @@ def _open_stage(page, base_url: str, *, query: str = "") -> None:
 
 
 def _connect(page) -> None:
-    """Click 발표자료 연결 and wait until the capture <video> is live."""
+    """Click 발표자료 연결 and wait until the capture <video> is *actually playing*.
+
+    `hidden === false` alone is not enough. 스트림을 `<video>` 에 아예 붙이지
+    않아도 그 단언은 통과하고, 화면에는 검은 프레임이 남는다 — FR-075/NFR-026 이
+    막으려는 바로 그 상태다. 게다가 `test_track_ended_falls_back_to_the_title_card`
+    의 `srcObject === null` 단언까지 **처음부터 null 이라서** 통과해 버린다
+    (리뷰 뮤테이션 M35 생존, RL-004 의 전형 — 치운 것이 아니라 놓은 적이 없는데
+    통과하는 단언).
+
+    그래서 연결의 정의를 "프레임이 실제로 흐른다" 로 못 박는다: srcObject 가
+    붙어 있고, 디코딩된 해상도가 있으며, `currentTime` 이 0 을 넘겼다. 이 함수를
+    거의 모든 테스트가 통과하므로 가드가 한 곳에서 전 스위트에 걸린다.
+
+    `currentTime > 0` 은 여기서 쓸 수 없다 — 스텁 canvas 가 정적이라
+    `captureStream()` 이 첫 프레임 뒤로 타임라인을 진전시키지 않는다(측정값:
+    3초 뒤에도 `currentTime === 0`, `paused === false`, `readyState === 4`).
+    대신 재생이 실제로 시작됐음을 뜻하는 `paused === false` + 디코딩된 해상도로
+    본다. AC 의 "30초 후 currentTime 증가" 는 움직이는 소스가 필요하므로
+    리허설에서 확인한다 (후속 이슈).
+    """
     page.locator("#capture-connect").click()
     page.wait_for_function(
-        "() => document.getElementById('capture-video').hidden === false",
+        """() => {
+          const v = document.getElementById('capture-video');
+          return v.hidden === false && v.srcObject !== null
+                 && v.videoWidth > 0 && v.readyState >= 2 && v.paused === false;
+        }""",
         timeout=5000,
     )
 
@@ -334,6 +357,31 @@ class TestStageCaptureLifecycle:
             "surfaceSwitching": "exclude",
             "systemAudio": "exclude",
         }, calls[0]
+
+    def test_capture_video_declares_the_attributes_that_let_it_autoplay(
+        self, page, capture_server
+    ):
+        """Scope — `<video autoplay muted playsinline>` 는 장식이 아니다.
+
+        `muted` 가 없으면 브라우저 자동재생 정책이 재생을 막고, `autoplay` 가
+        없으면 아무도 `play()` 를 부르지 않으므로 첫 프레임이 영원히 오지 않는다.
+        둘 다 결과는 같다 — 무대 좌측이 검은 화면으로 남는다(FR-075 가 막으려는
+        상태). 속성은 마크업에만 존재하므로 어떤 동작 단언에도 걸리지 않아
+        리뷰 뮤테이션 M33/M34 가 스위트 전체를 통과했다. DOM 프로퍼티로 본다 —
+        문자열 매칭과 달리 오타난 속성은 여기서 False 로 드러난다.
+        """
+        _open_stage(page, capture_server)
+        attrs = page.evaluate(
+            """() => {
+              const v = document.getElementById("capture-video");
+              return {
+                autoplay: v.autoplay,
+                muted: v.muted,
+                playsInline: v.playsInline,
+              };
+            }"""
+        )
+        assert attrs == {"autoplay": True, "muted": True, "playsInline": True}, attrs
 
     def test_focus_returns_to_the_document_body_right_after_capture_starts(
         self, page, capture_server
@@ -633,6 +681,50 @@ class TestStageCaptureLifecycle:
         _connect(page)
         page.wait_for_timeout(300)
         assert page.locator("#capture-warning").is_visible() is False
+
+    def test_browser_surface_of_a_different_size_raises_no_warning(
+        self, page, capture_server
+    ):
+        """대조군 2 — 휴리스틱의 **해상도 비교 절반**을 변별하는 유일한 테스트.
+
+        위의 대조군은 `displaySurface: "window"` 라서 첫 줄(`!== "browser"`)에서
+        이미 걸러진다 — 해상도 비교를 통째로 `return true` 로 바꿔도 그 테스트는
+        초록색이다(리뷰 뮤테이션 M20 생존, RL-004). 실제로 방어해야 하는 상황은
+        **다른 브라우저 탭을 정상적으로 캡처하는 경우**다: 발표자료가 Google
+        Slides/reveal.js 면 `displaySurface` 는 정상적으로 `"browser"` 이고,
+        그때 경고가 뜨면 재선택 컨트롤이 발표 내내 화면에 남아 무대 창이 OS
+        포커스를 되찾을 경로가 생긴다 (NFR-025).
+        """
+        _open_stage(page, capture_server)
+        page.evaluate(
+            """() => {
+              // 같은 'browser' 서피스지만 이 창 크기와 뚜렷하게 다른 해상도.
+              window.__capture.settings = {
+                displaySurface: "browser",
+                width: Math.round(window.innerWidth / 2),
+                height: Math.round(window.innerHeight / 3),
+              };
+            }"""
+        )
+        _connect(page)
+        page.wait_for_timeout(300)
+
+        state = page.evaluate(
+            """() => ({
+              warning: !document.getElementById("capture-warning").hidden,
+              controls: !document.getElementById("capture-controls").hidden,
+              cursor: getComputedStyle(document.getElementById("stage-root")).cursor,
+            })"""
+        )
+        assert state["warning"] is False, (
+            "a legitimate capture of another browser tab tripped the self-capture "
+            "banner; the heuristic must also compare the resolution (FR-081)"
+        )
+        assert state["controls"] is False, (
+            "the false-positive banner left the reselect controls on screen for "
+            "the whole talk — a visible click surface takes back OS focus"
+        )
+        assert state["cursor"] == "none", state["cursor"]
 
 
 # ---------------------------------------------------------------------------

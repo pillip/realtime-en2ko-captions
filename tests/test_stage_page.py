@@ -478,7 +478,11 @@ class TestStageHtmlMarkup:
             (".caption-ended", _CANVAS_RGB),
             # ISSUE-42 가 추가한 캡처 상태들. 배경은 전부 **불투명**이라
             # 임의의 캡처 영상 위에서도 대비가 결정적이다.
-            (".capture-hint", _FRAME_RGB),
+            # .capture-hint 의 backdrop 이 _FRAME_RGB 가 아닌 이유는
+            # test_capture_surfaces_declare_an_opaque_background 를 볼 것 —
+            # 이 문구는 재생 중인 <video> **위**에 뜨므로 조상의 #000000 은
+            # 실제 배경이 아니다.
+            (".capture-hint", _CANVAS_RGB),
             (".capture-warning", _CANVAS_RGB),
             (".handoff-prompt", _CANVAS_RGB),
             (".debug-overlay", _CANVAS_RGB),
@@ -495,6 +499,37 @@ class TestStageHtmlMarkup:
         """
         ratio = _contrast_ratio(_rule_rgba(stage_html, selector), backdrop)
         assert ratio >= 4.5, f"{selector} is {ratio:.2f}:1, WCAG AA needs 4.5:1"
+
+    @pytest.mark.parametrize(
+        "selector",
+        [".capture-hint", ".capture-warning", ".handoff-prompt", ".debug-overlay"],
+    )
+    def test_capture_surfaces_declare_an_opaque_background(self, stage_html, selector):
+        """캡처 상태 문구는 **자기 배경**을 갖는다 — 조상 배경에 기대지 않는다.
+
+        위 대비 테스트가 통과한다고 해서 화면에서 읽힌다는 보장이 없다. 그 계산은
+        backdrop 을 상수로 **가정**하는데, 이 네 문구는 재생 중인 `<video>` 위에
+        뜰 수 있고 그 순간 조상의 `#000000` 은 화면에 없다. `.capture-hint` 가
+        실제로 그랬다 — 배경 선언이 없어 흰 슬라이드 위에서 1.00:1 로 완전히
+        사라졌는데(연결 후 코너 더블클릭 → 재선택 → 선택 취소 경로), 대비
+        테스트는 `_FRAME_RGB` 를 가정했기 때문에 11.42:1 로 통과했다.
+
+        그래서 backdrop 가정을 **구조적 사실**로 바꾼다: 네 규칙 모두 알파 1의
+        배경을 직접 선언해야 한다. 그러면 위 테스트의 `_CANVAS_RGB` 가정이
+        비로소 참이 된다 (RL-018 — 합성된 실제 배경으로 계산할 것).
+        """
+        block = _rule_block(stage_html, selector)
+        match = re.search(r"background:\s*([^;]+);", block)
+        assert match is not None, (
+            f"{selector} declares no background; its contrast would be decided by "
+            "whatever the capture <video> happens to be showing"
+        )
+        value = match.group(1).strip()
+        assert not re.match(r"(?i)rgba?\(", value) or re.search(
+            r",\s*1(?:\.0+)?\s*\)$", value
+        ), f"{selector} background {value!r} is semi-transparent — alpha must be 1"
+        blank = {"none", "transparent"}
+        assert value.lower() not in blank, f"{selector} background is {value!r}"
 
     def test_state_copy_matches_ux_spec(self, stage_html):
         assert "잠시 후 시작됩니다" in stage_html
