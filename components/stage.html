@@ -48,6 +48,16 @@
       height: 100vh;
       height: 100dvh;
       width: 100%;
+      /* 연결 전에는 커서가 보여야 한다 — 연결 버튼을 눌러야 하기 때문. */
+      cursor: default;
+    }
+    /* 캡처가 연결되면 커서를 감춘다. 커서는 프로젝터 화면의 시각적 오염이자
+       "여기를 클릭할 수 있다" 는 어포던스다. 무대 창이 클릭당하는 순간 OS
+       포커스가 되돌아오고 프레젠터 리모컨이 죽는다 (NFR-025). 재선택 제스처로
+       컨트롤이 돌아오면 클래스가 벗겨지며 커서도 함께 복원된다 — 두 상태는
+       _showControls() 한 곳에서만 바뀐다. */
+    .stage.capture-live {
+      cursor: none;
     }
 
     /* --- 좌열 3행 (헤더 / 발표 영역 / 로고 바) --------------------------- */
@@ -167,6 +177,133 @@
       object-fit: contain;
     }
 
+    /* --- 캡처 컨트롤 / 상태 배너 (ISSUE-42) ------------------------------ */
+    /* 무대 화면의 클릭 표면은 여기 하나뿐이고, 연결되면 렌더 트리에서 통째로
+       빠진다. `pointer-events: none` 으로 죽이는 것만으로는 부족하다 — 그것은
+       문서 안의 히트테스트만 바꿀 뿐, OS 가 그 창에 포커스를 주는 것 자체는
+       막지 못한다 (NFR-025). */
+    .capture-controls {
+      position: absolute;
+      left: 50%;
+      bottom: 5%;
+      transform: translateX(-50%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      max-width: 82%;
+      text-align: center;
+    }
+    .capture-controls[hidden] { display: none; }
+
+    /* 불투명 흰 pill 위 #0b0b0c 글자 = 19.67:1 (WCAG AA 4.5:1).
+       clamp(15px, 1vw, 22px) 는 1920px 뷰포트에서 19.2px 로 resolve 되므로
+       large-text 3:1 완화를 쓸 수 없다 — 눈대중 대신 계산했다 (RL-018). */
+    .capture-button {
+      font-family: inherit;
+      font-size: clamp(15px, 1vw, 22px);
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      color: #0b0b0c;
+      background: #ffffff;
+      border: 0;
+      border-radius: 999px;
+      padding: 12px 26px;
+      cursor: pointer;
+    }
+    /* RL-010: 클릭 표면을 줄이더라도 키보드 접근성은 해치지 않는다. */
+    .capture-button:focus-visible {
+      outline: 3px solid #7cc4ff;
+      outline-offset: 3px;
+    }
+
+    /* 실패 안내. 문구는 이 파일 안의 상수뿐이고 예외 문자열은 오지 않는다
+       (RL-006). #000000 위 rgba(255,255,255,0.75) = 11.42:1, 17.28px @1920. */
+    .capture-hint {
+      margin: 0;
+      font-size: clamp(13px, 0.9vw, 20px);
+      line-height: 1.5;
+      color: rgba(255, 255, 255, 0.75);
+    }
+    .capture-hint[hidden] { display: none; }
+
+    /* 자기 캡처(무한 거울) 경고. 배경을 **불투명**으로 두는 이유는 임의의 캡처
+       영상 위에 뜨기 때문이다 — 반투명이면 대비가 영상에 따라 달라져 계산
+       자체가 성립하지 않는다. #0b0b0c 위 rgba(255,208,128,0.95) = 12.33:1,
+       18.24px @1920 (RL-018). */
+    .capture-warning {
+      position: absolute;
+      top: 5%;
+      left: 50%;
+      transform: translateX(-50%);
+      max-width: 82%;
+      padding: 10px 20px;
+      border-radius: 999px;
+      background: #0b0b0c;
+      border: 1px solid rgba(255, 196, 84, 0.45);
+      color: rgba(255, 208, 128, 0.95);
+      font-size: clamp(13px, 0.95vw, 20px);
+      letter-spacing: 0.01em;
+      text-align: center;
+    }
+    .capture-warning[hidden] { display: none; }
+
+    /* 포커스 핸드오프 안내 (1회). 컨트롤과 세로로 겹치지 않게 18% 지점에 둔다.
+       #0b0b0c 위 rgba(255,255,255,0.92) = 16.51:1, 17.6px @1920 (RL-018). */
+    .handoff-prompt {
+      position: absolute;
+      left: 50%;
+      bottom: 18%;
+      transform: translateX(-50%);
+      max-width: 82%;
+      padding: 12px 24px;
+      border-radius: 999px;
+      background: #0b0b0c;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      color: rgba(255, 255, 255, 0.92);
+      font-size: clamp(15px, 1.1vw, 24px);
+      font-weight: 500;
+      text-align: center;
+    }
+    .handoff-prompt[hidden] { display: none; }
+
+    /* 소스 재선택 복귀 지점. 보이는 어포던스를 두지 않는 이유가 NFR-025 다 —
+       상시 보이는 컨트롤은 그 자체로 포커스를 부르는 클릭 표면이다. 좌상단
+       코너를 더블클릭하는 명시적 제스처로만 컨트롤이 돌아온다.
+       포커스 가능한 요소가 아니므로 키보드로는 닿지 않는다 (RL-010 과의
+       **의도적** 트레이드오프). 키보드/보조기술 사용자를 위한 동등 경로는 두
+       가지가 남아 있다: 트랙이 끝나면 진짜 <button> 이 자동으로 돌아오고,
+       페이지 새로고침은 언제나 초기 상태로 되돌린다. */
+    .reselect-zone {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: clamp(80px, 10%, 200px);
+      height: clamp(60px, 14%, 160px);
+    }
+
+    /* `?debug=1` 리허설 진단 오버레이. DOM 자체가 쿼리 파라미터가 있을 때만
+       만들어지므로 본 행사 화면에는 존재하지 않는다. 라이브 리전이 아니다 —
+       키를 누를 때마다 낭독되면 #caption-announcer 와 경쟁한다 (RL-019).
+       #0b0b0c 위 rgba(255,255,255,0.85) = 14.08:1 @14px (RL-018). */
+    .debug-overlay {
+      position: fixed;
+      top: 12px;
+      left: 12px;
+      z-index: 10;
+      padding: 8px 12px;
+      border-radius: 8px;
+      background: #0b0b0c;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      color: rgba(255, 255, 255, 0.85);
+      font-size: 14px;
+      line-height: 1.6;
+      letter-spacing: 0.02em;
+      font-variant-numeric: tabular-nums;
+      /* 진단 표시일 뿐 조작 대상이 아니다 — 클릭 표면을 늘리지 않는다. */
+      pointer-events: none;
+    }
+
     /* --- 로고 바: 자산 없는 그룹은 숨기고, 전 그룹이 비면 바가 접힌다 ---- */
     .logo-bar {
       display: flex;
@@ -212,6 +349,12 @@
       /* 연결 배너(.conn-error)의 컨테이닝 블록. 배너를 뷰포트에 앵커하면
          발표 영역 위로 떠오른다 — 컬럼 안에 가둔다. */
       position: relative;
+      /* NFR-025 (부드러움): 자막이 매 프레임 바뀌어도 그 레이아웃/페인트가
+         이 컬럼 밖으로 새어 나가지 않는다. 이 선언이 없으면 자막 한 줄이
+         자랄 때마다 브라우저가 발표 영역까지 무효화 후보에 넣는다. 캡처
+         <video> 쪽에는 will-change 같은 합성 힌트를 **넣지 않는다** —
+         비디오는 이미 자체 레이어이고, 힌트는 VRAM만 태운다. */
+      contain: layout paint;
     }
     .caption-live {
       display: flex;
