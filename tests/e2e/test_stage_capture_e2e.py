@@ -479,14 +479,28 @@ class TestStageCaptureLifecycle:
         assert page.locator("#title-card").is_visible() is False
 
     def test_reconnect_does_not_tear_itself_down(self, page, capture_server):
-        """옛 트랙의 `ended` 리스너를 먼저 떼지 않으면 새 캡처가 즉시 철거된다."""
+        """옛 트랙의 `ended` 리스너를 먼저 떼지 않으면 새 캡처가 즉시 철거된다.
+
+        `track.stop()` 은 명세상 `ended` 를 발화하지 않으므로, 재연결만으로는
+        리스너를 떼었는지 여부를 **구별할 수 없다** — 실제로 이 단언들만 두었을
+        때 "리스너를 떼지 않는다" 는 뮤턴트가 살아남았다 (RL-004). 그래서 옛
+        트랙이 뒤늦게 `ended` 를 발화하는 실제 시나리오(사용자가 옛 소스의
+        공유 중지를 나중에 누르는 경우)를 명시적으로 재현한다. 리스너가 남아
+        있으면 그 한 발이 방금 붙인 **새** 캡처를 철거한다.
+        """
         _open_stage(page, capture_server)
         _connect(page)
-        first = page.evaluate("() => window.__capture.track.id")
+        first = page.evaluate(
+            "() => { window.__firstTrack = window.__capture.track; return window.__capture.track.id; }"
+        )
 
         page.dblclick("#reselect-zone")
         _connect(page)
         page.wait_for_timeout(300)
+
+        # 옛 트랙의 뒤늦은 ended. 새 캡처는 이 이벤트에 반응하면 안 된다.
+        page.evaluate("() => window.__firstTrack.dispatchEvent(new Event('ended'))")
+        page.wait_for_timeout(200)
 
         state = page.evaluate(
             """() => ({
