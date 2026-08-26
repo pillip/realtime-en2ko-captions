@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import csv
 import io
-from collections.abc import Iterable
+from collections.abc import Iterable, MutableMapping
 from typing import Any
 
 from branding_assets import delete_asset, save_asset
@@ -610,6 +610,60 @@ def delete_stage_logo(
     if not updated:
         return False, _DELETE_FAILED_MESSAGE
     return True, _DELETE_OK_MESSAGE if file_removed else _DELETE_CONFIG_ONLY_MESSAGE
+
+
+# ------------------------------------------------------------------
+# 로고 삭제 2단계 확인 상태 (A11Y-03 / WCAG 2.1 SC 3.3.4 Error Prevention)
+# ------------------------------------------------------------------
+# 삭제 버튼 라벨에 파일명이 들어가면서 비슷한 버튼이 세로로 늘어서므로, 한 번의
+# 오클릭이나 스트레이 키 입력이 되돌릴 수 없는 파일 삭제가 되면 안 된다.
+# 상태는 admin.py 의 ``st.session_state`` 에 살지만 "어느 행이 확인 대기인가"
+# 판단 규칙은 여기 둔다 — admin.py 는 커버리지 제외 대상이라 규칙이 조용히
+# 어긋나도 테스트가 잡지 못한다 (RL-001/RL-005).
+STAGE_DELETE_ARMED_KEY = "stage_cfg_delete_armed"
+
+
+def _stage_delete_target(
+    room_id: str, label: str, index: int, filename: str
+) -> tuple[str, str, int, str]:
+    """확인 대상 행의 좌표. 위젯 key 와 같은 (룸, 그룹, 순번, 파일명)이다.
+
+    문자열로 이어 붙이지 않고 튜플로 두어 구분자 모호성을 없앤다 — 라벨이나
+    파일명에 구분자가 들어가도 다른 행과 섞이지 않는다.
+    """
+    return (room_id, label, index, filename)
+
+
+def arm_stage_logo_delete(
+    state: MutableMapping[str, Any],
+    *,
+    room_id: str,
+    label: str,
+    index: int,
+    filename: str,
+) -> None:
+    """그 행 **하나만** 삭제 확인 대기 상태로 만든다 (기존 대기 상태는 대체)."""
+    state[STAGE_DELETE_ARMED_KEY] = _stage_delete_target(
+        room_id, label, index, filename
+    )
+
+
+def is_stage_logo_delete_armed(
+    state: MutableMapping[str, Any],
+    *,
+    room_id: str,
+    label: str,
+    index: int,
+    filename: str,
+) -> bool:
+    """그 행이 삭제 확인 대기 상태인지."""
+    armed = state.get(STAGE_DELETE_ARMED_KEY)
+    return armed == _stage_delete_target(room_id, label, index, filename)
+
+
+def clear_stage_logo_delete(state: MutableMapping[str, Any]) -> None:
+    """삭제 확인 대기 상태를 해제한다 (취소 / 삭제 완료 / 룸 변경)."""
+    state.pop(STAGE_DELETE_ARMED_KEY, None)
 
 
 def describe_stage_config_drops(

@@ -17,8 +17,10 @@ from admin_logic import (
     ROOM_STATUS_FILTER_OPTIONS,
     SELECTABLE_USER_ROLES,
     UNLIMITED_USAGE_ROLES,
+    arm_stage_logo_delete,
     build_room_metrics_view_data,
     build_stage_config_from_form,
+    clear_stage_logo_delete,
     delete_stage_logo,
     describe_stage_config_drops,
     export_room_logs_csv,
@@ -27,6 +29,7 @@ from admin_logic import (
     find_asset_drift,
     format_room_status,
     get_logs_for_operator,
+    is_stage_logo_delete_armed,
     partition_uploads,
     prepare_room_table_data,
     role_select_index,
@@ -726,6 +729,10 @@ _STAGE_SEEDED_ROOM_KEY = "stage_cfg_seeded_room"
 # 업로더 초기화용 nonce — key 가 바뀌면 Streamlit 이 위젯 상태를 버린다.
 # 저장에 반영된 파일이 폼에 남아 다음 저장 때 중복 업로드되는 것을 막는다.
 _STAGE_UPLOAD_NONCE_KEY = "stage_cfg_upload_nonce"
+# 삭제 결과를 다음 런까지 들고 가는 자리 — ``(level, 메시지)``.
+# 삭제 직후 st.rerun() 하면 같은 런에서 낸 st.success 는 화면에 남지 않아
+# 보조기술이 결과를 전혀 안내받지 못한다 (A11Y-07).
+_STAGE_DELETE_RESULT_KEY = "stage_cfg_delete_result"
 
 # 업로드 허용 확장자는 branding_assets 의 화이트리스트를 그대로 재사용한다
 # (여기서 목록을 복제하면 두 계층이 어긋난다).
@@ -802,6 +809,9 @@ def _seed_stage_form_state(room_id, config):
     if st.session_state.get(_STAGE_SEEDED_ROOM_KEY) == room_id:
         return
     st.session_state[_STAGE_SEEDED_ROOM_KEY] = room_id
+    # 룸이 바뀌면 이전 룸 파일을 가리키던 삭제 확인 대기 상태는 버린다 —
+    # 남겨 두면 다른 룸 화면에 엉뚱한 파일의 확인 버튼이 떠 있게 된다.
+    clear_stage_logo_delete(st.session_state)
     st.session_state[_STAGE_TITLE_KEY] = config.get("event_title", "")
     st.session_state[_STAGE_SUBTITLE_KEY] = config.get("event_subtitle", "")
     st.session_state[_STAGE_RATIO_KEY] = config.get("caption_ratio", CAPTION_RATIOS[0])
@@ -845,8 +855,39 @@ def _warn_stage_config_drops(room_model, room_id, config):
         st.warning(f"{warning} — 이 폼에서 저장하면 원본에서도 사라집니다.")
 
 
+def _flash_stage_delete_result():
+    """직전 런의 삭제 결과를 rerun 이후에 한 번만 다시 표시한다 (A11Y-07).
+
+    삭제 직후 ``st.rerun()`` 을 하면 같은 런에서 낸 ``st.success`` 는 화면에
+    남지 않아 스크린리더가 결과를 읽을 기회 자체가 없다. 결과를 세션에 남겼다가
+    다음 런의 같은 자리에서 낸다. 마지막 로고를 지운 경우에도 보여야 하므로
+    "등록된 로고가 없습니다" 로 조기 반환하기 **전** 에 호출한다.
+    """
+    result = st.session_state.pop(_STAGE_DELETE_RESULT_KEY, None)
+    if not result:
+        return
+    level, message = result
+    if level == "success":
+        st.success(message)
+    elif level == "error":
+        st.error(message)
+    else:
+        st.info(message)
+
+
 def _render_stage_logo_manager(room_model, room_id, config):
-    """현재 등록된 로고 미리보기 + 개별 삭제 버튼 (폼 바깥에 있어야 한다)."""
+    """현재 등록된 로고 미리보기 + 개별 삭제 (폼 바깥에 있어야 한다).
+
+    삭제는 **2단계**다 (A11Y-03 / WCAG 2.1 SC 3.3.4 Error Prevention).
+    첫 클릭은 그 행 하나만 확인 대기 상태로 만들고, 실제 파일 삭제는 확인
+    버튼에서만 일어난다. 삭제 버튼 라벨에 파일명이 들어가면서 비슷한 버튼이
+    세로로 늘어서므로, 한 번의 오클릭이나 스트레이 키 입력이 되돌릴 수 없는
+    삭제가 되면 안 된다 — 특히 키보드/스크린리더 사용자에게 위험하다.
+    확인/취소 두 버튼 구성은 사용자 계정 삭제(``show_user_edit_form``)가 이미
+    쓰는 이 파일의 관례를 그대로 따른다.
+    """
+    _flash_stage_delete_result()
+
     groups = config.get("logo_groups") or []
     if not any(group.get("assets") for group in groups):
         st.caption("등록된 로고가 없습니다. 아래 폼에서 그룹별로 업로드하세요.")
@@ -864,35 +905,75 @@ def _render_stage_logo_manager(room_model, room_id, config):
             with col1:
                 _render_logo_preview(room_id, filename)
             with col2:
-                # RL-010: 아이콘 전용 버튼이 아니라 "삭제" 텍스트 + help.
-                # ``help=`` 는 버튼 자신이 아니라 감싸는 wrapper div 에
-                # aria-describedby 로 붙는다(Streamlit 1.48 실측) — 포커스된
-                # <button> 자체의 접근 가능한 이름에는 포함되지 않으므로,
-                # 같은 화면에 로고가 여러 개면 모든 버튼이 "삭제" 로 동일하게
-                # 읽혀 스크린리더/Tab 사용자가 어느 파일인지 구분할 수 없다.
-                # 버튼 라벨 자체에 파일명을 넣어 접근 가능한 이름을 구분한다.
+                # RL-010: 모든 버튼 라벨에 파일명을 넣는다 — "삭제"/"확인"/"취소"
+                # 로만 두면 로고가 여러 개일 때 모든 버튼이 똑같이 읽혀
+                # 스크린리더/Tab 사용자가 어느 파일인지 구분할 수 없다.
+                # ``help=`` 는 버튼이 아니라 감싸는 wrapper div 에
+                # aria-describedby 로 붙으므로(Streamlit 1.48 실측) <button> 의
+                # 접근 가능한 이름을 만드는 수단은 보이는 라벨뿐이다.
+                #
                 # key 에 index 를 넣는 이유: 같은 그룹에 같은 파일명이 두 번
                 # 들어오면 파일명만으로 만든 key 가 충돌해
                 # StreamlitDuplicateElementKey 로 섹션 이후 전체(배정/강제
                 # 종료/기록)가 렌더되지 않는다. build_stage_config_from_form
                 # 이 중복을 합치므로 정상 경로에서는 발생하지 않지만, 저장
-                # 경로를 거치지 않은 config 에도 견디게 한다.
-                clicked = st.button(
-                    f"삭제 · {filename}",
-                    key=f"stage_cfg_del_{room_id}_{label}_{index}_{filename}",
-                    help=f"'{filename}' 로고를 삭제합니다",
-                )
-                if clicked:
-                    ok, message = delete_stage_logo(
-                        room_model=room_model,
-                        room_id=room_id,
-                        filename=filename,
+                # 경로를 거치지 않은 config 에도 견디게 한다. 확인/취소 버튼도
+                # 같은 shape 를 쓴다.
+                target = {
+                    "room_id": room_id,
+                    "label": label,
+                    "index": index,
+                    "filename": filename,
+                }
+                # 1단계 — 첫 클릭은 이 행만 확인 대기로 만든다. 여기서
+                # ``st.rerun()`` 을 하지 않는 것은 의도다: 확인 UI 는 아래에서
+                # 같은 런에 이어 그려지고, rerun 을 끼우면 포커스와 탭 선택 같은
+                # 화면 맥락이 통째로 날아간다 (A11Y-04).
+                if not is_stage_logo_delete_armed(st.session_state, **target):
+                    if st.button(
+                        f"삭제 · {filename}",
+                        key=f"stage_cfg_del_{room_id}_{label}_{index}_{filename}",
+                        help=f"'{filename}' 로고를 삭제합니다 (확인을 한 번 더 묻습니다)",
+                    ):
+                        arm_stage_logo_delete(st.session_state, **target)
+
+                # 2단계 — 실제 삭제는 확인 버튼에서만 일어난다.
+                if is_stage_logo_delete_armed(st.session_state, **target):
+                    st.warning(
+                        f"'{filename}' 로고를 삭제하시겠습니까? "
+                        "이 작업은 되돌릴 수 없습니다."
                     )
-                    if ok:
-                        st.success(message)
-                        st.rerun()
-                    else:
-                        st.error(message)
+                    confirm_col, cancel_col = st.columns(2)
+                    with confirm_col:
+                        if st.button(
+                            f"삭제 확인 · {filename}",
+                            key=f"stage_cfg_delok_{room_id}_{label}_{index}_{filename}",
+                            type="primary",
+                            use_container_width=True,
+                        ):
+                            ok, message = delete_stage_logo(
+                                room_model=room_model,
+                                room_id=room_id,
+                                filename=filename,
+                            )
+                            clear_stage_logo_delete(st.session_state)
+                            st.session_state[_STAGE_DELETE_RESULT_KEY] = (
+                                "success" if ok else "error",
+                                message,
+                            )
+                            st.rerun()
+                    with cancel_col:
+                        if st.button(
+                            f"삭제 취소 · {filename}",
+                            key=f"stage_cfg_delno_{room_id}_{label}_{index}_{filename}",
+                            use_container_width=True,
+                        ):
+                            clear_stage_logo_delete(st.session_state)
+                            st.session_state[_STAGE_DELETE_RESULT_KEY] = (
+                                "info",
+                                f"'{filename}' 삭제를 취소했습니다.",
+                            )
+                            st.rerun()
 
 
 def _render_logo_preview(room_id, filename):

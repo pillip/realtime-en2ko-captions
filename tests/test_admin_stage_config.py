@@ -8,11 +8,13 @@ Streamlit 위젯 호출은 ``admin.py`` 에 남기고, 폼 ↔ ``stage_config`` 
 - ``build_stage_config_from_form`` : 폼 입력 → stage_config 후보 dict
 - ``partition_uploads``            : 업로드 목록 → (수락, 거부[사유]) 분리
 - ``delete_stage_logo``            : 파일 삭제 + config 갱신 (둘 다 필수)
+- ``arm/is/clear_stage_logo_delete`` : 로고 삭제 2단계 확인 상태 (A11Y-03)
 - ``describe_stage_config_drops``  : normalize 가 조용히 버린 값 경고 (F-5)
 - ``find_asset_drift``             : config ↔ 디스크 불일치 감지
 - ``Room.update_stage_config`` / ``get_stage_config`` DB 왕복 (AC-2 / AC-3)
 - F-5 경고가 **DB 원본 블롭** 에서 실제로 발화하는지 (production 경로)
 - ``admin._warn_stage_config_drops`` : 그 경고가 화면에 뜨는지 / 실패 degrade
+- ``admin._render_stage_logo_manager`` : 삭제 2단계 흐름 (Streamlit mock + AST)
 
 에셋을 건드리는 테스트는 모두 ``BRANDING_DIR`` 을 ``tmp_path`` 로 돌린다 —
 실제 ``data/branding/`` 에는 어떤 파일도 쓰지 않는다. 외부 네트워크 호출 없음.
@@ -20,18 +22,24 @@ Streamlit 위젯 호출은 ``admin.py`` 에 남기고, 폼 ↔ ``stage_config`` 
 
 from __future__ import annotations
 
+import ast
 import json
+import pathlib
 import sys
 from unittest.mock import MagicMock
 
 import pytest
 
 from admin_logic import (
+    STAGE_DELETE_ARMED_KEY,
     UPLOAD_FAILED_MESSAGE,
+    arm_stage_logo_delete,
     build_stage_config_from_form,
+    clear_stage_logo_delete,
     delete_stage_logo,
     describe_stage_config_drops,
     find_asset_drift,
+    is_stage_logo_delete_armed,
     partition_uploads,
 )
 from branding_assets import MAX_ASSET_BYTES
@@ -756,6 +764,504 @@ class TestStageConfigLoadPathWarnings:
         captured = capsys.readouterr().out
         assert "[Admin]" in captured
         assert "sqlite3 /var/db/app.db" in captured
+
+
+# ---------------------------------------------------------------------------
+# 로고 삭제 2단계 확인 (A11Y-03 / WCAG 2.1 SC 3.3.4 Error Prevention)
+# ---------------------------------------------------------------------------
+_ROW = {"room_id": "r-1", "label": "주최", "index": 0, "filename": "a.png"}
+
+
+class TestStageLogoDeleteArming:
+    """어느 행이 "확인 대기" 인지 판단하는 규칙 (Streamlit 없이 검증).
+
+    admin.py 는 커버리지 제외 대상이므로 판단 규칙 자체는 admin_logic 에 두고
+    여기서 검증한다 (RL-001/RL-005). 핵심은 **한 번에 한 행만** 무장된다는 것 —
+    삭제 버튼이 세로로 늘어선 화면에서 다른 행까지 함께 무장되면 2단계 확인이
+    오히려 오삭제를 부른다.
+    """
+
+    def test_nothing_is_armed_by_default(self):
+        assert is_stage_logo_delete_armed({}, **_ROW) is False
+
+    def test_arming_marks_the_targeted_row(self):
+        state = {}
+        arm_stage_logo_delete(state, **_ROW)
+        assert is_stage_logo_delete_armed(state, **_ROW) is True
+
+    def test_arming_file_a_does_not_arm_file_b(self):
+        """같은 그룹의 다른 파일은 무장되지 않는다."""
+        state = {}
+        other_file = {**_ROW, "filename": "b.png"}
+        arm_stage_logo_delete(state, **_ROW)
+        assert is_stage_logo_delete_armed(state, **other_file) is False
+
+    def test_same_filename_in_another_group_is_not_armed(self):
+        state = {}
+        arm_stage_logo_delete(state, **_ROW)
+        assert is_stage_logo_delete_armed(state, **{**_ROW, "label": "후원"}) is False
+
+    def test_same_filename_at_another_index_is_not_armed(self):
+        """같은 그룹에 같은 이름이 두 번 있어도 눌린 행만 무장된다."""
+        state = {}
+        arm_stage_logo_delete(state, **_ROW)
+        assert is_stage_logo_delete_armed(state, **{**_ROW, "index": 1}) is False
+
+    def test_same_file_in_another_room_is_not_armed(self):
+        state = {}
+        arm_stage_logo_delete(state, **_ROW)
+        assert is_stage_logo_delete_armed(state, **{**_ROW, "room_id": "r-2"}) is False
+
+    def test_arming_another_row_replaces_the_previous_one(self):
+        state = {}
+        other_file = {**_ROW, "filename": "b.png"}
+        arm_stage_logo_delete(state, **_ROW)
+        arm_stage_logo_delete(state, **other_file)
+        assert is_stage_logo_delete_armed(state, **_ROW) is False
+        assert is_stage_logo_delete_armed(state, **other_file) is True
+
+    def test_clear_disarms(self):
+        state = {}
+        arm_stage_logo_delete(state, **_ROW)
+        clear_stage_logo_delete(state)
+        assert STAGE_DELETE_ARMED_KEY not in state
+        assert is_stage_logo_delete_armed(state, **_ROW) is False
+
+    def test_clear_on_untouched_state_is_a_noop(self):
+        state = {"other": 1}
+        clear_stage_logo_delete(state)
+        assert state == {"other": 1}
+
+
+# ---------------------------------------------------------------------------
+# 삭제 흐름 (admin.py + Streamlit mock)
+# ---------------------------------------------------------------------------
+class _Rerun(Exception):
+    """``st.rerun()`` 은 예외로 스크립트를 끊는다 — 그 흐름을 그대로 흉내낸다.
+
+    MagicMock 이 그냥 None 을 돌려주면 rerun 뒤 코드가 계속 실행돼, 실제로는
+    일어나지 않는 렌더까지 단언하게 된다 (RL-004).
+    """
+
+
+def _fake_columns(spec, **kwargs):
+    """``st.columns`` 대역 — 언패킹 가능한 컨텍스트 매니저 목록을 준다."""
+    count = len(spec) if isinstance(spec, list | tuple) else int(spec)
+    return [MagicMock() for _ in range(count)]
+
+
+def _fake_admin(monkeypatch, *, delete_result=(True, "로고를 삭제했습니다.")):
+    """``admin`` 모듈에 Streamlit 대역과 삭제 mock 을 꽂고 돌려준다."""
+    import admin
+
+    fake_st = MagicMock()
+    fake_st.session_state = {}
+    fake_st.button.return_value = False
+    fake_st.columns.side_effect = _fake_columns
+    fake_st.rerun.side_effect = _Rerun
+    monkeypatch.setattr(admin, "st", fake_st)
+
+    delete_mock = MagicMock(return_value=delete_result)
+    monkeypatch.setattr(admin, "delete_stage_logo", delete_mock)
+    return admin, fake_st, delete_mock
+
+
+def _click(fake_st, label):
+    """정확히 그 **보이는 라벨** 의 버튼만 눌린 것으로 만든다."""
+    fake_st.button.side_effect = lambda text, **kwargs: text == label
+
+
+def _button_labels(fake_st):
+    return [call.args[0] for call in fake_st.button.call_args_list if call.args]
+
+
+def _button_keys(fake_st):
+    return [call.kwargs.get("key") for call in fake_st.button.call_args_list]
+
+
+def _config_with(groups):
+    """정규화/중복 제거를 거치지 않은 raw config (중복 파일명 재현용)."""
+    return {
+        "event_title": "t",
+        "event_subtitle": "",
+        "caption_ratio": "1/4",
+        "logo_groups": groups,
+    }
+
+
+class TestStageLogoDeleteIsConfirmed:
+    """A11Y-03: 첫 클릭은 확인을 띄우기만 하고 파일을 지우지 않는다.
+
+    삭제 버튼 라벨에 파일명이 들어가면서 비슷한 버튼이 세로로 늘어서므로,
+    한 번의 오클릭/스트레이 키 입력이 되돌릴 수 없는 파일 삭제가 되면 안 된다
+    (WCAG 2.1 SC 3.3.4). 사용자 계정 삭제와 같은 확인/취소 패턴을 따른다.
+    """
+
+    def _two_logos(self):
+        return _config_with([{"label": "주최", "assets": ["a.png", "b.png"]}])
+
+    def test_first_click_arms_without_deleting(self, monkeypatch, branding_dir):
+        """첫 클릭은 확인 UI 를 띄우기만 한다 — 파일도 rerun 도 건드리지 않는다.
+
+        rerun 을 끼우면 포커스와 탭 선택 같은 화면 맥락이 통째로 날아간다
+        (A11Y-04). 확인 버튼은 같은 런에서 바로 이어 그려져야 한다.
+        """
+        admin, fake_st, delete_mock = _fake_admin(monkeypatch)
+        _click(fake_st, "삭제 · a.png")
+
+        admin._render_stage_logo_manager(MagicMock(), "r-1", self._two_logos())
+
+        delete_mock.assert_not_called()
+        fake_st.rerun.assert_not_called()
+        assert fake_st.session_state[STAGE_DELETE_ARMED_KEY] == (
+            "r-1",
+            "주최",
+            0,
+            "a.png",
+        )
+        # 확인/취소가 같은 런에서 바로 나타나야 다음 조작을 이어 갈 수 있다.
+        assert _button_labels(fake_st) == [
+            "삭제 · a.png",
+            "삭제 확인 · a.png",
+            "삭제 취소 · a.png",
+            "삭제 · b.png",
+        ]
+
+    def test_unarmed_rows_only_offer_the_delete_button(self, monkeypatch, branding_dir):
+        admin, fake_st, _ = _fake_admin(monkeypatch)
+
+        admin._render_stage_logo_manager(MagicMock(), "r-1", self._two_logos())
+
+        assert _button_labels(fake_st) == ["삭제 · a.png", "삭제 · b.png"]
+
+    def test_armed_row_offers_confirm_and_cancel_named_for_the_file(
+        self, monkeypatch, branding_dir
+    ):
+        """RL-010 / WCAG 4.1.2: 확인·취소도 어느 파일인지 라벨로 말해야 한다.
+
+        Streamlit 에는 aria-label 파라미터가 없고 ``help=`` 는 감싸는 div 에
+        aria-describedby 로 붙으므로, <button> 의 접근 가능한 이름을 만드는
+        수단은 보이는 라벨뿐이다. 무장되지 않은 행은 그대로 "삭제 · b.png" 다.
+        """
+        admin, fake_st, _ = _fake_admin(monkeypatch)
+        arm_stage_logo_delete(
+            fake_st.session_state,
+            room_id="r-1",
+            label="주최",
+            index=0,
+            filename="a.png",
+        )
+
+        admin._render_stage_logo_manager(MagicMock(), "r-1", self._two_logos())
+
+        assert _button_labels(fake_st) == [
+            "삭제 확인 · a.png",
+            "삭제 취소 · a.png",
+            "삭제 · b.png",
+        ]
+
+    def test_confirm_deletes_only_the_armed_file(self, monkeypatch, branding_dir):
+        admin, fake_st, delete_mock = _fake_admin(monkeypatch)
+        room_model = MagicMock()
+        arm_stage_logo_delete(
+            fake_st.session_state,
+            room_id="r-1",
+            label="주최",
+            index=0,
+            filename="a.png",
+        )
+        _click(fake_st, "삭제 확인 · a.png")
+
+        with pytest.raises(_Rerun):
+            admin._render_stage_logo_manager(room_model, "r-1", self._two_logos())
+
+        delete_mock.assert_called_once_with(
+            room_model=room_model, room_id="r-1", filename="a.png"
+        )
+        # 확인이 끝나면 무장은 반드시 풀려야 한다 (다음 런에서 또 뜨면 안 된다).
+        assert STAGE_DELETE_ARMED_KEY not in fake_st.session_state
+
+    def test_cancel_disarms_without_deleting(self, monkeypatch, branding_dir):
+        admin, fake_st, delete_mock = _fake_admin(monkeypatch)
+        arm_stage_logo_delete(
+            fake_st.session_state,
+            room_id="r-1",
+            label="주최",
+            index=0,
+            filename="a.png",
+        )
+        _click(fake_st, "삭제 취소 · a.png")
+
+        with pytest.raises(_Rerun):
+            admin._render_stage_logo_manager(MagicMock(), "r-1", self._two_logos())
+
+        delete_mock.assert_not_called()
+        assert STAGE_DELETE_ARMED_KEY not in fake_st.session_state
+
+    def test_widget_keys_stay_unique_with_duplicate_filenames(
+        self, monkeypatch, branding_dir
+    ):
+        """중복 파일명이 남아 있어도 key 가 충돌하면 안 된다.
+
+        키 충돌은 ``StreamlitDuplicateElementKey`` 로 룸 관리 탭의 이후 섹션
+        (오퍼레이터 배정 / 룸 강제 종료 / 룸별 대화 기록) 전체를 죽인다.
+        확인·취소 버튼도 삭제 버튼과 같은 index 포함 shape 를 써야 한다.
+        """
+        admin, fake_st, _ = _fake_admin(monkeypatch)
+        config = _config_with([{"label": "주최", "assets": ["dup.png", "dup.png"]}])
+        arm_stage_logo_delete(
+            fake_st.session_state,
+            room_id="r-1",
+            label="주최",
+            index=0,
+            filename="dup.png",
+        )
+
+        admin._render_stage_logo_manager(MagicMock(), "r-1", config)
+
+        keys = _button_keys(fake_st)
+        assert len(keys) == 3
+        assert None not in keys
+        assert len(set(keys)) == 3
+
+    def test_delete_result_is_announced_after_the_rerun(
+        self, monkeypatch, branding_dir
+    ):
+        """A11Y-07: 삭제 직후 rerun 이 성공 메시지를 지워 버리면 안 된다.
+
+        마지막 로고를 지운 경우(등록된 로고 0개)에도 결과가 표시되어야 한다 —
+        "등록된 로고가 없습니다" 안내로 조기 반환하기 **전** 에 내야 한다.
+        """
+        admin, fake_st, _ = _fake_admin(monkeypatch)
+        fake_st.session_state[admin._STAGE_DELETE_RESULT_KEY] = (
+            "success",
+            "로고를 삭제했습니다.",
+        )
+
+        admin._render_stage_logo_manager(MagicMock(), "r-1", _config_with([]))
+
+        fake_st.success.assert_called_once_with("로고를 삭제했습니다.")
+        # 한 번만 안내한다 — 다음 런까지 남으면 유령 메시지가 된다.
+        assert admin._STAGE_DELETE_RESULT_KEY not in fake_st.session_state
+
+    def test_failed_delete_is_reported_as_an_error(self, monkeypatch, branding_dir):
+        admin, fake_st, _ = _fake_admin(
+            monkeypatch, delete_result=(False, "로고 삭제에 실패했습니다.")
+        )
+        arm_stage_logo_delete(
+            fake_st.session_state,
+            room_id="r-1",
+            label="주최",
+            index=0,
+            filename="a.png",
+        )
+        _click(fake_st, "삭제 확인 · a.png")
+
+        with pytest.raises(_Rerun):
+            admin._render_stage_logo_manager(MagicMock(), "r-1", self._two_logos())
+
+        fake_st.button.side_effect = None
+        fake_st.button.return_value = False
+        admin._render_stage_logo_manager(MagicMock(), "r-1", self._two_logos())
+
+        fake_st.error.assert_called_once_with("로고 삭제에 실패했습니다.")
+        fake_st.success.assert_not_called()
+
+
+class TestStageDeleteArmingFollowsTheRoom:
+    """룸을 바꾸면 다른 룸 파일을 가리키는 확인 대기 상태가 남으면 안 된다."""
+
+    def test_room_change_clears_the_armed_state(self, monkeypatch):
+        admin, fake_st, _ = _fake_admin(monkeypatch)
+        fake_st.session_state[admin._STAGE_SEEDED_ROOM_KEY] = "r-1"
+        arm_stage_logo_delete(
+            fake_st.session_state,
+            room_id="r-1",
+            label="주최",
+            index=0,
+            filename="a.png",
+        )
+
+        admin._seed_stage_form_state("r-2", DEFAULT_STAGE_CONFIG)
+
+        assert STAGE_DELETE_ARMED_KEY not in fake_st.session_state
+
+    def test_same_room_keeps_the_armed_state(self, monkeypatch):
+        """무조건 지우면 확인 버튼이 뜰 틈도 없이 사라진다 (RL-004 판별력)."""
+        admin, fake_st, _ = _fake_admin(monkeypatch)
+        fake_st.session_state[admin._STAGE_SEEDED_ROOM_KEY] = "r-1"
+        arm_stage_logo_delete(
+            fake_st.session_state,
+            room_id="r-1",
+            label="주최",
+            index=0,
+            filename="a.png",
+        )
+
+        admin._seed_stage_form_state("r-1", DEFAULT_STAGE_CONFIG)
+
+        assert fake_st.session_state[STAGE_DELETE_ARMED_KEY] == (
+            "r-1",
+            "주최",
+            0,
+            "a.png",
+        )
+
+
+# ---------------------------------------------------------------------------
+# 삭제가 **구조적으로** 2단계인가 (AST)
+# ---------------------------------------------------------------------------
+# tests/ 아래의 모든 .py 는 e2e 게이트 때문에 test_* 를 가져야 해서 공용 헬퍼
+# 모듈을 둘 수 없다. 다른 테스트 모듈에서 import 해 오면 테스트끼리 얽히므로
+# AST 헬퍼는 이 파일에 최소한으로 둔다 (test_admin_room_mgmt.py 와 같은 형태).
+_ARM_FN = "arm_stage_logo_delete"
+_ARMED_GUARD_FN = "is_stage_logo_delete_armed"
+_DELETE_FN = "delete_stage_logo"
+
+
+def _admin_source() -> str:
+    path = pathlib.Path(__file__).resolve().parents[1] / "admin.py"
+    return path.read_text(encoding="utf-8")
+
+
+def _calls_named(nodes, name: str) -> list[ast.Call]:
+    found: list[ast.Call] = []
+    for node in nodes:
+        for child in ast.walk(node):
+            if (
+                isinstance(child, ast.Call)
+                and isinstance(child.func, ast.Name)
+                and child.func.id == name
+            ):
+                found.append(child)
+    return found
+
+
+def _is_armed_guard(node) -> bool:
+    """``if is_stage_logo_delete_armed(...):`` 인가 (부정형은 가드가 아니다).
+
+    ``if not is_...(...)`` 의 body 는 "확인 대기가 **아닐** 때" 도는 곳이므로
+    여기서 삭제가 일어나면 그것이야말로 1클릭 삭제다. 부정형을 가드로 인정하면
+    검사기가 그 회귀를 놓친다.
+    """
+    return (
+        isinstance(node, ast.If)
+        and isinstance(node.test, ast.Call)
+        and isinstance(node.test.func, ast.Name)
+        and node.test.func.id == _ARMED_GUARD_FN
+    )
+
+
+def _two_step_delete_violations(source: str) -> list[str]:
+    """소스가 "무장 → 확인 → 삭제" 2단계를 지키는지 검사한다.
+
+    문자열 grep 은 확인 분기가 사라져도 통과하므로 AST 로 위치를 본다
+    (RL-004). 규칙:
+
+    1. 무장(1단계) 호출이 존재한다.
+    2. 삭제 호출이 존재한다 (경로가 통째로 사라진 것도 회귀다).
+    3. 모든 삭제 호출은 ``if is_stage_logo_delete_armed(...)`` 의 body 안에 있다.
+    4. 무장하는 분기가 같은 자리에서 삭제까지 하지 않는다.
+    """
+    tree = ast.parse(source)
+    violations: list[str] = []
+
+    arm_calls = _calls_named(tree.body, _ARM_FN)
+    delete_calls = _calls_named(tree.body, _DELETE_FN)
+    if not arm_calls:
+        violations.append(f"{_ARM_FN} 호출이 없다 — 1단계(확인 무장)가 사라졌다.")
+    if not delete_calls:
+        violations.append(f"{_DELETE_FN} 호출이 없다 — 삭제 경로가 사라졌다.")
+
+    guarded_body: list[ast.stmt] = []
+    for node in ast.walk(tree):
+        if _is_armed_guard(node):
+            guarded_body.extend(node.body)
+    guarded_ids = {id(call) for call in _calls_named(guarded_body, _DELETE_FN)}
+    if any(id(call) not in guarded_ids for call in delete_calls):
+        violations.append(
+            f"{_DELETE_FN} 이(가) `if {_ARMED_GUARD_FN}(...)` 밖에서 호출된다."
+        )
+
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.If)
+            and _calls_named(node.body, _ARM_FN)
+            and _calls_named(node.body, _DELETE_FN)
+        ):
+            violations.append("확인을 무장하는 분기가 그 자리에서 삭제까지 한다.")
+
+    return violations
+
+
+# 회귀 시나리오 — 검사기가 실제로 이것들을 잡아내야 판별력이 있다 (RL-004).
+_ONE_CLICK_SOURCE = '''
+def _render_stage_logo_manager(room_model, room_id, config):
+    """한 번 클릭으로 바로 지우는 회귀 형태."""
+    for index, filename in enumerate(config):
+        if st.button(f"삭제 · {filename}", key=f"del_{index}_{filename}"):
+            ok, message = delete_stage_logo(
+                room_model=room_model, room_id=room_id, filename=filename
+            )
+            st.rerun()
+'''
+
+_ARM_AND_DELETE_SOURCE = '''
+def _render_stage_logo_manager(room_model, room_id, config):
+    """무장은 하지만 같은 분기에서 그대로 지워 버리는 형태 (확인이 무의미)."""
+    for index, filename in enumerate(config):
+        if st.button(f"삭제 · {filename}", key=f"del_{index}_{filename}"):
+            arm_stage_logo_delete(
+                st.session_state,
+                room_id=room_id,
+                label="주최",
+                index=index,
+                filename=filename,
+            )
+            ok, message = delete_stage_logo(
+                room_model=room_model, room_id=room_id, filename=filename
+            )
+            st.rerun()
+'''
+
+
+_DELETE_IN_UNARMED_BRANCH_SOURCE = '''
+def _render_stage_logo_manager(room_model, room_id, config):
+    """확인 가드를 쓰지만 **부정형** 분기에서 지우는 형태 (사실상 1클릭)."""
+    for index, filename in enumerate(config):
+        target = {"room_id": room_id, "filename": filename}
+        if not is_stage_logo_delete_armed(st.session_state, **target):
+            if st.button(f"삭제 · {filename}", key=f"del_{index}_{filename}"):
+                arm_stage_logo_delete(st.session_state, **target)
+                ok, message = delete_stage_logo(
+                    room_model=room_model, room_id=room_id, filename=filename
+                )
+'''
+
+
+class TestStageLogoDeleteIsStructurallyTwoStep:
+    def test_admin_source_gates_delete_behind_the_confirmation(self):
+        assert _two_step_delete_violations(_admin_source()) == []
+
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            (_ONE_CLICK_SOURCE, f"{_ARM_FN} 호출이 없다"),
+            (_ARM_AND_DELETE_SOURCE, "그 자리에서 삭제까지 한다"),
+            (_DELETE_IN_UNARMED_BRANCH_SOURCE, "그 자리에서 삭제까지 한다"),
+        ],
+        ids=[
+            "one-click",
+            "arm-and-delete-in-one-branch",
+            "delete-in-negated-guard",
+        ],
+    )
+    def test_checker_rejects_single_click_regressions(self, source, expected):
+        """검사기가 1클릭 삭제로 되돌린 코드를 실제로 거부하는지 확인한다."""
+        violations = _two_step_delete_violations(source)
+        assert any(expected in v for v in violations), violations
+        # 두 회귀 모두 "확인 가드 밖에서 삭제" 로도 걸려야 한다.
+        assert any(_ARMED_GUARD_FN in v for v in violations), violations
 
 
 class TestStageFormHelpText:

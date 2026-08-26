@@ -61,6 +61,10 @@ _STAGE_ROOM_ID = "e2estage1"
 _STAGE_ROOM_NAME = "E2E 무대 설정 룸"
 _EVENT_TITLE = "2026 개발자 콘퍼런스"
 
+# 로고 삭제 2단계 확인용 시드 파일 (A11Y-03).
+_LOGO_FILENAME = "e2elogo.png"
+_PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+
 
 # ---------------------------------------------------------------------------
 # 로그인 / 계정 전환
@@ -195,6 +199,39 @@ def stage_room(streamlit_server, _tmp_db_dir):
 
 
 @pytest.fixture()
+def seeded_logo(stage_room, _tmp_db_dir):
+    """무대 설정에 로고 1개를 등록해 두고, 끝나면 디스크에서 치운다.
+
+    서버는 ``BRANDING_DIR`` 기본값(``data/branding``)을 쓰고 cwd 가 테스트
+    프로세스와 같으므로 여기서 저장한 파일을 그대로 본다. 폼으로 업로드하지
+    않고 직접 넣는 이유는 다른 시드와 같다 — 파일 선택 다이얼로그를 태우는
+    것보다 결정적이고, 이 테스트의 관심사는 업로드가 아니라 **삭제** 다.
+    """
+    from admin_logic import build_stage_config_from_form
+    from branding_assets import delete_asset, save_asset
+
+    stored = save_asset(_STAGE_ROOM_ID, _LOGO_FILENAME, _PNG_BYTES)
+    repo = _room_repo(_tmp_db_dir)
+    config = repo.get_stage_config(_STAGE_ROOM_ID)
+    groups = {group["label"]: list(group["assets"]) for group in config["logo_groups"]}
+    groups.setdefault("주최", []).append(stored)
+    repo.update_stage_config(
+        _STAGE_ROOM_ID,
+        build_stage_config_from_form(
+            event_title=config["event_title"],
+            event_subtitle=config["event_subtitle"],
+            caption_ratio=config["caption_ratio"],
+            logo_groups=groups,
+        ),
+    )
+    try:
+        yield stored
+    finally:
+        # 테스트가 도중에 실패해도 작업 트리에 파일을 남기지 않는다.
+        delete_asset(_STAGE_ROOM_ID, stored)
+
+
+@pytest.fixture()
 def admin_page(page, streamlit_server, stage_room):
     """admin 계정으로 관리자 대시보드에 로그인한 page."""
     return _open_dashboard_as(page, streamlit_server, TEST_USERNAME)
@@ -314,6 +351,80 @@ class TestStageConfigVisibleToAdmin:
         restored = admin_page.locator('input[aria-label="행사 타이틀"]')
         restored.wait_for(state="visible", timeout=20000)
         assert restored.input_value() == _EVENT_TITLE
+
+
+def _asset_exists(filename):
+    """서버가 보는 것과 같은 경로에서 파일 존재 여부를 확인한다."""
+    from branding_assets import resolve_asset_path
+
+    return resolve_asset_path(_STAGE_ROOM_ID, filename) is not None
+
+
+def _wait_for_asset_gone(filename, attempts=30):
+    """삭제가 디스크에 반영될 때까지 폴링한다 (고정 sleep 대신)."""
+    for _ in range(attempts):
+        if not _asset_exists(filename):
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def _wait_for_button_in_room_tab(page, name):
+    """rerun 이 끝나기를 기다린 뒤, 필요하면 룸 관리 탭을 다시 열고 버튼을 준다.
+
+    두 가지 Streamlit 동작을 넘어야 한다.
+
+    1. 폼 제출이 아닌 일반 버튼으로 스크립트가 다시 돌면 바깥 탭 선택이 첫 탭으로
+       돌아갈 때가 있다(이 탭의 다른 버튼들도 같다). 그래서 탭을 다시 연다.
+    2. 리렌더 도중에는 탭 바가 잠깐 **두 벌** 존재해서, 그 순간
+       ``_open_room_tab`` 이 strict mode 위반으로 터진다. 그러므로 탭을 건드리기
+       전에 rerun 이 끝났는지부터 확인한다 — role 로케이터는 숨은 요소를 세지
+       않으므로, 탭이 접혀 있어도 잡히는 텍스트 로케이터로 기다린다.
+    """
+    page.locator("button", has_text=name).first.wait_for(
+        state="attached", timeout=20000
+    )
+    _open_room_tab(page, "룸 관리")
+    button = page.get_by_role("button", name=name, exact=True).first
+    button.wait_for(state="visible", timeout=20000)
+    return button
+
+
+class TestStageLogoDeleteNeedsConfirmation:
+    """A11Y-03 (WCAG 2.1 SC 3.3.4) — 로고 삭제는 확인을 거쳐야 한다.
+
+    단위 테스트는 Streamlit 을 mock 으로 대체하므로 "실제 위젯이 그렇게
+    렌더되고 실제 파일이 그때 지워지는가" 는 브라우저에서만 확인된다.
+    """
+
+    def test_first_click_keeps_the_file_and_confirm_deletes_it(
+        self, stage_room, seeded_logo, admin_page
+    ):
+        _open_room_tab(admin_page, "룸 관리")
+
+        delete_button = admin_page.get_by_role(
+            "button", name=f"삭제 · {seeded_logo}", exact=True
+        ).first
+        delete_button.wait_for(state="visible", timeout=20000)
+        assert _asset_exists(seeded_logo), "시드한 로고 파일이 없다"
+        delete_button.click()
+
+        # 확인 버튼이 떴다는 것은 첫 클릭이 이미 처리됐다는 뜻이다. 그 시점에
+        # 파일이 남아 있어야 "한 번의 클릭으로는 지워지지 않는다" 가 증명된다.
+        confirm_button = _wait_for_button_in_room_tab(
+            admin_page, f"삭제 확인 · {seeded_logo}"
+        )
+        assert _asset_exists(seeded_logo), "확인 전인데 파일이 이미 삭제됐다"
+        # 취소도 같은 자리에서 파일명을 밝히며 제공돼야 한다 (RL-010).
+        assert (
+            admin_page.get_by_role(
+                "button", name=f"삭제 취소 · {seeded_logo}", exact=True
+            ).count()
+            == 1
+        )
+
+        confirm_button.click()
+        assert _wait_for_asset_gone(seeded_logo), "확인했는데도 파일이 남아 있다"
 
 
 class TestStageConfigHiddenFromOperator:
