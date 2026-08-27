@@ -611,6 +611,9 @@ class TestViewerRenderStructure:
         assert "_PLACEHOLDER_RE.sub(" in body
         assert "lambda" in body
         assert ".replace(" not in body
+
+
+# ---------------------------------------------------------------------------
 # 자막 파이프라인 파리티 — components/viewer.html (ISSUE-46)
 # ---------------------------------------------------------------------------
 class TestViewerCaptionPipeline:

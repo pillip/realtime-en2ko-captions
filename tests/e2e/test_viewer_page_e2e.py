@@ -313,6 +313,7 @@ class TestViewerPageInBrowser:
         assert page.locator("#room-name").inner_text().strip() == _AMPERSAND_NAME
         assert page.locator("#waiting-room").inner_text().strip() == _AMPERSAND_NAME
 
+
 # ---------------------------------------------------------------------------
 # ISSUE-46 — 자막 파이프라인 파리티 (stage.html `cc0681f` 와 동일 동작)
 # ---------------------------------------------------------------------------
