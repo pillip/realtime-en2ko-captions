@@ -13,6 +13,9 @@
   플레이스홀더를 팽창시키지 못한다 (RL-020 / RL-021).
 - 자막 파이프라인 정적 계약 (ISSUE-46): stage.html 과 동일한 확정/빈 final/
   잔상/DOM sink 규칙.
+- WCAG AA 대비 + 자막 라이브 리전 (ISSUE-45): 모든 텍스트 색 규칙의 합성 후
+  대비가 4.5:1 이상이고, 애니메이션 노드는 `aria-hidden`, 라인 확정 시에만
+  갱신되는 `#caption-announcer` 가 라이브 리전을 소유한다.
 
 외부 네트워크 호출 없이 aiohttp TestClient 만 사용 (test_sse_broadcast.py 패턴).
 """
@@ -28,6 +31,17 @@ from unittest.mock import MagicMock
 from urllib.parse import quote
 
 import pytest
+
+# 대비 계산기는 stage 쪽과 **같은** 모듈을 쓴다 (RL-001). 복사본을 만들면 두
+# 페이지가 서로 다른 계산기를 갖게 되고, 그 드리프트가 ISSUE-45 자체의 원인이다.
+from tests.wcag import (
+    _composite,
+    _contrast_ratio,
+    _hex_rgb,
+    _rule_block,
+    _rule_hex,
+    _rule_rgba,
+)
 
 # websocket_handler -> auth -> streamlit 의존성 회피 (다른 테스트와 동일 패턴)
 if "streamlit" not in sys.modules:
@@ -66,6 +80,140 @@ def _js_body(source: str, pattern: str) -> str:
 
 # 인라인 `<script>` 블록을 조기 종료시키려는 페이로드 (RL-016).
 _BREAKOUT_NAME = "</script><script>alert(1)</script>"
+
+_SCROLL_LOCK_TEMPLATE = (
+    Path(__file__).resolve().parent.parent / "components" / "scroll_lock.html"
+)
+
+# 라이브 리전 관련 함수 본문 추출 패턴 (ISSUE-45).
+_ANNOUNCE_BODY = r"function announce\(text\) \{(.*?)\n    \}"
+
+# ---------------------------------------------------------------------------
+# WCAG AA 대비 (ISSUE-45 / RL-018)
+# ---------------------------------------------------------------------------
+# 페이지가 칠하는 배경. 이 상수들은 "가정" 이 아니라 **검증된 사실** 이어야 한다
+# — 아래 test_contrast_backdrops_match_what_the_stylesheet_declares 가
+# viewer.html 이 실제로 선언한 값과 대조한다. ISSUE-42 는 `#000000` 을 backdrop
+# 으로 가정해 11.42:1 로 통과한 문구가 실제로는 재생 중인 <video> 위에서
+# 1.00:1(완전 비가시)로 렌더되는 결함을 냈다 — 대비 수치는 **합성된 색**에 대한
+# 주장이고, 테스트의 backdrop 상수가 바로 그 주장이 무너지는 지점이다.
+_CANVAS_RGB = (11, 11, 12)  # body { background: #0b0b0c }
+_OPTION_RGB = (21, 21, 23)  # #lang-select option { background: #151517 }
+_BLACK_RGB = (0, 0, 0)  # 뷰어는 칠하지 않지만 알파 하한 비교용
+
+# 실측 알파 하한 (contrast probe). 캔버스보다 순수 검정 위에서 하한이 **높다**.
+_ALPHA_FLOOR_CANVAS = 0.45  # #0b0b0c 위 4.52:1 (0.44 는 4.34:1 로 미달)
+_ALPHA_FLOOR_BLACK = 0.46  # #000000 위 4.56:1 (0.45 는 4.43:1 로 미달)
+
+# viewer.html 이 선언하는 **불투명/반투명 배경**의 전부. 새 배경 표면이 하나
+# 늘어난다는 것은 곧 어떤 텍스트 아래에 새 backdrop 이 깔린다는 뜻이고, 그러면
+# 위 대비 감사 목록을 다시 봐야 한다 (RL-018). 이 목록이 그 재검토를 강제한다.
+_KNOWN_BACKGROUNDS = {
+    "body": "#0b0b0c",
+    ".live-dot": "rgba(255, 255, 255, 0.22)",
+    ".live-dot.live": "#4ade80",
+    "#lang-select option": "#151517",
+    ".listening-indicator span": "rgba(255, 255, 255, 0.3)",
+    ".conn-error": "rgba(255, 255, 255, 0.07)",
+}
+
+# 텍스트 색 규칙 × 실제 backdrop × 실측 대비. 숫자를 목록에 남겨 두는 것이
+# 이 이슈의 명시 요구사항이다 — "보기에 은은하다" 로 알파를 고른 것이 애초의
+# 실패 원인이었다 (RL-018).
+_TEXT_COLOUR_AUDIT = [
+    ("body", _CANVAS_RGB, 19.67),
+    (".room-name", _CANVAS_RGB, 5.34),
+    (".lang-control label", _CANVAS_RGB, 5.34),
+    ("#lang-select", _CANVAS_RGB, 19.67),
+    ("#lang-select option", _OPTION_RGB, 18.24),
+    (".state-message", _CANVAS_RGB, 12.50),
+    (".state-room", _CANVAS_RGB, 5.34),
+    ("#state-ended .state-message", _CANVAS_RGB, 7.26),
+    (".caption-line", _CANVAS_RGB, 4.52),
+    (".caption-container .caption-line:last-child", _CANVAS_RGB, 19.67),
+    (".caption-empty", _CANVAS_RGB, 5.34),
+    # 캔버스가 아니라 **합성된 알약 배경** 위에서 잰다 (아래 전용 테스트 참조).
+    (".conn-error", _composite((255, 255, 255, 0.07), _CANVAS_RGB), 7.85),
+]
+
+_RULE_RE = re.compile(r"([^{}]+)\{([^{}]*)\}", re.S)
+_RGBA_RE = re.compile(r"rgba\(\s*(\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\s*\)")
+
+
+def _style_sheet(html: str) -> str:
+    """`<style>` 블록들을 이어 붙인 CSS (블록이 없으면 빈 문자열).
+
+    `/* … */` 주석은 걷어낸다 — 남겨 두면 규칙 바로 위 주석이 셀렉터 문자열에
+    통째로 붙어 `.conn-error` 가 `/* … */ .conn-error` 로 잡힌다.
+    """
+    css = "\n".join(re.findall(r"<style>(.*?)</style>", html, re.S))
+    return re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+
+
+def _declarations(block: str) -> list[tuple[str, str]]:
+    """규칙 본문을 `(property, value)` 목록으로.
+
+    exact-name 매칭이라 `transition: color 0.5s ease` 나 `border-top-color`
+    같은 이웃 선언이 `color` 감사에 섞이지 않는다 — substring 매칭은 바로
+    그렇게 오염된다 (RL-004).
+
+    `/* … */` 는 먼저 걷어낸다. 이 파일은 알파를 고른 근거(대비 수치)를 규칙
+    바로 위 주석으로 남기는데, 남겨 두면 그 주석이 뒤따르는 선언과 한 덩어리로
+    잘려 `color:` 가 통째로 보이지 않게 된다.
+    """
+    out = []
+    for raw in re.sub(r"/\*.*?\*/", "", block, flags=re.S).split(";"):
+        name, sep, value = raw.partition(":")
+        if not sep:
+            continue
+        out.append((name.strip(), value.strip()))
+    return out
+
+
+def _rules(css: str):
+    """`selector { … }` 를 순회한다. `@media`/`@keyframes` 래퍼는 건너뛰고
+    그 **안쪽** 규칙은 그대로 잡힌다 (평면 정규식이라 래퍼는 매칭에 실패한다)."""
+    for match in _RULE_RE.finditer(css):
+        selector = " ".join(match.group(1).split())
+        if not selector or selector.startswith("@"):
+            continue
+        yield selector, match.group(2)
+
+
+def _colour_rules(html: str) -> list[tuple[str, str]]:
+    """파일 안의 모든 `color:` 선언을 `(selector, value)` 로 훑는다."""
+    return [
+        (selector, value)
+        for selector, block in _rules(_style_sheet(html))
+        for name, value in _declarations(block)
+        if name == "color"
+    ]
+
+
+def _rule_colour(css: str, selector: str) -> tuple[float, float, float, float]:
+    """규칙 블록의 `color:` 를 (r, g, b, a) 로. `#rrggbb` 는 알파 1.0."""
+    block = _rule_block(css, selector)
+    values = [value for name, value in _declarations(block) if name == "color"]
+    counted = f"{selector} declares {len(values)} `color:` values, expected 1"
+    assert len(values) == 1, counted
+    if values[0].startswith("#"):
+        return (*_hex_rgb(values[0]), 1.0)
+    return _rule_rgba(css, selector)
+
+
+def _element_span(html: str, open_match: re.Match, tag: str) -> str:
+    """여는 태그부터 **같은 깊이의** 닫는 태그까지를 잘라낸다.
+
+    문자열 존재 확인(`'id="x"' in html`)은 그 요소가 컨테이너 **안**에 중첩돼
+    있어도 통과한다. 자손 여부를 실제로 판정하려면 구간을 잘라야 한다.
+    """
+    depth = 1
+    pattern = re.compile(rf"<(/?){re.escape(tag)}\b[^>]*>", re.I)
+    for match in pattern.finditer(html, open_match.end()):
+        depth += -1 if match.group(1) else 1
+        if depth == 0:
+            return html[open_match.start() : match.end()]
+    raise AssertionError(f"unbalanced <{tag}> starting at {open_match.start()}")
 
 
 # ---------------------------------------------------------------------------
@@ -817,3 +965,486 @@ class TestViewerCaptionPipeline:
         """
         assert "setInterval(" in viewer_html
         assert "28);" in viewer_html, "the 28ms typewriter tick must stay"
+
+
+# ---------------------------------------------------------------------------
+# WCAG AA 대비 — components/viewer.html + components/scroll_lock.html (ISSUE-45)
+# ---------------------------------------------------------------------------
+class TestViewerContrast:
+    """WCAG 1.4.3 — 어두운 캔버스 위 흐린 텍스트도 4.5:1 이상 (RL-018).
+
+    ISSUE-40 은 무대 페이지에서 이 실패 3건을 수치로 잡아 고쳤는데, 실패한
+    알파는 전부 `viewer.html` 에서 복사해 온 값이었다. 무대만 고쳐졌고 뷰어는
+    `/view/{room_id}` 로 누구나 접근 가능한 채 실패 값을 계속 서빙했다.
+
+    이 클래스는 대비 수치만 재지 않는다. 대비 수치는 backdrop 상수에 대한
+    **주장**이므로, backdrop 가정 자체를 검증된 사실로 바꾸는 구조 가드를 함께
+    둔다 (test_contrast_backdrops_match_what_the_stylesheet_declares /
+    test_opaque_background_surfaces_are_the_enumerated_set).
+
+    AC ↔ Test mapping (issues.md ISSUE-45 § Tests):
+      - "모든 텍스트 색 규칙 4.5:1 이상"
+          → test_every_text_colour_rule_meets_wcag_aa_contrast
+      - "감사 목록이 파일 전체를 덮는다"
+          → test_the_audit_list_covers_every_colour_rule_in_the_file
+      - "알파 하한 미만이 남아 있지 않다"
+          → test_no_white_alpha_text_rule_sits_below_the_measured_floor
+      - "scroll_lock.html 감사 완료"
+          → test_scroll_lock_component_declares_no_text_colour
+    """
+
+    @pytest.mark.parametrize("selector,backdrop,expected", _TEXT_COLOUR_AUDIT)
+    def test_every_text_colour_rule_meets_wcag_aa_contrast(
+        self, viewer_html, selector, backdrop, expected
+    ):
+        """감사 목록의 실측 대비 (`#0b0b0c` 캔버스 기준, 합성 후):
+
+        | 규칙 | 알파 | 대비 |
+        |---|---|---|
+        | `body` / `#lang-select` / `:last-child` | `#ffffff` | 19.67:1 |
+        | `#lang-select option` (on `#151517`) | `#ffffff` | 18.24:1 |
+        | `.state-message` | 0.8 | 12.50:1 |
+        | `.conn-error` (합성된 알약 위) | 0.65 | 7.85:1 |
+        | `#state-ended .state-message` | 0.6 | 7.26:1 |
+        | `.room-name` | 0.42 → **0.5** | 4.04 → **5.34:1** |
+        | `.state-room` | 0.35 → **0.5** | 3.13 → **5.34:1** |
+        | `.caption-empty` | 0.32 → **0.5** | 2.81 → **5.34:1** |
+        | `.caption-line` | 0.42 → **0.45** | 4.04 → **4.52:1** |
+
+        판정은 **일반 텍스트 4.5:1** 기준이다. `clamp()` 하한이 large-text
+        임계(24px)를 넘느냐로 완화를 노리지 않는다 — `.caption-line` 의 하한이
+        정확히 24px 이지만 무대 페이지도 같은 기준으로 0.45 로 올려 출하됐고,
+        이 이슈의 절반은 그 파리티를 되찾는 일이다.
+
+        `.caption-line` 만 0.5 가 아니라 0.45 인 이유: 순백(`#ffffff`)인
+        `:last-child` 현재 라인과의 시각적 위계 간격을 지키기 위해서다 (AC-4).
+        """
+        ratio = _contrast_ratio(_rule_colour(viewer_html, selector), backdrop)
+        assert ratio >= 4.5, f"{selector} is {ratio:.2f}:1, WCAG AA needs 4.5:1"
+        drifted = (
+            f"{selector} now measures {ratio:.2f}:1 but the audit table records "
+            f"{expected:.2f}:1 — update _TEXT_COLOUR_AUDIT so the numbers on the "
+            "record stay true (RL-018: the recorded number IS the evidence)"
+        )
+        assert round(ratio, 2) == expected, drifted
+
+    def test_the_audit_list_covers_every_colour_rule_in_the_file(self, viewer_html):
+        """감사 범위는 "목록에 적은 것" 이 아니라 "파일 안의 모든 텍스트 색" 이다.
+
+        parametrize 목록만 두면 나중에 추가된 규칙이 조용히 감사 밖에 남는다 —
+        `.caption-empty` 가 실패 값을 그대로 서빙하던 것과 같은 형태의 누락이다.
+        """
+        found = {selector for selector, _ in _colour_rules(viewer_html)}
+        audited = {selector for selector, _, _ in _TEXT_COLOUR_AUDIT}
+        missing = found - audited
+        unaudited = (
+            f"viewer.html declares `color:` on {sorted(missing)} but the WCAG "
+            "audit list does not cover them — every text colour rule must be "
+            "measured, not just the ones someone remembered"
+        )
+        assert not missing, unaudited
+        stale = f"_TEXT_COLOUR_AUDIT lists {sorted(audited - found)}, not in the file"
+        assert not (audited - found), stale
+
+    def test_no_white_alpha_text_rule_sits_below_the_measured_floor(self, viewer_html):
+        """ "다른 페이지에서 알파를 복사해 온다" 는 재발을 막는 스윕 가드.
+
+        규칙별 합성 대비는 위 테스트가 잰다. 여기서는 파일 전체를 훑어 하한
+        미만의 흰색 알파가 **하나도** 남지 않았음을 단언한다.
+        """
+        for selector, value in _colour_rules(viewer_html):
+            match = _RGBA_RE.search(value)
+            if match is None:
+                continue
+            r, g, b, alpha = match.groups()
+            alpha = float(alpha)
+            ratio = _contrast_ratio((int(r), int(g), int(b), alpha), _CANVAS_RGB)
+            faint = (
+                f"{selector} paints text at alpha {alpha} → {ratio:.2f}:1 on the "
+                f"#0b0b0c canvas. The measured AA floor is "
+                f"{_ALPHA_FLOOR_CANVAS} (4.52:1) on this canvas and "
+                f"{_ALPHA_FLOOR_BLACK} (4.56:1) on pure #000000"
+            )
+            assert alpha >= _ALPHA_FLOOR_CANVAS, faint
+
+    def test_past_lines_stay_dimmer_than_the_current_line(self, viewer_html):
+        """AC-4 — 알파를 올려도 시각적 위계가 뒤집히지 않는다.
+
+        과거 라인(`.caption-line`)은 여전히 순백인 현재 라인
+        (`:last-child`)보다 흐려야 한다. `.caption-line` 을 권장값 0.5 가 아니라
+        0.45 로 둔 이유가 바로 이 간격이다.
+        """
+        past = _rule_colour(viewer_html, ".caption-line")
+        current = _rule_colour(
+            viewer_html, ".caption-container .caption-line:last-child"
+        )
+        assert current == (255, 255, 255, 1.0), f"current line is {current}"
+
+        past_ratio = _contrast_ratio(past, _CANVAS_RGB)
+        current_ratio = _contrast_ratio(current, _CANVAS_RGB)
+        inverted = (
+            f"past lines read at {past_ratio:.2f}:1 and the current line at "
+            f"{current_ratio:.2f}:1 — the past line must stay visibly dimmer, "
+            "otherwise the credit roll loses its 'this is the live line' cue"
+        )
+        assert past_ratio < current_ratio, inverted
+        # 그러면서도 AA 는 넘겨야 한다 — 위계를 이유로 미달을 정당화하지 않는다.
+        assert past_ratio >= 4.5, f"past lines are {past_ratio:.2f}:1"
+
+    def test_the_alpha_floor_constants_are_the_real_floors(self):
+        """하한 상수도 전승이 아니라 계산 결과여야 한다 (RL-018).
+
+        `0.45` / `0.46` 이 "어디선가 들은 값" 으로 굳으면 스윕 가드 전체가
+        근거를 잃는다. 한 단계 아래 알파가 실제로 미달임을 함께 못 박는다.
+        """
+        canvas_ok = _contrast_ratio((255, 255, 255, _ALPHA_FLOOR_CANVAS), _CANVAS_RGB)
+        canvas_under = _contrast_ratio((255, 255, 255, 0.44), _CANVAS_RGB)
+        assert canvas_ok >= 4.5, f"canvas floor is {canvas_ok:.2f}:1"
+        assert canvas_under < 4.5, f"0.44 on the canvas is {canvas_under:.2f}:1"
+
+        black_ok = _contrast_ratio((255, 255, 255, _ALPHA_FLOOR_BLACK), _BLACK_RGB)
+        black_under = _contrast_ratio((255, 255, 255, 0.45), _BLACK_RGB)
+        assert black_ok >= 4.5, f"black floor is {black_ok:.2f}:1"
+        higher = (
+            f"0.45 on pure #000000 is {black_under:.2f}:1 — the floor on black is "
+            "HIGHER than on the canvas, so a canvas alpha is not transferable"
+        )
+        assert black_under < 4.5, higher
+
+    def test_contrast_backdrops_match_what_the_stylesheet_declares(self, viewer_html):
+        """RL-018 구조 가드 — backdrop 상수는 가정이 아니라 검증된 사실이다.
+
+        ISSUE-42 는 `#000000` 을 backdrop 으로 **가정**해 11.42:1 로 통과한
+        문구가 실제로는 재생 중인 `<video>` 위에서 1.00:1(완전 비가시)로
+        렌더되는 결함을 냈다. 대비 수치는 합성된 색에 대한 주장이고, 무너지는
+        지점은 언제나 backdrop 상수다. 캔버스를 누가 바꾸면 대비 스위트는
+        **깨져야** 한다 — 더 이상 렌더되지 않는 색을 상대로 조용히 계속 단언하면
+        안 된다.
+        """
+        declared = _rule_hex(viewer_html, "body", "background")
+        drifted = (
+            f"body paints {declared} but the contrast suite measures against "
+            f"{_CANVAS_RGB} — every ratio in _TEXT_COLOUR_AUDIT is now a claim "
+            "about a colour that no longer renders"
+        )
+        assert declared == _CANVAS_RGB, drifted
+
+        option = _rule_hex(viewer_html, "#lang-select option", "background")
+        assert option == _OPTION_RGB, f"#lang-select option paints {option}"
+
+        # `#lang-select` 자신의 흰 글자를 캔버스 위에서 재는 근거. 배경이
+        # transparent 라야 조상(body)의 캔버스가 실제 backdrop 이다.
+        select = _rule_block(viewer_html, "#lang-select")
+        backgrounds = [v for name, v in _declarations(select) if name.startswith("bac")]
+        opaque = (
+            "#lang-select must keep `background-color: transparent` — its "
+            f"#ffffff text is measured against the canvas: {backgrounds}"
+        )
+        assert "transparent" in backgrounds, opaque
+
+    def test_opaque_background_surfaces_are_the_enumerated_set(self, viewer_html):
+        """새 배경 표면은 곧 어떤 텍스트 아래의 새 backdrop 이다 (RL-018).
+
+        반투명이든 불투명이든 배경이 하나 늘어나면 그 위에 얹히는 텍스트의
+        대비가 달라진다. 목록을 못 박아 두어야 다음 표면이 감사를 다시 열게
+        만든다 — 조용히 지나가면 `.conn-error` 알약 같은 함정이 또 생긴다.
+        """
+        painted = {}
+        for selector, block in _rules(_style_sheet(viewer_html)):
+            for name, value in _declarations(block):
+                if name not in ("background", "background-color"):
+                    continue
+                if value in ("none", "transparent"):
+                    continue
+                if re.search(r",\s*0(?:\.0+)?\s*\)$", value):  # rgba(..., 0)
+                    continue
+                painted[selector] = value
+
+        added = {k: v for k, v in painted.items() if k not in _KNOWN_BACKGROUNDS}
+        new_surface = (
+            f"viewer.html grew new painted background(s) {added} — each one is a "
+            "new backdrop under some text, so the WCAG audit list has to be "
+            "revisited before this guard is updated"
+        )
+        assert not added, new_surface
+        assert painted == _KNOWN_BACKGROUNDS, f"background surfaces drifted: {painted}"
+
+    def test_conn_error_banner_meets_wcag_aa_contrast(self, viewer_html):
+        """RL-018 — 반투명 pill 위 텍스트는 **합성 후** 배경으로 계산한다.
+
+        배너 텍스트의 실제 배경은 캔버스가 아니라 캔버스 위에 깔린 반투명
+        pill 이다. 밝아진 배경은 밝은 글자의 대비를 **낮추므로**, pill 을
+        가정에서 지워 버리면 실제보다 후한 숫자가 나온다. 무대 쪽 대응은
+        `tests/test_stage_page.py::test_conn_error_banner_meets_wcag_aa_contrast`.
+        """
+        block = _rule_block(viewer_html, ".conn-error")
+        bg = re.search(
+            r"background:\s*rgba\(\s*(\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\s*\)", block
+        )
+        assert bg is not None, ".conn-error needs an rgba() background declaration"
+        r, g, b, a = bg.groups()
+        pill = _composite((int(r), int(g), int(b), float(a)), _CANVAS_RGB)
+
+        ratio = _contrast_ratio(_rule_rgba(viewer_html, ".conn-error"), pill)
+        assert ratio >= 4.5, f".conn-error text is {ratio:.2f}:1, WCAG AA needs 4.5:1"
+
+        # pill 위 하한은 캔버스보다 높다 — 캔버스 알파를 그대로 옮기면 안 된다.
+        floor = _contrast_ratio((255, 255, 255, _ALPHA_FLOOR_CANVAS), pill)
+        stricter = (
+            f"alpha {_ALPHA_FLOOR_CANVAS} on the composited pill is only "
+            f"{floor:.2f}:1 — the pill's floor is {_ALPHA_FLOOR_BLACK}, so the "
+            "canvas floor is not transferable to this surface"
+        )
+        assert floor < 4.5, stricter
+
+    def test_scroll_lock_component_declares_no_text_colour(self):
+        """`components/scroll_lock.html` 감사 결과를 사실로 고정한다.
+
+        이 컴포넌트는 순수 script/style 이라 텍스트 노드도, `color:` 선언도
+        없다. "확인했다" 를 코드에 남기지 않으면 다음 감사 때 또 처음부터
+        세어야 한다 — 감사 완료 자체를 테스트로 굳힌다 (issues.md ISSUE-45
+        § Scope: "확인 자체를 결과로 남긴다").
+        """
+        assert _SCROLL_LOCK_TEMPLATE.exists(), f"missing: {_SCROLL_LOCK_TEMPLATE}"
+        html = _SCROLL_LOCK_TEMPLATE.read_text(encoding="utf-8")
+        rules = _colour_rules(html)
+        for selector, value in rules:
+            match = _RGBA_RE.search(value)
+            if match is None:
+                continue
+            r, g, b, alpha = match.groups()
+            ratio = _contrast_ratio((int(r), int(g), int(b), float(alpha)), _CANVAS_RGB)
+            assert ratio >= 4.5, f"{selector} is {ratio:.2f}:1, WCAG AA needs 4.5:1"
+        audited = (
+            f"scroll_lock.html grew text colour rule(s) {rules} — the recorded "
+            "audit fact (zero text colour rules) is stale; measure them and "
+            "extend this test"
+        )
+        assert rules == [], audited
+
+
+# ---------------------------------------------------------------------------
+# 자막 라이브 리전 — components/viewer.html (ISSUE-45, ISSUE-41 FU-3)
+# ---------------------------------------------------------------------------
+class TestViewerCaptionLiveRegion:
+    """RL-019 — 프레임/틱마다 바뀌는 노드는 라이브 리전이 아니다.
+
+    뷰어에는 자막 라이브 리전이 **아예** 없었다. `#state-waiting` 과
+    `#state-ended` 만 `aria-live="polite"` 라서 스크린리더 청중은 "잠시 후
+    시작됩니다" 와 "세션이 종료되었습니다" 는 듣고 그 사이의 자막 본문은 한
+    글자도 듣지 못했다 — 이 페이지의 존재 이유가 바로 그 본문이다.
+
+    패턴은 `components/stage.html`(머지 `cc0681f`) 을 미러링한다. 무대 쪽 대응
+    테스트는 `tests/test_stage_page.py::test_animated_node_is_not_the_live_region`.
+    행동 검증은 `tests/e2e/test_viewer_page_e2e.py::TestViewerLiveRegion`.
+    """
+
+    def test_animated_node_is_not_the_live_region(self, viewer_html):
+        """애니메이션 노드는 `aria-hidden`, 별도 announcer 가 `aria-live` 를 갖는다.
+
+        타자기는 `#captionContainer` 에 `.caption-line` 을 append 하고 마지막
+        라인의 `textContent` 를 28ms 마다 바꾸며 `MAX_LINES` 로 앞쪽 자식을
+        잘라낸다 — 이 노드를 라이브 리전으로 두면 모든 공개 틱과 모든 트리밍이
+        낭독된다.
+        """
+        animated = re.search(r"<div[^>]*\bid=\"captionContainer\"[^>]*>", viewer_html)
+        assert animated is not None, "#captionContainer open tag not found"
+        animated_tag = animated.group(0)
+        flooded = (
+            "#captionContainer carries aria-live — the typewriter mutates this "
+            f"node every 28ms tick: {animated_tag}"
+        )
+        assert "aria-live" not in animated_tag, flooded
+        exposed = (
+            "#captionContainer must be aria-hidden so per-tick reveals are not "
+            f"announced: {animated_tag}"
+        )
+        assert 'aria-hidden="true"' in animated_tag, exposed
+
+        announcer = re.search(
+            r"<[a-zA-Z]+[^>]*\bid=\"caption-announcer\"[^>]*>", viewer_html
+        )
+        orphaned = (
+            "no #caption-announcer element — the viewer has no live region at "
+            "all, so screen-reader attendees hear zero characters of the "
+            "caption body (ISSUE-41 FU-3)"
+        )
+        assert announcer is not None, orphaned
+        announcer_tag = announcer.group(0)
+        assert 'aria-live="polite"' in announcer_tag, announcer_tag
+        assert 'aria-atomic="true"' in announcer_tag, announcer_tag
+        distinct = "the announcer must not be the animated container itself"
+        assert announcer_tag != animated_tag, distinct
+
+    def test_exactly_one_caption_live_region_exists(self, viewer_html):
+        """AC — 자막 **텍스트**를 받는 라이브 리전은 정확히 1개다.
+
+        `#state-waiting` / `#state-ended` 도 `aria-live="polite"` 지만 자막
+        텍스트를 받지 않는다(상태 카피 전용). 이중 낭독은 announcer 가 종료
+        문구까지 되풀이할 때 생긴다.
+        """
+        live_tags = re.findall(r"<[a-zA-Z]+[^>]*\baria-live=[^>]*>", viewer_html)
+        ids = [re.search(r'\bid="([^"]+)"', tag) for tag in live_tags]
+        owners = sorted(m.group(1) for m in ids if m is not None)
+        expected = ["caption-announcer", "state-ended", "state-waiting"]
+        drifted = (
+            f"aria-live owners are {owners}; expected exactly {expected} — the "
+            "two state sections announce their own copy and only "
+            "#caption-announcer receives caption text (RL-019)"
+        )
+        assert owners == expected, drifted
+        anonymous = f"an aria-live node has no id: {live_tags}"
+        assert len(live_tags) == len(owners), anonymous
+
+    def test_the_announcer_is_not_a_descendant_of_the_hidden_container(
+        self, viewer_html
+    ):
+        """구조 단언 — `aria-hidden` 은 서브트리 전체를 접근성 트리에서 지운다.
+
+        자손으로 넣으면 `aria-live` 를 달아도 되돌릴 수 없다. 문자열 존재
+        확인(`'id="caption-announcer"' in html`)만으로는 중첩된 경우도 통과하므로
+        컨테이너 구간을 실제로 잘라서 본다 (RL-004).
+
+        `<section class="state">` 안에 있어도 안 된다 — `.state { display: none }`
+        이라 첫 payload 전까지 렌더되지 않고, 생성/노출과 같은 틱에 첫 텍스트가
+        들어오는 라이브 리전은 스크린리더가 안정적으로 읽지 않는다.
+        """
+        open_match = re.search(r"<div[^>]*\bid=\"captionContainer\"[^>]*>", viewer_html)
+        assert open_match is not None, "#captionContainer open tag not found"
+        container = _element_span(viewer_html, open_match, "div")
+        nested = (
+            "#caption-announcer sits INSIDE #captionContainer, which is "
+            "aria-hidden — a descendant cannot undo aria-hidden, so the live "
+            f"region would never reach assistive tech: {container[:160]!r}"
+        )
+        assert 'id="caption-announcer"' not in container, nested
+
+        for section in re.finditer(
+            r"<section[^>]*\bclass=\"state\"[^>]*>", viewer_html
+        ):
+            span = _element_span(viewer_html, section, "section")
+            hidden = (
+                "#caption-announcer sits inside a <section class='state'>, which "
+                "is `display: none` until JS toggles .active — a live region "
+                f"revealed in the same tick as its first text is unreliable: "
+                f"{section.group(0)}"
+            )
+            assert 'id="caption-announcer"' not in span, hidden
+
+        main = re.search(r"<div[^>]*\bclass=\"main\"[^>]*>", viewer_html)
+        assert main is not None, "<div class='main'> not found"
+        span = _element_span(viewer_html, main, "div")
+        placed = (
+            "#caption-announcer must live in <div class='main'> as a sibling of "
+            "the state sections — permanently rendered, permanently armed"
+        )
+        assert 'id="caption-announcer"' in span, placed
+
+    def test_sr_only_clips_without_a_negative_vertical_margin(self, viewer_html):
+        """`.sr-only` 는 `clip-path` 로 잘라낸다 — 구식 `clip` + 음수 margin 금지.
+
+        `display: none` / `visibility: hidden` 계열은 접근성 트리에서도 사라져
+        라이브 리전이 죽는다. 음수 세로 margin 은 이 프로젝트가 금지한다
+        (RL-012) — 잘라내는 일은 `clip-path` 가 한다.
+        """
+        block = _rule_block(viewer_html, ".sr-only")
+        assert "clip-path: inset(50%)" in block, f".sr-only must clip-path: {block!r}"
+
+        declarations = _declarations(block)
+        margins = [(n, v) for n, v in declarations if n == "margin" or "margin-" in n]
+        assert margins == [("margin", "0")], f".sr-only margins are {margins}"
+
+        removed = [
+            (n, v)
+            for n, v in declarations
+            if (n == "display" and v == "none") or (n == "visibility" and v == "hidden")
+        ]
+        gone = (
+            f".sr-only uses {removed} — that removes the node from the "
+            "accessibility tree too, so the live region would never announce"
+        )
+        assert removed == [], gone
+
+        # `.sr-only` 는 시각적으로 렌더되지 않으므로 대비 감사 대상이 아니다 —
+        # 색 규칙을 아예 두지 않아야 감사 스윕과 충돌하지 않는다.
+        colours = [(n, v) for n, v in declarations if n == "color"]
+        assert colours == [], f".sr-only must declare no colour: {colours}"
+
+    def test_announce_is_the_only_writer_to_the_live_region(self, viewer_html):
+        """라이브 리전에 쓰는 경로는 `announce()` 하나다 (RL-019)."""
+        # `=(?!=)` — 대입만 센다. `===` 비교(announce() 의 무변경 가드)는 쓰기가
+        # 아니므로 세면 안 된다.
+        writes = re.findall(r"announcer\.textContent\s*=(?!=)", viewer_html)
+        many = (
+            f"{len(writes)} writers touch announcer.textContent — the live "
+            "region must have a single writer so every announcement is auditable"
+        )
+        assert len(writes) == 1, many
+
+        body = _js_body(viewer_html, _ANNOUNCE_BODY)
+        assert "announcer.textContent = text;" in body, body
+        refired = (
+            "announce() must no-op when the text is unchanged, otherwise a live "
+            f"region is re-fired with an identical value: {body!r}"
+        )
+        assert "announcer.textContent === text" in body, refired
+
+    def test_announce_runs_on_the_lock_path_and_never_on_a_tick(self, viewer_html):
+        """자막 **텍스트**를 라이브 리전에 쓰는 지점은 라인 확정 하나뿐이다.
+
+        28ms 인터벌 콜백 옆에 `announce()` 를 붙이면 스크린리더가 초당 35회
+        갱신으로 범람한다 — RL-019 가 막으려는 실패 그대로다.
+        """
+        lock = _js_body(viewer_html, _LOCK_LINE_BODY)
+        locked = f"_lockLine must announce the finalised line: {lock!r}"
+        assert "announce(twTarget);" in lock, locked
+
+        # ISSUE-46 의 순서 규칙은 그대로다: 추종 여부는 어떤 쓰기보다 먼저 잰다.
+        measured = lock.find("isUserAtBottom()")
+        written = lock.find("currentLine.textContent = twTarget;")
+        announced = lock.find("announce(twTarget);")
+        ordered = (
+            "announce() must come after the follow measurement and after the "
+            f"line write, exactly as stage.html does: {lock!r}"
+        )
+        assert measured < written < announced, ordered
+
+        step = _js_body(viewer_html, _TW_START_BODY)
+        flooded = (
+            "announce() is called from inside the 28ms setInterval callback — "
+            f"that floods the screen reader ~35x/sec (RL-019): {step!r}"
+        )
+        assert "announce(" not in step, flooded
+
+    def test_state_copy_ownership_covers_the_active_waiting_text(self, viewer_html):
+        """UI-7 — `#caption-empty` 대기 문구는 announcer 가 대신 든다.
+
+        `#caption-empty` 는 `aria-hidden` 이 된 `#captionContainer` **안**에
+        있어 보조기술에 닿지 않는다. waiting/ended 는 각자 `<section aria-live>`
+        가 알리지만, **active 상태에서 대기 문구만 보이는 경우**는 예외다 —
+        빈 final(`finalizeCaption("")`) 이 들어오거나 언어 전환이
+        `clearCaptions()` 로 문구를 재생성하는 경로가 그렇다.
+
+        행동 검증은 e2e 쪽 `test_the_active_waiting_copy_reaches_the_live_region`
+        / `test_language_switch_announces_the_new_waiting_copy`.
+        """
+        sync = re.search(
+            r"function syncStateAnnouncement\(\) \{(.*?)\n    \}", viewer_html, re.S
+        )
+        unowned = (
+            "no syncStateAnnouncement() — nothing owns the active-state waiting "
+            "copy, so #caption-empty stays trapped inside the aria-hidden subtree"
+        )
+        assert sync is not None, unowned
+
+        for caller, pattern in (
+            ("setState", r"function setState\(name\) \{(.*?)\n    \}"),
+            ("clearCaptions", r"function clearCaptions\(\) \{(.*?)\n    \}"),
+            ("applyWaitingText", r"function applyWaitingText\(lang\) \{(.*?)\n    \}"),
+        ):
+            body = _js_body(viewer_html, pattern)
+            missed = (
+                f"{caller}() must re-sync the announcer — it is one of the three "
+                f"paths that change what the active state is showing: {body!r}"
+            )
+            assert "syncStateAnnouncement();" in body, missed
