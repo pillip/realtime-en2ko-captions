@@ -8,16 +8,22 @@
     - 알 수 없는 룸 → 404 + 친절한 HTML 본문 (RL-006: 내부 detail 노출 금지).
     - closed 룸 → 200 + 종료(ended) 상태가 인라인 마크업으로 active.
 - 모바일/접근성 지표: viewport 메타, dvh 단위, lang="ko", aria-label 존재.
+- 스크립트 컨텍스트 이스케이프 파리티 (ISSUE-44): `<script>` 로 들어가는 값은
+  전부 `_json_for_script` 리터럴이고, 치환은 단일 패스라 어떤 값도 다른
+  플레이스홀더를 팽창시키지 못한다 (RL-020 / RL-021).
 
 외부 네트워크 호출 없이 aiohttp TestClient 만 사용 (test_sse_broadcast.py 패턴).
 """
 
 from __future__ import annotations
 
+import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
+from urllib.parse import quote
 
 import pytest
 
@@ -26,6 +32,12 @@ if "streamlit" not in sys.modules:
     sys.modules["streamlit"] = MagicMock()
 if "extra_streamlit_components" not in sys.modules:
     sys.modules["extra_streamlit_components"] = MagicMock()
+
+
+_VIEWER_TEMPLATE = Path(__file__).resolve().parent.parent / "components" / "viewer.html"
+
+# 인라인 `<script>` 블록을 조기 종료시키려는 페이로드 (RL-016).
+_BREAKOUT_NAME = "</script><script>alert(1)</script>"
 
 
 # ---------------------------------------------------------------------------
@@ -39,6 +51,50 @@ class _StubRoomRepo:
 
     def get_by_id(self, room_id: str) -> dict[str, Any] | None:
         return self._rows.get(room_id)
+
+
+def _room(**overrides: Any) -> dict[str, Any]:
+    """Room row shaped like `database.Room.get_by_id` returns it."""
+    row = {
+        "id": "room-1",
+        "name": "Conference Hall A",
+        "status": "active",
+        "primary_output_lang": "ko",
+        "output_langs": '["ko","en"]',
+    }
+    row.update(overrides)
+    return row
+
+
+async def _get(repo: Any, path: str) -> tuple[int, str, str]:
+    """GET `path` against a fresh app; return (status, body, content_type)."""
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from sse_broadcast import BroadcastManager, build_sse_app
+
+    app = build_sse_app(broadcast_manager=BroadcastManager(), room_repo=repo)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get(path)
+        return resp.status, await resp.text(), resp.headers.get("Content-Type", "")
+
+
+def _script_block(body: str) -> str:
+    """부트스트랩 인라인 `<script>` 블록만 잘라낸다 (마크업 자리와 분리)."""
+    start = body.index("<script>")
+    end = body.index("</script>", start)
+    return body[start:end]
+
+
+def _config_literal(body: str, key: str) -> str:
+    """부트스트랩 `CONFIG` 에서 `key:` 의 값 리터럴을 원문 그대로 잘라낸다.
+
+    줄 끝 주석(`initial_state` 줄)을 허용하되 값 자체의 쉼표는 삼키지 않도록
+    greedy 매칭 후 마지막 쉼표에서 자른다.
+    """
+    pattern = rf"^\s*{key}: (.*),\s*(?://.*)?$"
+    match = re.search(pattern, _script_block(body), re.M)
+    assert match is not None, f"{key} literal missing"
+    return match.group(1)
 
 
 # ---------------------------------------------------------------------------
@@ -283,3 +339,254 @@ class TestViewRouteHandler:
             assert "secrets.db" not in body
             assert "RuntimeError" not in body
             assert "Traceback" not in body
+
+
+# ---------------------------------------------------------------------------
+# ISSUE-44 — script-context escaping parity with _render_stage_html
+# ---------------------------------------------------------------------------
+class TestViewerScriptContextEscaping:
+    """`<script>` 로 들어가는 값의 이스케이프 파리티 (RL-020 / RL-021).
+
+    무대 페이지는 ISSUE-40 에서 이미 고쳐졌다. 뷰어는 출하된 공개 경로인데
+    같은 결함을 그대로 서빙 중이었다. 아래 단언은 전부
+    `tests/test_stage_page.py::TestStageRouteHandler` 의 미러다.
+
+    AC ↔ Test mapping (issues.md ISSUE-44 § Acceptance Criteria):
+      - AC 1 → test_script_scalars_survive_backslashes_and_quotes
+      - AC 3 → test_room_name_cannot_expand_another_placeholder
+      - AC 4 → test_room_name_ampersand_is_not_double_escaped
+      - AC 5 → test_room_name_script_tag_stays_escaped_in_markup
+               / test_room_name_cannot_close_script_block
+      (AC 2 는 tests/e2e/test_viewer_page_e2e.py, AC 6 은 아래 구조 테스트)
+    """
+
+    async def test_script_scalars_survive_backslashes_and_quotes(self):
+        """AC 1 — 따옴표 + 끝 백슬래시 room_id 가 손상 없이 살아남는다.
+
+        `html.escape` 는 `\\` 를 건드리지 않아 백슬래시로 끝나는 값이 닫는
+        따옴표를 탈출시킨다 — 부트스트랩 전체가 SyntaxError 로 죽는다.
+        `"` 는 `&quot;` 로 바뀌어 값 자체가 조용히 손상되고, 그 값이
+        `/stream/${encodeURIComponent(CONFIG.room_id)}` URL 조립에 쓰인다.
+        """
+        room_id = 'q"b\\'
+        repo = _StubRoomRepo({room_id: _room(id=room_id)})
+        status, body, _ = await _get(repo, "/view/q%22b%5C")
+        assert status == 200
+        # 스크립트 컨텍스트에 HTML 엔티티가 있으면 안 된다 (raw text 라 디코드 안 됨).
+        assert "&quot;" not in _script_block(body)
+        assert json.loads(_config_literal(body, "room_id")) == room_id
+
+    @pytest.mark.parametrize(
+        "hostile_name",
+        [
+            "{{OUTPUT_LANGS_JSON}}",
+            "{{ROOM_NAME_JSON}}",
+            "{{PRIMARY_LANG}}",
+            "{{INITIAL_STATE}}",
+        ],
+    )
+    async def test_room_name_cannot_expand_another_placeholder(self, hostile_name):
+        """AC 3 (RL-021) — 룸 이름이 다른 플레이스홀더로 팽창하지 않는다.
+
+        연쇄 `str.replace` 는 앞 단계가 써 넣은 값을 뒤 단계가 다시 본다.
+        룸 이름은 운영자 자유 입력이므로 치환은 단일 패스여야 한다.
+        """
+        repo = _StubRoomRepo({"room-1": _room(name=hostile_name)})
+        status, body, _ = await _get(repo, "/view/room-1")
+        assert status == 200
+        assert f"<title>{hostile_name} — 자막 뷰어</title>" in body
+        assert f'id="room-name">{hostile_name}</div>' in body
+        # 스크립트 자리에도 리터럴 그대로 (팽창하면 ["ko", …] 가 들어온다).
+        assert json.loads(_config_literal(body, "room_name")) == hostile_name
+
+    async def test_room_name_ampersand_is_not_double_escaped(self):
+        """AC 4 — `A홀 & B홀` 이 대기 화면에 `A홀 &amp; B홀` 로 보이지 않는다.
+
+        스크립트 리터럴을 HTML 이스케이프하면 `textContent` 가 엔티티를
+        디코드하지 않아 그대로 노출된다 (뷰어의 이중 이스케이프).
+        """
+        name = "A홀 & B홀"
+        repo = _StubRoomRepo({"room-1": _room(name=name)})
+        status, body, _ = await _get(repo, "/view/room-1")
+        assert status == 200
+        assert json.loads(_config_literal(body, "room_name")) == name
+        # 마크업 자리는 반대로 여전히 HTML 이스케이프되어야 한다 (sink 별 이스케이퍼).
+        assert "<title>A홀 &amp; B홀 — 자막 뷰어</title>" in body
+
+    async def test_room_name_script_tag_stays_escaped_in_markup(self):
+        """AC 5 — 마크업 경로 회귀 가드: `&lt;script&gt;` 가 유지된다."""
+        repo = _StubRoomRepo({"room-1": _room(name="<script>alert(1)</script>")})
+        status, body, _ = await _get(repo, "/view/room-1")
+        assert status == 200
+        assert "&lt;script&gt;" in body
+        assert "<script>alert(1)</script>" not in body
+        # 스크립트 자리는 \uXXXX 로 이스케이프되고 값은 손실 없이 복원된다.
+        literal = _config_literal(body, "room_name")
+        assert "\\u003cscript\\u003e" in literal
+        assert json.loads(literal) == "<script>alert(1)</script>"
+
+    async def test_room_name_cannot_close_script_block(self):
+        """AC 5 (RL-016) — `</script>` 페이로드가 인라인 블록을 조기 종료 못 한다.
+
+        `_json_for_script` 대신 맨 `json.dumps` 를 쓰면 이 테스트가 실패한다
+        (`</script>` 가 그대로 나가 블록이 하나 더 닫힌다).
+        """
+        repo = _StubRoomRepo({"room-1": _room(name=_BREAKOUT_NAME)})
+        status, body, _ = await _get(repo, "/view/room-1")
+        assert status == 200
+        assert "</script><script>" not in body
+        assert _BREAKOUT_NAME not in body
+        template = _VIEWER_TEMPLATE.read_text(encoding="utf-8")
+        assert body.count("</script>") == template.count("</script>")
+        # 이스케이프된 형태로는 살아 있다 (데이터 손실 없음).
+        assert json.loads(_config_literal(body, "room_name")) == _BREAKOUT_NAME
+
+    @pytest.mark.parametrize("key", ["primary_lang", "initial_state"])
+    async def test_hostile_lang_and_state_scalars_round_trip(self, key):
+        """`primary_lang` / `initial_state` 도 같은 보증을 받는다.
+
+        두 값 모두 `html.escape` 되고 있었다 — room_id 와 완전히 같은 결함이다.
+        DB 가 오염되면 이 스칼라만으로도 부트스트랩이 죽는다.
+        """
+        hostile = 'q"b\\'
+        overrides = {
+            "primary_lang": {"primary_output_lang": hostile},
+            "initial_state": {"status": hostile},
+        }[key]
+        repo = _StubRoomRepo({"room-1": _room(**overrides)})
+        status, body, _ = await _get(repo, "/view/room-1")
+        assert status == 200
+        assert json.loads(_config_literal(body, key)) == hostile
+
+    async def test_benign_room_still_bootstraps_expected_values(self):
+        """대조군 — 정상 룸의 값이 그대로 유지된다 (회귀 방지)."""
+        repo = _StubRoomRepo({"room-1": _room(status="waiting")})
+        status, body, _ = await _get(repo, "/view/room-1")
+        assert status == 200
+        assert json.loads(_config_literal(body, "room_id")) == "room-1"
+        assert json.loads(_config_literal(body, "room_name")) == "Conference Hall A"
+        assert json.loads(_config_literal(body, "primary_lang")) == "ko"
+        assert json.loads(_config_literal(body, "initial_state")) == "waiting"
+
+
+class TestViewerRenderStructure:
+    """AC 6 — 치환 구조 자체를 단언한다 (값이 아니라 성질).
+
+    "지금 값이 우연히 안전하다" 와 "구조적으로 안전하다" 를 구분하는 층이다.
+    """
+
+    @pytest.fixture
+    def viewer_html(self) -> str:
+        assert _VIEWER_TEMPLATE.exists(), f"viewer.html missing: {_VIEWER_TEMPLATE}"
+        return _VIEWER_TEMPLATE.read_text(encoding="utf-8")
+
+    def test_template_script_block_supplies_no_quotes_of_its_own(self, viewer_html):
+        """`_json_for_script` 가 따옴표까지 만든다 — 템플릿이 감싸면 안 된다."""
+        block = _script_block(viewer_html)
+        for key in (
+            "ROOM_ID",
+            "ROOM_NAME_JSON",
+            "OUTPUT_LANGS_JSON",
+            "PRIMARY_LANG",
+            "INITIAL_STATE",
+        ):
+            placeholder = "{{" + key + "}}"
+            assert placeholder in block, f"{key} missing from the bootstrap"
+            assert '"' + placeholder + '"' not in block, f"{key} still quoted"
+
+    def test_markup_room_name_placeholder_is_distinct_from_the_script_one(
+        self, viewer_html
+    ):
+        """마크업 자리는 `{{ROOM_NAME}}`, 스크립트 자리는 `{{ROOM_NAME_JSON}}`.
+
+        한 이름으로 합치면 두 sink 중 한쪽은 반드시 깨진다 (RL-020).
+        """
+        block = _script_block(viewer_html)
+        assert "{{ROOM_NAME}}" not in block
+        markup = viewer_html.replace(block, "")
+        assert markup.count("{{ROOM_NAME}}") == 2  # <title> + #room-name
+        assert "{{ROOM_NAME_JSON}}" not in markup
+
+    def test_every_template_placeholder_is_mapped(self):
+        """매핑이 템플릿의 모든 플레이스홀더를 덮는다.
+
+        엄격 치환(미매핑 키 → KeyError)의 대가로 필요한 테스트다. 렌더가
+        raise 하면 `_handle_view` 의 except 가 청중에게 404 를 준다.
+        """
+        from sse_broadcast import (
+            _PLACEHOLDER_RE,
+            _VIEWER_TEMPLATE_PATH,
+            _render_viewer_html,
+        )
+
+        template = _VIEWER_TEMPLATE_PATH.read_text(encoding="utf-8")
+        keys = set(_PLACEHOLDER_RE.findall(template))
+        assert keys, "template has no placeholders — regex or template drifted"
+        body = _render_viewer_html(
+            room_id="r",
+            room_name="n",
+            output_langs=["ko"],
+            primary_lang="ko",
+            initial_state="waiting",
+        )
+        left = _PLACEHOLDER_RE.findall(body)
+        assert left == [], f"unsubstituted placeholders: {left}"
+
+    def test_unmapped_placeholder_fails_loudly(self, tmp_path, monkeypatch):
+        """오타 난 플레이스홀더가 페이지로 새어 나가지 않는다 — KeyError 로 죽는다."""
+        import sse_broadcast as _sb
+
+        bogus = tmp_path / "viewer.html"
+        bogus.write_text("<p>{{NOPE}}</p>", encoding="utf-8")
+        monkeypatch.setattr(_sb, "_VIEWER_TEMPLATE_PATH", bogus)
+        with pytest.raises(KeyError):
+            _sb._render_viewer_html(
+                room_id="r",
+                room_name="n",
+                output_langs=["ko"],
+                primary_lang="ko",
+                initial_state="waiting",
+            )
+
+    async def test_every_script_value_is_a_json_for_script_literal(self):
+        """스크립트로 들어가는 값은 **전부** `_json_for_script` 출력과 바이트 일치.
+
+        "이스케이프됐다" 가 아니라 "그 헬퍼를 통과했다" 를 단언한다 — 두 번째
+        이스케이퍼가 생기면 이 테스트가 잡는다.
+        """
+        from sse_broadcast import _json_for_script, _supported_output_langs
+
+        hostile = 'a"b\\<&> '
+        repo = _StubRoomRepo(
+            {
+                hostile: _room(
+                    id=hostile,
+                    name=hostile,
+                    primary_output_lang=hostile,
+                    status=hostile,
+                )
+            }
+        )
+        status, body, _ = await _get(repo, "/view/" + quote(hostile, safe=""))
+        assert status == 200
+        expected = {
+            "room_id": _json_for_script(hostile),
+            "room_name": _json_for_script(hostile),
+            "primary_lang": _json_for_script(hostile),
+            "initial_state": _json_for_script(hostile),
+            "output_langs": _json_for_script(_supported_output_langs(hostile)),
+        }
+        actual = {key: _config_literal(body, key) for key in expected}
+        assert actual == expected
+
+    def test_substitution_is_single_pass_re_sub(self):
+        """구현 형태 자체를 단언한다 — 연쇄 `.replace` 로 되돌아가지 못한다."""
+        import inspect
+
+        from sse_broadcast import _render_viewer_html
+
+        source = inspect.getsource(_render_viewer_html)
+        body = source.split('"""')[-1]  # docstring 의 서술은 제외
+        assert "_PLACEHOLDER_RE.sub(" in body
+        assert "lambda" in body
+        assert ".replace(" not in body

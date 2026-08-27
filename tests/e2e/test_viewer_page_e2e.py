@@ -36,6 +36,14 @@ if "extra_streamlit_components" not in sys.modules:
 pytestmark = pytest.mark.e2e
 
 
+# ISSUE-44 — 따옴표 + 끝 백슬래시. `html.escape` 는 `\` 를 건드리지 않으므로
+# 그대로 JS 문자열 리터럴에 넣으면 닫는 따옴표가 탈출되어 부트스트랩이 죽는다.
+_HOSTILE_ROOM_ID = 'q"b\\'
+# `&` 는 `html.escape` 로 `&amp;` 가 되는데 `textContent` 는 엔티티를 디코드하지
+# 않는다 — 스크립트 컨텍스트에 마크업 이스케이퍼를 쓴 대가 (이중 이스케이프).
+_AMPERSAND_NAME = "A홀 & B홀"
+
+
 # ---------------------------------------------------------------------------
 # Stub repo + aiohttp server fixture
 # ---------------------------------------------------------------------------
@@ -77,6 +85,14 @@ def viewer_server():
             "status": "closed",
             "primary_output_lang": "ko",
             "output_langs": '["ko"]',
+        },
+        # ISSUE-44 — 따옴표 + 끝 백슬래시 id, 앰퍼샌드 이름.
+        _HOSTILE_ROOM_ID: {
+            "id": _HOSTILE_ROOM_ID,
+            "name": _AMPERSAND_NAME,
+            "status": "waiting",
+            "primary_output_lang": "ko",
+            "output_langs": '["ko","en"]',
         },
     }
     repo = _StubRoomRepo(rows)
@@ -159,3 +175,51 @@ class TestViewerPageInBrowser:
 
         body_text = page.locator("body").inner_text()
         assert "세션이 종료되었습니다" in body_text
+
+    def test_backslash_room_id_does_not_kill_the_bootstrap(self, page, viewer_server):
+        """ISSUE-44 AC 2 — `\\` 로 끝나는 room_id 가 JS 리터럴을 탈출하지 않는다.
+
+        `html.escape` 는 백슬래시를 건드리지 않으므로 그대로 쓰면 스크립트
+        블록 전체가 SyntaxError 로 죽는다 — 언어 셀렉터도 상태 전환도 함께
+        사라진다. 값 손상(`"` → `&quot;`)까지 브라우저에서 확인한다.
+        """
+        errors: list[str] = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+
+        resp = page.goto(f"{viewer_server}/view/q%22b%5C", wait_until="load")
+        assert resp is not None and resp.status == 200
+        assert errors == [], f"bootstrap raised JS errors: {errors}"
+
+        # 1) 부트스트랩이 살아 있고 값이 손상되지 않았다.
+        assert page.evaluate("typeof CONFIG !== 'undefined'") is True
+        assert page.evaluate("CONFIG.room_id") == _HOSTILE_ROOM_ID
+
+        # 2) 언어 셀렉터가 CONFIG 로부터 실제로 채워졌다 (죽으면 0개).
+        options = page.eval_on_selector_all(
+            "#lang-select option", "els => els.map(el => el.value)"
+        )
+        assert options == page.evaluate("CONFIG.output_langs")
+        assert len(options) >= 2
+
+        # 3) 상태 전환이 동작한다 — 부트스트랩이 waiting 을 활성화했고,
+        #    setState 가 전역에 살아 있어 ended 로 넘어간다.
+        assert page.locator("#state-waiting").is_visible() is True
+        page.evaluate("setState('ended')")
+        assert page.locator("#state-ended").is_visible() is True
+        assert page.locator("#state-waiting").is_visible() is False
+
+    def test_ampersand_room_name_is_not_double_escaped(self, page, viewer_server):
+        """ISSUE-44 AC 4 — `A홀 & B홀` 이 `A홀 &amp; B홀` 로 보이지 않는다.
+
+        `#room-name` 은 서버 렌더 마크업(엔티티 디코드됨), `#waiting-room` 은
+        `CONFIG.room_name` 을 `textContent` 로 쓴 결과(디코드 안 됨)다. 두 노드가
+        같은 문자열이어야 sink 별 이스케이퍼가 올바르게 골라진 것이다.
+        """
+        errors: list[str] = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+
+        page.goto(f"{viewer_server}/view/q%22b%5C", wait_until="load")
+        assert errors == [], f"bootstrap raised JS errors: {errors}"
+
+        assert page.locator("#room-name").inner_text().strip() == _AMPERSAND_NAME
+        assert page.locator("#waiting-room").inner_text().strip() == _AMPERSAND_NAME

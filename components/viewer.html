@@ -315,11 +315,11 @@
     // Bootstrap config — server injects via template substitution.
     // ---------------------------------------------------------------------
     const CONFIG = {
-      room_id: "{{ROOM_ID}}",
-      room_name: "{{ROOM_NAME}}",
+      room_id: {{ROOM_ID}},
+      room_name: {{ROOM_NAME_JSON}},
       output_langs: {{OUTPUT_LANGS_JSON}},
-      primary_lang: "{{PRIMARY_LANG}}",
-      initial_state: "{{INITIAL_STATE}}", // 'waiting' | 'active' | 'closed'
+      primary_lang: {{PRIMARY_LANG}},
+      initial_state: {{INITIAL_STATE}}, // 'waiting' | 'active' | 'closed'
     };
 
     // ---------------------------------------------------------------------

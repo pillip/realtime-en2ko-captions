@@ -367,6 +367,10 @@ def _json_for_script(obj: Any) -> str:
     )
 
 
+# \ubdf0\uc5b4/\ubb34\ub300 \ub450 \ub80c\ub354\ub7ec\uac00 \uacf5\uc720\ud558\ub294 \ub2e8\uc77c \ud328\uc2a4 \uce58\ud658 \ud328\ud134 (RL-021).
+_PLACEHOLDER_RE = re.compile(r"\{\{(\w+)\}\}")
+
+
 def _render_viewer_html(
     *,
     room_id: str,
@@ -377,26 +381,36 @@ def _render_viewer_html(
 ) -> str:
     """Render the viewer template with safe substitutions.
 
-    Text fields (room_id/room_name/primary_lang/initial_state) are HTML-
-    escaped so a malicious room name (DB write, not user-facing) cannot
-    inject markup. The output_langs list is rendered as a JSON literal via
-    :func:`_json_for_script` — the list carries the room's
-    ``primary_output_lang``, so it is not a closed token set (RL-016).
+    Same rules as :func:`_render_stage_html` (ISSUE-44 — parity). The escaper
+    is picked by **sink**, not by "is this user input" (RL-020): the room name
+    reaches markup as ``{{ROOM_NAME}}`` and is HTML-escaped, while everything
+    inside the inline ``<script>`` — the room name included, under the separate
+    ``{{ROOM_NAME_JSON}}`` name — is emitted by :func:`_json_for_script` as a
+    complete JS literal, so the template supplies no quotes of its own. A
+    ``<script>`` is raw text: HTML entities never decode there, so ``html.escape``
+    silently corrupts the value (``a"b`` → ``a&quot;b``, which then builds the
+    ``/stream/{room_id}`` URL) and leaves ``\\`` untouched, letting a trailing
+    backslash escape the closing quote and kill the whole bootstrap.
+
+    Substitution is single-pass. Chained ``str.replace`` lets a value written
+    by an earlier step be re-read by a later one, so a room named
+    ``{{OUTPUT_LANGS_JSON}}`` would render the language list into the
+    ``<title>`` (RL-021). The lambda replacement also keeps ``re.sub`` from
+    interpreting backslashes and backreferences in the substituted values, and
+    indexing ``values`` (rather than ``.get``) makes a mistyped placeholder
+    fail loudly instead of leaking to the page.
     """
     template = _VIEWER_TEMPLATE_PATH.read_text(encoding="utf-8")
-    safe_room_id = html.escape(room_id, quote=True)
-    safe_room_name = html.escape(room_name or room_id, quote=True)
-    safe_primary = html.escape(primary_lang or "ko", quote=True)
-    safe_initial = html.escape(initial_state, quote=True)
-    langs_json = _json_for_script(output_langs)
-
-    return (
-        template.replace("{{ROOM_ID}}", safe_room_id)
-        .replace("{{ROOM_NAME}}", safe_room_name)
-        .replace("{{OUTPUT_LANGS_JSON}}", langs_json)
-        .replace("{{PRIMARY_LANG}}", safe_primary)
-        .replace("{{INITIAL_STATE}}", safe_initial)
-    )
+    name = room_name or room_id
+    values = {
+        "ROOM_NAME": html.escape(name, quote=True),
+        "ROOM_NAME_JSON": _json_for_script(name),
+        "ROOM_ID": _json_for_script(room_id),
+        "OUTPUT_LANGS_JSON": _json_for_script(output_langs),
+        "PRIMARY_LANG": _json_for_script(primary_lang or "ko"),
+        "INITIAL_STATE": _json_for_script(initial_state),
+    }
+    return _PLACEHOLDER_RE.sub(lambda m: values[m.group(1)], template)
 
 
 async def _handle_view(request: web.Request) -> web.Response:
@@ -456,8 +470,6 @@ _STAGE_TEMPLATE_PATH = Path(__file__).resolve().parent / "components" / "stage.h
 # 있으면 렌더 결과로 설정을 구분할 수 없다.
 _CAPTION_WIDTHS = {"1/4": "25%", "1/3": "33.333%"}
 _DEFAULT_CAPTION_WIDTH = _CAPTION_WIDTHS["1/4"]
-
-_PLACEHOLDER_RE = re.compile(r"\{\{(\w+)\}\}")
 
 
 def _render_stage_html(
