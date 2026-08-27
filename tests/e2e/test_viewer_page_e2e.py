@@ -561,3 +561,235 @@ class TestViewerCaptionStream:
         assert state["lines"] == 0, cleared
         assert state["placeholders"] == 1, cleared
         assert state["text"] == "Starting shortly", cleared
+
+
+# ---------------------------------------------------------------------------
+# 자막 라이브 리전 (ISSUE-45 / ISSUE-41 FU-3)
+# ---------------------------------------------------------------------------
+_ANNOUNCER = "() => document.getElementById('caption-announcer').textContent"
+
+# 라이브 리전이 실제로 **몇 번** 쓰였는지 기록한다. "확정 텍스트와 일치한다" 만
+# 보면 28ms 틱마다 갱신하는 구현도 마지막 값이 같아서 통과한다 (RL-004).
+_RECORD_ANNOUNCEMENTS = """
+(final) => {
+  const el = document.getElementById("caption-announcer");
+  window.__annSamples = [];
+  window.__midSample = null;
+  new MutationObserver(() => {
+    const text = el.textContent;
+    const seen = window.__annSamples;
+    if (seen.length === 0 || seen[seen.length - 1] !== text) seen.push(text);
+  }).observe(el, {childList: true, characterData: true, subtree: true});
+  // 공개 도중 한 번 샘플: .caption-line 이 final 보다 **짧은** 순간.
+  const iv = setInterval(() => {
+    const line = document.querySelector(".caption-line:last-child");
+    if (line === null || window.__midSample !== null) return;
+    const shown = line.textContent;
+    if (shown.length > 0 && shown.length < final.length) {
+      window.__midSample = el.textContent;
+      clearInterval(iv);
+    }
+  }, 8);
+}
+"""
+
+
+class TestViewerLiveRegion:
+    """RL-019 (행동) — 라이브 리전은 **확정된 줄에서만** 갱신된다.
+
+    정적 테스트는 속성의 위치만 본다. 여기서는 실제 브라우저에서 partial 이
+    흐르는 동안 announcer 가 조용한지, 애니메이션 노드가 런타임 DOM 에서도
+    `aria-hidden` 인지, 그리고 `aria-hidden` 안에 갇힌 대기 문구가 그래도
+    스크린리더에 닿는지를 **값으로** 검증한다.
+
+    무대 쪽 대응은 `tests/e2e/test_stage_page_e2e.py`
+    `test_only_finalised_lines_reach_the_live_region` /
+    `test_waiting_state_is_announced_to_screen_readers`.
+    """
+
+    def test_only_finalised_lines_reach_the_live_region(self, page, viewer_server):
+        """partial 3건 + final 1건 — announcer 는 확정 텍스트와 정확히 일치한다.
+
+        공개 도중 샘플한 값이 final 이 아니고, 이 라인에 대해 라이브 리전이
+        **정확히 한 번** 쓰였음을 함께 단언한다. 28ms 틱마다 쓰는 구현은 마지막
+        값이 같아 최종 일치 단언만으로는 통과해 버린다.
+        """
+        _fake_eventsource(page)
+        page.goto(f"{viewer_server}/view/active-room", wait_until="load")
+
+        final = "오늘 발표를 시작하겠습니다. 자막은 실시간으로 이어집니다."
+        for partial in ("오늘", "오늘 발표를", "오늘 발표를 시작"):
+            _emit_message(page, partial, partial=True)
+        page.wait_for_timeout(300)
+
+        during = page.evaluate(_ANNOUNCER)
+        leaked = (
+            f"#caption-announcer holds {during!r} while only partials have "
+            "arrived — the live region must not carry unfinalised text"
+        )
+        assert during != final, leaked
+        # active 로 전환되며 announcer 가 대기 문구를 들고 있는 상태다 (UI-7).
+        assert during == "잠시 후 시작됩니다", leaked
+
+        page.evaluate(_RECORD_ANNOUNCEMENTS, final)
+        _emit_message(page, final)
+        _settle(
+            page,
+            f"""() => {{
+              const el = document.getElementById("caption-announcer");
+              return el !== null && el.textContent === {json.dumps(final)};
+            }}""",
+        )
+
+        result = page.evaluate(
+            """() => {
+              const box = document.getElementById("captionContainer");
+              return {
+                announced: document.getElementById("caption-announcer").textContent,
+                samples: window.__annSamples,
+                mid: window.__midSample,
+                hidden: box.getAttribute("aria-hidden"),
+                live: box.getAttribute("aria-live"),
+              };
+            }"""
+        )
+
+        exact = f"announcer reads {result['announced']!r}, want {final!r}"
+        assert result["announced"] == final, exact
+
+        ticked = (
+            f"the live region took {result['samples']!r} for one line — a "
+            "finalised line must be written exactly once (RL-019: writing from "
+            "the 28ms interval callback floods the screen reader)"
+        )
+        assert result["samples"] == [final], ticked
+
+        sampled = (
+            f"mid-reveal the announcer already read {result['mid']!r} — the "
+            "final text must not appear until the line is locked"
+        )
+        assert result["mid"] is not None, "no mid-reveal sample was captured"
+        assert result["mid"] != final, sampled
+        assert result["mid"] == "잠시 후 시작됩니다", sampled
+
+        exposed = (
+            f"#captionContainer aria-hidden is {result['hidden']!r} — the "
+            "per-tick typewriter node must not be exposed"
+        )
+        assert result["hidden"] == "true", exposed
+        flooded = (
+            f"#captionContainer still carries aria-live={result['live']!r}; every "
+            "reveal tick would be announced (RL-019)"
+        )
+        assert result["live"] is None, flooded
+
+    def test_the_active_waiting_copy_reaches_the_live_region(self, page, viewer_server):
+        """AC — active 인데 `#caption-empty` 만 보이는 상태도 낭독되어야 한다.
+
+        빈 final 은 `finalizeCaption("")` 에서 조기 반환하므로 페이지는 active
+        인데 대기 문구만 남는다. 그 문구는 `aria-hidden` 컨테이너 **안**이라
+        그대로 두면 무음이다 — 무대 페이지가 빠졌던 함정(UI-7)이다.
+        """
+        _fake_eventsource(page)
+        page.goto(f"{viewer_server}/view/active-room", wait_until="load")
+
+        _emit_message(page, "")
+        page.wait_for_timeout(200)
+
+        state = page.evaluate(
+            """() => ({
+              active: document
+                .getElementById("state-active")
+                .classList.contains("active"),
+              lines: document.querySelectorAll(".caption-line").length,
+              visible: document.getElementById("caption-empty").textContent,
+              announced: document.getElementById("caption-announcer").textContent,
+              hidden: document
+                .getElementById("captionContainer")
+                .getAttribute("aria-hidden"),
+            })"""
+        )
+        silent = (
+            "the waiting copy is inside an aria-hidden subtree and the announcer "
+            f"is empty — screen readers get silence in the active state: {state}"
+        )
+        assert state["active"] is True, state
+        assert state["lines"] == 0, state
+        assert state["hidden"] == "true", state
+        assert state["visible"] == "잠시 후 시작됩니다", state
+        assert state["announced"] == "잠시 후 시작됩니다", silent
+
+    def test_language_switch_announces_the_new_waiting_copy(self, page, viewer_server):
+        """`clearCaptions()` 가 대기 문구를 재생성한 뒤 **새 언어** 문구가 들린다.
+
+        핸들러 순서가 함정이다: `clearCaptions()`(아직 옛 `currentLang`) →
+        `connect(next)`(여기서 `currentLang` 이 바뀐다) → `applyWaitingText(next)`.
+        announcer 는 최종적으로 새 언어의 문구를 들고 있어야 한다.
+        """
+        _fake_eventsource(page)
+        page.goto(f"{viewer_server}/view/active-room", wait_until="load")
+
+        page.evaluate(
+            """() => {
+              for (const t of ["첫 줄", "둘째 줄", "셋째 줄"]) {
+                window.__emit("message", JSON.stringify({text: t}));
+              }
+            }"""
+        )
+        _settle(page, "() => document.querySelectorAll('.caption-line').length >= 1")
+        seeded = "no captions were rendered — the switch assertion would be vacuous"
+        assert len(_lines(page)) >= 1, seeded
+
+        page.select_option("#lang-select", "en")
+        page.wait_for_timeout(200)
+
+        state = page.evaluate(
+            """() => ({
+              visible: document.getElementById("caption-empty").textContent,
+              announced: document.getElementById("caption-announcer").textContent,
+              lines: document.querySelectorAll(".caption-line").length,
+            })"""
+        )
+        stale = (
+            "after the language switch the announcer holds "
+            f"{state['announced']!r} — it must carry the NEW language's waiting "
+            f"copy, matching what is on screen: {state}"
+        )
+        assert state["lines"] == 0, state
+        assert state["visible"] == "Starting shortly", state
+        assert state["announced"] == "Starting shortly", stale
+
+    def test_session_end_leaves_the_announcer_silent(self, page, viewer_server):
+        """AC — 종료 문구를 announcer 가 되풀이하지 않는다 (이중 낭독 금지).
+
+        `#state-ended` 가 이미 `aria-live="polite"` 로 직접 알린다.
+        """
+        _fake_eventsource(page)
+        page.goto(f"{viewer_server}/view/active-room", wait_until="load")
+
+        _emit_message(page, "마지막 자막입니다")
+        _settle(
+            page,
+            """() => document.getElementById("caption-announcer").textContent
+                     === "마지막 자막입니다";""",
+        )
+        assert page.evaluate(_ANNOUNCER) == "마지막 자막입니다"
+
+        page.evaluate("() => window.__emit('session_end', '')")
+        page.wait_for_timeout(200)
+
+        state = page.evaluate(
+            """() => ({
+              announced: document.getElementById("caption-announcer").textContent,
+              ended: document
+                .getElementById("state-ended")
+                .classList.contains("active"),
+            })"""
+        )
+        doubled = (
+            f"the announcer reads {state['announced']!r} after session_end — "
+            "#state-ended announces the ended copy itself, so anything left "
+            "here is a second read of the same information"
+        )
+        assert state["ended"] is True, state
+        assert state["announced"] == "", doubled
