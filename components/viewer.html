@@ -426,12 +426,20 @@
     let twFinalize = false; // lock the line once we catch up?
     let twTimer = null;
 
+    function _scrollToBottom() {
+      requestAnimationFrame(() => {
+        viewer.scrollTop = viewer.scrollHeight;
+      });
+    }
+
+    // 추종 여부는 **DOM 을 건드리기 전에** 재야 한다. 글자를 먼저 쓰고 나서
+    // isUserAtBottom() 을 물으면 방금 늘어난 높이가 그대로 gap 으로 잡혀 slack
+    // (80px)을 넘기고, 청중이 스크롤한 적도 없는데 크레딧 롤이 영구히 멈춘다 —
+    // 그 뒤 자막은 전부 화면 아래로 흘러 다시 보이지 않는다. gap 은 자막이
+    // 쌓일수록 커지기만 하므로 되돌릴 계기가 없다: 한 번 꺼지면 끝이다
+    // (CLAUDE.md § UI Behavior Requirements).
     function _scrollIfBottom() {
-      if (isUserAtBottom()) {
-        requestAnimationFrame(() => {
-          viewer.scrollTop = viewer.scrollHeight;
-        });
-      }
+      if (isUserAtBottom()) _scrollToBottom();
     }
 
     function _twStop() {
@@ -447,10 +455,14 @@
     // 하므로 stage 의 `_scrollToBottom()` 대신 `_scrollIfBottom()` 을 쓴다.
     function _lockLine() {
       if (!currentLine) return;
+      // 확정은 남은 글자를 **한 번에** 써넣는다(연속 final 의 스냅). 높이가 크게
+      // 뛰므로 쓰기 전에 추종 여부를 확정해 둔다 — 쓴 뒤에 재면 방금 늘어난
+      // 높이 때문에 "청중이 위로 스크롤했다" 로 오판한다.
+      const follow = isUserAtBottom();
       currentLine.textContent = twTarget;
       currentLine = null;
       _twStop();
-      _scrollIfBottom();
+      if (follow) _scrollToBottom();
     }
 
     function _twStart() {
@@ -471,10 +483,14 @@
         }
         const gap = twTarget.length - twShown;
         if (gap > 0) {
+          // `_lockLine()` 과 같은 이유로 쓰기 전에 잰다. step 은 gap/6 이라 긴
+          // 자막에서는 한 틱에 수십~수백 자가 들어가고, 그만큼의 높이 증가가
+          // 그대로 gap 으로 잡혀 slack 을 넘길 수 있다.
+          const follow = isUserAtBottom();
           const step = Math.max(2, Math.ceil(gap / 6));
           twShown = Math.min(twTarget.length, twShown + step);
           currentLine.textContent = twTarget.slice(0, twShown);
-          _scrollIfBottom();
+          if (follow) _scrollToBottom();
         }
         if (twShown >= twTarget.length) {
           // 확정 경로는 `_lockLine()` 하나뿐이다 (stage.html 과 동일).

@@ -41,6 +41,7 @@ _VIEWER_TEMPLATE = Path(__file__).resolve().parent.parent / "components" / "view
 # 함수는 4칸 들여쓰기로 닫힌다.
 _FINALIZE_BODY = r"function finalizeCaption\(text\) \{(.*?)\n    \}"
 _LOCK_LINE_BODY = r"function _lockLine\(\) \{(.*?)\n    \}"
+_TW_START_BODY = r"function _twStart\(\) \{(.*?)\n    \}"
 
 
 @pytest.fixture
@@ -730,6 +731,56 @@ class TestViewerCaptionPipeline:
         # 확정은 라인을 닫고 타이머를 멈추는 것까지가 한 단위다.
         assert "currentLine = null;" in code, code
         assert "_twStop();" in code, code
+
+    def test_lock_line_measures_follow_before_it_writes(self, viewer_html):
+        """결함 1 후속 — 확정 스냅이 크레딧 롤 추종을 영구히 꺼뜨리면 안 된다.
+
+        `isUserAtBottom()` 은 `scrollHeight - scrollTop - clientHeight <= 80` 이다.
+        `_lockLine()` 은 남은 글자를 한 번에 써넣으므로(연속 final 스냅) 높이가
+        80px 이상 뛸 수 있는데, **쓴 뒤에** 재면 방금 늘어난 그 높이가 그대로
+        gap 으로 잡혀 "청중이 위로 스크롤했다" 로 오판한다. gap 은 자막이
+        쌓일수록 커지기만 하므로 되돌릴 계기가 없다 — 한 번 꺼지면 그 뒤 자막은
+        전부 화면 아래로 흘러 다시 보이지 않는다.
+
+        따라서 측정은 반드시 첫 DOM 쓰기보다 앞서야 한다. 존재 여부가 아니라
+        **순서**를 못 박는다 (RL-004).
+        """
+        code = _js_body(viewer_html, _LOCK_LINE_BODY)
+        measured = code.find("isUserAtBottom()")
+        written = code.find("currentLine.textContent")
+        assert measured != -1, f"_lockLine must measure follow state: {code!r}"
+        assert written != -1, f"_lockLine must write the target: {code!r}"
+        stale = (
+            "_lockLine must call isUserAtBottom() BEFORE writing textContent — "
+            "measuring after the write latches the credit roll off permanently "
+            f"on the back-to-back-final snap: {code!r}"
+        )
+        assert measured < written, stale
+        # 잰 값을 실제로 쓰는지까지 확인한다. 재고 나서 _scrollIfBottom() 을
+        # 부르면 다시 재는 것이라 수정이 무의미해진다.
+        gated = f"_lockLine must scroll on the pre-measured flag: {code!r}"
+        assert "if (follow) _scrollToBottom();" in code, gated
+        assert "_scrollIfBottom()" not in code, gated
+
+    def test_typewriter_step_measures_follow_before_it_writes(self, viewer_html):
+        """결함 1 후속 — 타자기 스텝도 같은 순서 규칙을 지킨다.
+
+        step 은 `Math.max(2, Math.ceil(gap / 6))` 이라 긴 자막에서는 한 틱에
+        수십~수백 자가 들어간다. `_lockLine()` 만 고치고 여기를 두면 같은 방식으로
+        추종이 꺼진다.
+        """
+        code = _js_body(viewer_html, _TW_START_BODY)
+        measured = code.find("isUserAtBottom()")
+        written = code.find("currentLine.textContent = twTarget.slice(")
+        assert measured != -1, f"_twStart must measure follow state: {code!r}"
+        assert written != -1, f"_twStart must write a slice: {code!r}"
+        stale = (
+            "the typewriter step must call isUserAtBottom() BEFORE writing the "
+            f"slice, for the same reason as _lockLine: {code!r}"
+        )
+        assert measured < written, stale
+        gated = f"the step must scroll on the pre-measured flag: {code!r}"
+        assert "if (follow) _scrollToBottom();" in code, gated
 
     def test_a_shrinking_target_repaints_inside_the_clamp(self, viewer_html):
         """결함 3 — 목표가 줄면 클램프만 하지 않고 화면을 즉시 다시 그린다.
