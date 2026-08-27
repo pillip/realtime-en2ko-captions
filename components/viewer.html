@@ -360,7 +360,9 @@
       if (CONFIG.primary_lang && !langs.includes(CONFIG.primary_lang)) {
         langs.unshift(CONFIG.primary_lang);
       }
-      langSelect.innerHTML = "";
+      // stage.html 과 동일 규칙: 이 파일에는 마크업 문자열을 파싱하는 sink 를
+      // 두지 않는다 — DOM 은 createElement + textContent 로만 만든다.
+      langSelect.replaceChildren();
       for (const code of langs) {
         const opt = document.createElement("option");
         opt.value = code;
@@ -424,12 +426,20 @@
     let twFinalize = false; // lock the line once we catch up?
     let twTimer = null;
 
+    function _scrollToBottom() {
+      requestAnimationFrame(() => {
+        viewer.scrollTop = viewer.scrollHeight;
+      });
+    }
+
+    // 추종 여부는 **DOM 을 건드리기 전에** 재야 한다. 글자를 먼저 쓰고 나서
+    // isUserAtBottom() 을 물으면 방금 늘어난 높이가 그대로 gap 으로 잡혀 slack
+    // (80px)을 넘기고, 청중이 스크롤한 적도 없는데 크레딧 롤이 영구히 멈춘다 —
+    // 그 뒤 자막은 전부 화면 아래로 흘러 다시 보이지 않는다. gap 은 자막이
+    // 쌓일수록 커지기만 하므로 되돌릴 계기가 없다: 한 번 꺼지면 끝이다
+    // (CLAUDE.md § UI Behavior Requirements).
     function _scrollIfBottom() {
-      if (isUserAtBottom()) {
-        requestAnimationFrame(() => {
-          viewer.scrollTop = viewer.scrollHeight;
-        });
-      }
+      if (isUserAtBottom()) _scrollToBottom();
     }
 
     function _twStop() {
@@ -439,27 +449,53 @@
       }
     }
 
+    // 라인 확정 — stage.html 의 `_lockLine()` 과 동일. slice 결과가 아니라 목표
+    // 텍스트 자체를 넣는다: 번역 후처리가 문자열을 **줄이는** 경우가 있어 마지막
+    // 슬라이스가 최종본이 아닐 수 있다. 뷰어는 사용자 스크롤 어포던스를 지켜야
+    // 하므로 stage 의 `_scrollToBottom()` 대신 `_scrollIfBottom()` 을 쓴다.
+    function _lockLine() {
+      if (!currentLine) return;
+      // 확정은 남은 글자를 **한 번에** 써넣는다(연속 final 의 스냅). 높이가 크게
+      // 뛰므로 쓰기 전에 추종 여부를 확정해 둔다 — 쓴 뒤에 재면 방금 늘어난
+      // 높이 때문에 "청중이 위로 스크롤했다" 로 오판한다.
+      const follow = isUserAtBottom();
+      currentLine.textContent = twTarget;
+      currentLine = null;
+      _twStop();
+      if (follow) _scrollToBottom();
+    }
+
     function _twStart() {
       if (twTimer || !currentLine) return;
+      // 28ms setInterval 은 의도적으로 유지한다 — stage 의 rAF 전환 근거는 캡처
+      // <video> 와의 프레임 경쟁(NFR-025)이고 뷰어에는 그 경쟁이 없다.
       twTimer = setInterval(() => {
         if (!currentLine) {
           _twStop();
           return;
         }
-        if (twShown > twTarget.length) twShown = twTarget.length;
+        // stage.html 의 `_twStep()` 과 동일: 목표가 줄어들면(번역 후처리가
+        // 문자열을 깎는 경우) 클램프만 해서는 gap 이 0 이 되어 아래 쓰기 분기를
+        // 건너뛰고 화면에 더 긴 옛 문자열이 잔상으로 남는다. 즉시 다시 그린다.
+        if (twShown > twTarget.length) {
+          twShown = twTarget.length;
+          currentLine.textContent = twTarget;
+        }
         const gap = twTarget.length - twShown;
         if (gap > 0) {
+          // `_lockLine()` 과 같은 이유로 쓰기 전에 잰다. step 은 gap/6 이라 긴
+          // 자막에서는 한 틱에 수십~수백 자가 들어가고, 그만큼의 높이 증가가
+          // 그대로 gap 으로 잡혀 slack 을 넘길 수 있다.
+          const follow = isUserAtBottom();
           const step = Math.max(2, Math.ceil(gap / 6));
           twShown = Math.min(twTarget.length, twShown + step);
           currentLine.textContent = twTarget.slice(0, twShown);
-          _scrollIfBottom();
+          if (follow) _scrollToBottom();
         }
         if (twShown >= twTarget.length) {
+          // 확정 경로는 `_lockLine()` 하나뿐이다 (stage.html 과 동일).
           if (twFinalize) {
-            // Lock exact final text (handles LLM cleanup shrinking the string).
-            currentLine.textContent = twTarget;
-            currentLine = null;
-            _twStop();
+            _lockLine();
           } else {
             _twStop(); // caught up to a partial — idle until the next chunk
           }
@@ -474,8 +510,11 @@
       const div = document.createElement("div");
       div.className = "caption-line";
       captionContainer.appendChild(div);
+      // stage.html 과 동일하게 firstElementChild 로 지운다 — 상한은 요소 수로
+      // 세는데 첫 **노드**를 지우면 템플릿 들여쓰기가 남긴 공백 텍스트 노드부터
+      // 걷어낸다. 지금은 여분 반복이 자가 교정하지만 주석 하나만 들어와도 깨진다.
       while (captionContainer.children.length > MAX_LINES) {
-        captionContainer.removeChild(captionContainer.firstChild);
+        captionContainer.removeChild(captionContainer.firstElementChild);
       }
       currentLine = div;
       twTarget = "";
@@ -492,9 +531,25 @@
     }
 
     // Final message — reveal the rest, then lock (next chunk starts a new line).
+    // 본문 전체가 stage.html 의 `finalizeCaption()` 과 동일하다 (ISSUE-46 파리티).
     function finalizeCaption(text) {
+      // 앞 라인이 아직 확정 대기 중인데 다음 final 이 도착하면 즉시 스냅해
+      // 확정하고 새 라인을 연다 — 이 분기가 없으면 살아 있는 라인이 재사용되고
+      // 목표 텍스트만 덮여, SSE 가 몰아칠 때 앞 자막이 한 글자도 남기지 못한 채
+      // 사라진다.
+      if (currentLine && twFinalize) _lockLine();
+      // 빈 final 은 화면에 넣을 것이 없다. 진행 중인 라인이 있으면 그 라인을
+      // 확정하라는 신호로 쓰고, 없으면 그냥 무시한다. 그대로 통과시키면 아래
+      // 라인 생성 경로가 대기 문구(#caption-empty)를 지우고 빈 .caption-line 을
+      // 여는데, 빈 final 이 이어지면 컬럼이 되돌릴 수 없이 공백화된다
+      // (broadcast 경로에 비어있음 가드가 없다).
+      // 위 확정 분기가 currentLine 을 null 로 만들기 때문에 여기의 currentLine 은
+      // **확정 대기가 아닌 in-flight partial** 만 가리킨다 — 순서를 바꾸면 빈
+      // final 이 partial 을 확정하는 폴백이 사라진다.
+      const next = text || (currentLine ? twTarget : "");
+      if (!next) return;
       _ensureCurrentLine();
-      twTarget = text || twTarget || "";
+      twTarget = next;
       twFinalize = true;
       _twStart();
     }
@@ -502,7 +557,7 @@
     function clearCaptions() {
       _twStop();
       currentLine = null;
-      captionContainer.innerHTML = "";
+      captionContainer.replaceChildren();
       const empty = document.createElement("div");
       empty.id = "caption-empty";
       empty.className = "caption-empty";

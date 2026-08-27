@@ -11,6 +11,8 @@
 - 스크립트 컨텍스트 이스케이프 파리티 (ISSUE-44): `<script>` 로 들어가는 값은
   전부 `_json_for_script` 리터럴이고, 치환은 단일 패스라 어떤 값도 다른
   플레이스홀더를 팽창시키지 못한다 (RL-020 / RL-021).
+- 자막 파이프라인 정적 계약 (ISSUE-46): stage.html 과 동일한 확정/빈 final/
+  잔상/DOM sink 규칙.
 
 외부 네트워크 호출 없이 aiohttp TestClient 만 사용 (test_sse_broadcast.py 패턴).
 """
@@ -33,8 +35,34 @@ if "streamlit" not in sys.modules:
 if "extra_streamlit_components" not in sys.modules:
     sys.modules["extra_streamlit_components"] = MagicMock()
 
-
 _VIEWER_TEMPLATE = Path(__file__).resolve().parent.parent / "components" / "viewer.html"
+
+# 자막 파이프라인 함수 본문 추출 패턴 (ISSUE-46). 스크립트 블록 안의 최상위
+# 함수는 4칸 들여쓰기로 닫힌다.
+_FINALIZE_BODY = r"function finalizeCaption\(text\) \{(.*?)\n    \}"
+_LOCK_LINE_BODY = r"function _lockLine\(\) \{(.*?)\n    \}"
+_TW_START_BODY = r"function _twStart\(\) \{(.*?)\n    \}"
+
+
+@pytest.fixture
+def viewer_html() -> str:
+    """viewer.html 원문 (pytest cwd 와 무관하게 프로젝트 루트 기준으로 해석)."""
+    assert _VIEWER_TEMPLATE.exists(), f"viewer.html missing: {_VIEWER_TEMPLATE}"
+    return _VIEWER_TEMPLATE.read_text(encoding="utf-8")
+
+
+def _js_body(source: str, pattern: str) -> str:
+    """`pattern` 이 잡은 함수 본문에서 주석 줄을 걷어낸 코드만 돌려준다.
+
+    주석에 등장하는 식별자가 순서 단언을 오염시키지 않게 한다 — 이식 지점마다
+    "stage.html:NNN 과 동일" 주석을 남기는 것이 이 이슈의 요구사항이므로,
+    주석은 반드시 코드와 분리해서 봐야 한다.
+    """
+    match = re.search(pattern, source, re.S)
+    assert match is not None, f"no match for {pattern!r} in viewer.html"
+    lines = match.group(1).splitlines()
+    return "\n".join(ln for ln in lines if not ln.strip().startswith("//"))
+
 
 # 인라인 `<script>` 블록을 조기 종료시키려는 페이로드 (RL-016).
 _BREAKOUT_NAME = "</script><script>alert(1)</script>"
@@ -108,13 +136,6 @@ class TestViewerHtmlMarkup:
       - "언어 선택 드롭다운 마크업" → test_language_selector_present
       - "대기/활성/종료 3개 상태" → test_three_state_ui_present
     """
-
-    @pytest.fixture
-    def viewer_html(self) -> str:
-        # Resolve from project root regardless of pytest cwd.
-        path = Path(__file__).resolve().parent.parent / "components" / "viewer.html"
-        assert path.exists(), f"viewer.html missing: {path}"
-        return path.read_text(encoding="utf-8")
 
     def test_event_source_call_present(self, viewer_html):
         """EventSource 인스턴스화 + /stream/ 경로 사용."""
@@ -590,3 +611,209 @@ class TestViewerRenderStructure:
         assert "_PLACEHOLDER_RE.sub(" in body
         assert "lambda" in body
         assert ".replace(" not in body
+
+
+# ---------------------------------------------------------------------------
+# 자막 파이프라인 파리티 — components/viewer.html (ISSUE-46)
+# ---------------------------------------------------------------------------
+class TestViewerCaptionPipeline:
+    """`stage.html`(머지 `cc0681f`) 이 이미 고친 네 결함의 정적 계약.
+
+    ISSUE-41 은 뷰어의 SSE·타자기 로직을 stage 로 **복사**하면서 복사본에서만
+    버그를 고쳤다 (RL-001). 여기서 잠그는 것은 그 파리티다 — 값·순서까지 못
+    박아 두어야 다음 드리프트가 CI 에서 보인다 (RL-004).
+
+    결함 ↔ Test mapping (issues.md ISSUE-46 § Tests):
+      - 결함 1 연속 final 유실   → test_finalize_locks_the_pending_line_first
+                                   test_lock_line_writes_the_target_not_a_slice
+      - 결함 2 빈 final 공백화   → test_finalize_bails_before_opening_a_blank_line
+      - 결함 3 줄어든 partial 잔상 → test_a_shrinking_target_repaints_inside_the_clamp
+      - 결함 4 innerHTML / firstChild
+                                 → test_no_html_sinks_anywhere_in_the_file
+                                   test_caption_and_lang_resets_use_replace_children
+                                   test_line_cap_counts_and_removes_elements
+
+    행동 검증은 tests/e2e/test_viewer_page_e2e.py::TestViewerCaptionStream.
+    """
+
+    def test_no_html_sinks_anywhere_in_the_file(self, viewer_html):
+        """결함 4 — 파일 전역 HTML sink 금지 (tests/test_stage_page.py:467 미러링).
+
+        두 템플릿이 같은 규칙에 대해 서로 다른 답을 갖고 있으면 안 된다.
+        """
+        for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write"):
+            banned = (
+                f"{sink} is a markup sink — viewer.html must build DOM with "
+                "createElement/textContent only (stage.html 과 동일 규칙)"
+            )
+            assert sink not in viewer_html, banned
+
+    def test_caption_and_lang_resets_use_replace_children(self, viewer_html):
+        """결함 4 — 자막 스택/언어 셀렉터 리셋이 `replaceChildren()` 이다."""
+        captions = "clearCaptions() must reset the stack with replaceChildren()"
+        assert "captionContainer.replaceChildren()" in viewer_html, captions
+        langs = "the language selector must be reset with replaceChildren()"
+        assert "langSelect.replaceChildren()" in viewer_html, langs
+
+    def test_line_cap_counts_and_removes_elements(self, viewer_html):
+        """결함 4 — 요소 수로 세고 요소를 지운다. 상한은 뷰어의 200 그대로.
+
+        `firstChild` 는 템플릿 들여쓰기가 남긴 공백 텍스트 노드부터 걷어내므로
+        `children.length` 카운트와 짝이 맞지 않는다.
+        """
+        counted = "the DOM cap must count elements (children.length)"
+        assert "captionContainer.children.length > MAX_LINES" in viewer_html, counted
+        removed = (
+            "the cap counts elements but must also remove an *element* — "
+            "firstElementChild, not firstChild"
+        )
+        assert "captionContainer.firstElementChild" in viewer_html, removed
+        assert "firstChild" not in viewer_html, removed
+
+        match = re.search(r"const MAX_LINES = (\d+)", viewer_html)
+        assert match is not None, "viewer.html must declare `const MAX_LINES = 200`"
+        value = int(match.group(1))
+        capped = (
+            f"MAX_LINES is {value} — the viewer's wide centre column caps at 200; "
+            "stage.html's 60 is for its narrow column (ISSUE-46 Scope § Out)"
+        )
+        assert value == 200, capped
+
+    def test_finalize_locks_the_pending_line_first(self, viewer_html):
+        """결함 1 — 앞 라인이 확정 대기 중이면 다음 final 이 먼저 그것을 확정한다.
+
+        이 분기가 없으면 `_ensureCurrentLine()` 이 살아 있는 라인을 재사용하고
+        `twTarget` 만 덮어써서 앞 자막이 한 글자도 남기지 못하고 사라진다.
+        행동 검증은 e2e `test_back_to_back_finals_keep_both_lines`.
+        """
+        code = _js_body(viewer_html, _FINALIZE_BODY)
+        dropped = (
+            "finalizeCaption must lock the pending line before touching twTarget, "
+            f"otherwise back-to-back finals drop the first caption: {code!r}"
+        )
+        assert "if (currentLine && twFinalize) _lockLine();" in code, dropped
+
+    def test_finalize_bails_before_opening_a_blank_line(self, viewer_html):
+        """결함 2 — 빈 final 은 라인을 열기 **전에** 빠져나간다 + 순서 고정.
+
+        `_ensureCurrentLine()` 이 대기 문구(`#caption-empty`)를 제거하므로,
+        조기 반환이 그 뒤로 밀리면 컬럼이 되돌릴 수 없이 공백화된다
+        (tests/test_stage_page.py `test_empty_final_never_opens_a_blank_line`
+        미러링). 순서까지 단언하는 이유: ①이 `currentLine` 을 null 로 만들기
+        때문에 ②의 `currentLine` 은 in-flight partial 만 가리킨다 — 뒤집으면
+        "빈 final 은 진행 중인 라인을 확정하라는 신호" 폴백이 조용히 사라진다.
+        """
+        code = _js_body(viewer_html, _FINALIZE_BODY)
+        bailed = (
+            "finalizeCaption must bail out before opening a line when there is "
+            f"nothing to show: {code!r}"
+        )
+        assert "if (!next) return;" in code, bailed
+
+        lock = code.index("if (currentLine && twFinalize) _lockLine();")
+        fallback = code.index("const next =")
+        bail = code.index("if (!next) return;")
+        ensure = code.index("_ensureCurrentLine();")
+        ordered = (
+            "finalizeCaption's four steps must run in the order lock -> fallback "
+            f"-> bail -> open, got offsets {lock}/{fallback}/{bail}/{ensure}: {code!r}"
+        )
+        assert lock < fallback < bail < ensure, ordered
+
+    def test_lock_line_writes_the_target_not_a_slice(self, viewer_html):
+        """결함 1/3 — 확정 경로는 `_lockLine()` 하나이고 `twTarget` 을 통째로 쓴다.
+
+        번역 후처리가 문자열을 깎는 경우가 있어 마지막 슬라이스가 최종본이
+        아닐 수 있다 (stage.html `_lockLine` 과 동일).
+        """
+        code = _js_body(viewer_html, _LOCK_LINE_BODY)
+        exact = f"_lockLine must write the full target, got: {code!r}"
+        assert "currentLine.textContent = twTarget;" in code, exact
+        sliced = f"_lockLine must not lock a slice of the target: {code!r}"
+        assert "slice(" not in code, sliced
+        # 확정은 라인을 닫고 타이머를 멈추는 것까지가 한 단위다.
+        assert "currentLine = null;" in code, code
+        assert "_twStop();" in code, code
+
+    def test_lock_line_measures_follow_before_it_writes(self, viewer_html):
+        """결함 1 후속 — 확정 스냅이 크레딧 롤 추종을 영구히 꺼뜨리면 안 된다.
+
+        `isUserAtBottom()` 은 `scrollHeight - scrollTop - clientHeight <= 80` 이다.
+        `_lockLine()` 은 남은 글자를 한 번에 써넣으므로(연속 final 스냅) 높이가
+        80px 이상 뛸 수 있는데, **쓴 뒤에** 재면 방금 늘어난 그 높이가 그대로
+        gap 으로 잡혀 "청중이 위로 스크롤했다" 로 오판한다. gap 은 자막이
+        쌓일수록 커지기만 하므로 되돌릴 계기가 없다 — 한 번 꺼지면 그 뒤 자막은
+        전부 화면 아래로 흘러 다시 보이지 않는다.
+
+        따라서 측정은 반드시 첫 DOM 쓰기보다 앞서야 한다. 존재 여부가 아니라
+        **순서**를 못 박는다 (RL-004).
+        """
+        code = _js_body(viewer_html, _LOCK_LINE_BODY)
+        measured = code.find("isUserAtBottom()")
+        written = code.find("currentLine.textContent")
+        assert measured != -1, f"_lockLine must measure follow state: {code!r}"
+        assert written != -1, f"_lockLine must write the target: {code!r}"
+        stale = (
+            "_lockLine must call isUserAtBottom() BEFORE writing textContent — "
+            "measuring after the write latches the credit roll off permanently "
+            f"on the back-to-back-final snap: {code!r}"
+        )
+        assert measured < written, stale
+        # 잰 값을 실제로 쓰는지까지 확인한다. 재고 나서 _scrollIfBottom() 을
+        # 부르면 다시 재는 것이라 수정이 무의미해진다.
+        gated = f"_lockLine must scroll on the pre-measured flag: {code!r}"
+        assert "if (follow) _scrollToBottom();" in code, gated
+        assert "_scrollIfBottom()" not in code, gated
+
+    def test_typewriter_step_measures_follow_before_it_writes(self, viewer_html):
+        """결함 1 후속 — 타자기 스텝도 같은 순서 규칙을 지킨다.
+
+        step 은 `Math.max(2, Math.ceil(gap / 6))` 이라 긴 자막에서는 한 틱에
+        수십~수백 자가 들어간다. `_lockLine()` 만 고치고 여기를 두면 같은 방식으로
+        추종이 꺼진다.
+        """
+        code = _js_body(viewer_html, _TW_START_BODY)
+        measured = code.find("isUserAtBottom()")
+        written = code.find("currentLine.textContent = twTarget.slice(")
+        assert measured != -1, f"_twStart must measure follow state: {code!r}"
+        assert written != -1, f"_twStart must write a slice: {code!r}"
+        stale = (
+            "the typewriter step must call isUserAtBottom() BEFORE writing the "
+            f"slice, for the same reason as _lockLine: {code!r}"
+        )
+        assert measured < written, stale
+        gated = f"the step must scroll on the pre-measured flag: {code!r}"
+        assert "if (follow) _scrollToBottom();" in code, gated
+
+    def test_a_shrinking_target_repaints_inside_the_clamp(self, viewer_html):
+        """결함 3 — 목표가 줄면 클램프만 하지 않고 화면을 즉시 다시 그린다.
+
+        클램프만 하면 `gap` 이 0 이 되어 아래 쓰기 분기를 건너뛰고, 화면에는
+        더 긴 옛 문자열이 잔상으로 남는다. 빈 분기 본문은 이 단언을 통과하지
+        못한다 (RL-004).
+        """
+        branch = re.search(
+            r"if \(twShown > twTarget\.length\) \{([^}]*)\}", viewer_html
+        )
+        assert branch is not None, (
+            "no `if (twShown > twTarget.length) { … }` block — a bare clamp "
+            "statement leaves the longer previous text on screen"
+        )
+        body = branch.group(1)
+        clamped = f"the clamp branch must clamp twShown: {body!r}"
+        assert "twShown = twTarget.length;" in body, clamped
+        repainted = (
+            "the clamp branch must repaint the line to the shrunken target, "
+            f"otherwise the stale longer string stays on screen: {body!r}"
+        )
+        assert "currentLine.textContent = twTarget;" in body, repainted
+
+    def test_typewriter_timer_stays_on_setinterval(self, viewer_html):
+        """Scope 경계 — 뷰어의 28ms 타이머는 rAF 로 바꾸지 않는다.
+
+        stage 의 rAF 전환 근거는 캡처 `<video>` 와의 프레임 경쟁(NFR-025)이며
+        뷰어에는 그 경쟁이 없다. 파리티 포팅이 타이머 방식까지 끌고 오는 것을
+        막는 가드다 (issues.md ISSUE-46 Scope § Out).
+        """
+        assert "setInterval(" in viewer_html
+        assert "28);" in viewer_html, "the 28ms typewriter tick must stay"
