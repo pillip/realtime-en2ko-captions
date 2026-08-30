@@ -16,7 +16,6 @@ ISSUE-47 — 오퍼레이터 무대 모드 e2e (browser-driven).
 
 from __future__ import annotations
 
-import json
 import pathlib
 import sys
 from unittest.mock import MagicMock
@@ -76,8 +75,11 @@ def load_webrtc(page, tmp_path):
     """부트스트랩 payload 를 주입한 webrtc.html 을 file:// 로 연다."""
 
     def _load(boot: dict, *, open_returns_null: bool = False):
-        html = _WEBRTC_TEMPLATE.read_text(encoding="utf-8")
-        html = html.replace("{{BOOTSTRAP_JSON}}", json.dumps(boot))
+        # ISSUE-48 / RL-024: 치환을 fixture 가 재구현하면 프로덕션이 고쳐져도
+        # 이 파일은 옛 경로를 계속 테스트한다. 프로덕션 함수를 그대로 부른다.
+        from operator_ui import render_component_html
+
+        html = render_component_html(_WEBRTC_TEMPLATE.read_text(encoding="utf-8"), boot)
         target = tmp_path / "webrtc_under_test.html"
         target.write_text(html, encoding="utf-8")
         page.add_init_script(_OPEN_STUB % ("true" if open_returns_null else "false"))

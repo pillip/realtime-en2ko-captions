@@ -8,7 +8,6 @@
 """
 
 import asyncio
-import json
 import os
 import threading
 
@@ -29,6 +28,7 @@ from operator_ui import (
     build_room_dropdown_options,
     format_display_mode_label,
     has_assigned_rooms,
+    render_component_html,
     select_default_room,
     select_display_mode,
 )
@@ -483,8 +483,16 @@ else:
             stage_url=stage_url,
         )
 
-        html_content = html_template.replace("{{BOOTSTRAP_JSON}}", json.dumps(payload))
+        # ISSUE-48: 부트스트랩은 raw `<script>` 안에 들어가므로 뷰어/무대와
+        # 같은 script-context 이스케이프를 통과해야 한다 (RL-016 / RL-020).
+        html_content = render_component_html(html_template, payload)
         st.components.v1.html(html_content, height=900, scrolling=False)
 
-    except Exception:
+    except Exception as e:
+        # RL-006: 내부 예외 문자열은 오퍼레이터 화면에 노출하지 않는다. 다만
+        # 서버 로그에는 남긴다 — `render_component_html` 의 엄격 인덱싱은
+        # 오타 난 플레이스홀더를 `KeyError` 로 죽이는 것이 안전장치인데,
+        # 흔적 없이 삼키면 "조용히 실패" 가 되어 그 설계가 무의미해진다.
+        # 템플릿 누락/직렬화 불가 payload 도 여기로 모이므로 구분이 필요하다.
+        print(f"[Bootstrap] 컴포넌트 렌더 실패: {e!r}")
         st.error("시스템을 로드할 수 없습니다.")

@@ -29,7 +29,6 @@ from __future__ import annotations
 import asyncio
 import html
 import json
-import re
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -38,6 +37,7 @@ from typing import Any
 from aiohttp import web
 
 from branding_routes import handle_branding_asset
+from script_escape import PLACEHOLDER_RE, json_for_script
 from stage_config import normalize_stage_config
 from translation import SUPPORTED_OUTPUT_LANGS
 
@@ -339,36 +339,12 @@ def _supported_output_langs(primary: str) -> list[str]:
     return langs
 
 
-def _json_for_script(obj: Any) -> str:
-    """Serialise ``obj`` as a JSON literal that is safe inside an inline <script>.
-
-    ``json.dumps`` escapes neither ``<`` nor ``/``, so a persisted string
-    containing ``</script>`` closes the script block early and everything after
-    it is parsed as markup (RL-016 — the hand-off left by the ISSUE-37 review
-    F-2 for the stage page). Escaping ``<`` / ``>`` / ``&`` as ``\\uXXXX``
-    removes every breakout route (script terminator, HTML comment, entity)
-    while keeping the output **valid JSON** — ``json.loads`` round-trips it
-    unchanged. U+2028 / U+2029 are escaped too: they are legal in JSON strings
-    but were illegal in JS string literals before ES2019.
-
-    Use this for **every** value injected into a template's ``<script>`` block,
-    scalars included — the output is a complete literal, so the template must
-    not wrap it in quotes of its own. Values injected into markup need
-    :func:`html.escape` instead; SSE frames on the wire need neither and use
-    plain ``json.dumps``.
-    """
-    return (
-        json.dumps(obj, ensure_ascii=False)
-        .replace("<", "\\u003c")
-        .replace(">", "\\u003e")
-        .replace("&", "\\u0026")
-        .replace("\u2028", "\\u2028")
-        .replace("\u2029", "\\u2029")
-    )
-
-
-# \ubdf0\uc5b4/\ubb34\ub300 \ub450 \ub80c\ub354\ub7ec\uac00 \uacf5\uc720\ud558\ub294 \ub2e8\uc77c \ud328\uc2a4 \uce58\ud658 \ud328\ud134 (RL-021).
-_PLACEHOLDER_RE = re.compile(r"\{\{(\w+)\}\}")
+# 이스케이퍼와 치환 문법의 정의는 `script_escape` 한 곳뿐이다 (ISSUE-48 /
+# RL-001). 여기서는 기존 이름만 별칭으로 유지한다 — 열 곳 넘는 테스트가
+# `from sse_broadcast import _json_for_script` 로 잡고 있고, 오퍼레이터
+# 컴포넌트(`operator_ui.render_component_html`)가 **같은 객체**를 쓴다.
+_json_for_script = json_for_script
+_PLACEHOLDER_RE = PLACEHOLDER_RE
 
 
 def _render_viewer_html(
