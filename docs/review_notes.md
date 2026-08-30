@@ -1871,3 +1871,82 @@ RL-016 / RL-020 이 예측한 지점. ISSUE-47 은 악화시키지 않는다 —
   한꺼번에 없애고 ~400줄을 삭제하지만, 이슈의 Implementation Notes / TC-068~070 이
   컴포넌트 + `window.open` + 폴백을 명시하므로 **일방적으로 변경하지 않고 후속
   이슈로 제안**한다.
+
+---
+
+# ISSUE-52 / PR #141 — 오퍼레이터 세션 출력 언어를 rooms 행에 기록
+
+리뷰어는 PR head 커밋(`4a854a1`)의 **분리된 detached worktree**(`.worktrees/review-ISSUE-52`)
+에서 구현 결정에 대한 사전 지식 없이 검토했다. RED 검증을 위해 base(`72368f1`)를
+별도 경로에 풀고 **테스트 파일 5개만** 덮어 재실행했다.
+
+**판정: APPROVE-WITH-NITS.** 머지 차단 항목 없음.
+
+## RED 증거 (이 스위트가 원래 결함을 통과시켰을 리 없다는 근거)
+
+신규 테스트 30건 중 **22건이 base 코드에서 실패**한다
+(`AttributeError: 'Room' object has no attribute 'update_session_languages'`,
+`assert [] == [{'input_lang': 'ko', ...}]`,
+`assert 'db is on fire' in '[Auth] 사용자 인증 성공…'`).
+base 에서 통과하는 8건은 전부 **의도된 대조군/전방 가드**이며 그렇게 이름 붙어 있다
+(TC-074 가 명시적으로 요구하는 렌더 4건, `..._reproduces_the_production_mismatch`(대조군),
+`test_transcript_messages_never_hit_the_language_write`, 메모리 전용 모드 2건).
+
+## Code Review — 6개 정밀 검토 항목
+
+| 항목 | 판정 | 증거 |
+|---|---|---|
+| `output_langs` 미변경 (#91/#92 재결합 방지) | PASS | `database.py` UPDATE 는 3컬럼/4파라미터, `output_langs` 미등장. 가드 테스트가 공백 포함 `'["ko", "en"]'` 을 심어 `json.dumps` 재직렬화도 실패시킨다 |
+| RL-025 권위 컬럼 명명 | PASS | docstring 이 `primary_output_lang`=권위, `output_lang`=미러로 선언. 한 UPDATE 가 같은 인자를 두 번 쓰고, no-op 가드가 **세 컬럼 전부**를 비교해 이미 어긋난 행을 복구한다 (`test_no_op_guard_still_repairs_a_drifted_mirror_column`) |
+| RL-004 단언 강도 | PASS (예외 1건, 아래 F-3 에서 수정) | 전부 값 단언. "행이 갱신됐다" 형태 없음 |
+| transcript hot path 미접촉 | PASS | `_persist_session_languages` 참조는 정의 1 + 호출 2 뿐. transcript 분기는 `_handle_transcript` 로만 간다. 참고: `_record_usage` 가 이미 transcript 마다 동기 SQLite 쓰기를 2회 하므로 이 PR 의 연결당 1회는 기존보다 가볍다 — `asyncio.to_thread` 미사용 결정이 정당화된다 |
+| 실패 degradation | PASS | 헬퍼가 `try/except` → `print` → `False`. DB 계층은 아무것도 raise 하지 않는다. 테스트가 예외 문구 **와 파일 경로**가 응답에 없고 `type=="error"` 프레임도 없으며 stdout 에는 **있음**을 양방향으로 단언 |
+| 멱등성 | PASS | `set_trace_callback` 기반 SQL 레벨 spy 로 1 → 0 → 1 을 확인 (세 번째가 "항상 no-op" 구현을 배제) |
+
+## 지적 사항과 처리
+
+| ID | Sev | 지적 | 처리 |
+|---|---|---|---|
+| F-1 | Medium | `_SESSION_INPUT_LANGS` 가 `webrtc.html` `#selInputLang` 의 **손복사본**인데 둘을 묶는 테스트가 없다. 옵션이 하나 늘면 그 언어 세션은 전부 거절되어 무대가 이전 언어를 계속 구독한다 — 이 이슈가 고친 결함과 같은 모양 (RL-001) | **수정** — `TestSessionLanguageWhitelistsTrackTheirSources` 추가. 입력/출력 두 드롭다운 모두 집합 동등 단언 + 각 옵션이 실제로 기록되는지 값 확인. `<option value="ja">` 를 넣는 뮤턴트로 kill 확인 |
+| F-2 | Low | AC4(지원 목록 밖 코드)가 `database.Room` 계층에만 있고 WS 계층 테스트가 없다 | **수정** — `test_unsupported_output_lang_does_not_break_auth` 추가 |
+| F-3 | Low | `test_recorded_room_id_is_the_server_resolved_one` 이 **RL-002 가드로서 무의미**했다. `room_id="r1"` 을 보내고 `"r1"` 을 단언하므로 `resolved_room_id` 와 `data.get("room_id")` 가 같은 값 — 구현을 바꿔도 통과한다 (RL-004 그 자체) | **수정** — room_id 를 **보내지 않는** 분기로 변경해 두 값이 갈리게 했다(`DEFAULT_ROOM_ID` vs `None`). `data.get("room_id")` 뮤턴트로 kill 확인 |
+| F-4 | Low | 두 호출 지점이 ack 대비 **반대 순서**인데 한쪽만 이유를 설명한다. 미래의 독자가 한쪽을 "고칠" 수 있다 | **수정** — auth 경로에 의도적 선(先)기록 이유를 주석으로 남겼다(인증 직후 무대 화면을 열 수 있으므로 그 시점에 행이 이미 정확해야 한다) |
+| F-5 | Low | 검증이 두 인자에 대해 all-or-nothing 인 점이 문서화되지 않았다 | **수정** — docstring 에 명시 |
+| S-1 | High (**기존 결함, 이 PR 소관 아님**) | WS 인증이 DB 에 존재하는 `{id, username}` 쌍만 확인한다 — 토큰/비밀번호/origin 검사 없이 `0.0.0.0:8765`. 이 PR 은 그 채널에 **영속적** 능력을 하나 더 준다: 조작된 `auth` 프레임 하나로 무대 자막 채널을 조용히 돌릴 수 있다. 채널이 이미 임의 자막 발행을 허용하므로 **증분** 위험은 Medium | **후속 이슈** (아래) |
+| S-2 | Medium (기존) | 인증된 사용자면 **아무 룸에나** 붙어 언어 컬럼을 바꿀 수 있다. `admin_logic.py` 는 같은 룸에 `operator_id == user_id` 를 강제하는데 WS 경로만 이 규칙이 없다 | **후속 이슈** (아래) |
+
+이 PR 이 새로 만든 Critical/High 결함은 없다. SQL 인젝션(전량 파라미터 바인딩),
+XSS(`_json_for_script` sink 기반 이스케이프 — 화이트리스트가 뚫려도 안전),
+하드코딩 비밀, 신규 의존성: 해당 없음. 신규 import 엣지 `database → translation` 은
+순환/임포트 시점 부작용 없음을 확인.
+
+## Over-Engineering
+
+- `tests/test_ws_sse_integration.py: delete _LANG_DB_COUNTER 전역 + 증가 → pytest tmp_path 가 이미 테스트마다 고유` — **적용**
+- `websocket_handler.py: shrink 이미 -> bool 계약인 repo 메서드를 bool() 로 감쌈 → 직접 return` — **적용**
+
+순 제거 ~6줄. 나머지는 lean 판정. 다음은 **의도적으로 유지**한다:
+`get_by_id` 선(先)조회(no-op 과 미존재 룸을 구분한다 — SQL 가드로는 불가),
+`-> bool` 반환(ISSUE-53 이 `Depends-On: ISSUE-52` 로 소비한다),
+서로 다른 두 화이트리스트(`auto` 때문), docstring 분량(RL-025 권위 선언 +
+#91/#92 비재결합 기록이 load-bearing).
+
+## 뮤테이션 (16종 선언 / 16종 kill)
+
+선언 범위: diff 내 12 + 호출 지점 2 + 리뷰 수정 검증 2. 주요 kill:
+`output_langs` 동기화 추가, `primary_output_lang` 을 UPDATE 에서 제거(=원래 버그 복원),
+지원 목록 리터럴 복사(은퇴한 `ja` 부활), 입력에 출력 목록 재사용(`auto` 거부),
+no-op 가드 삭제/약화, `last_activity` 부수 효과, 두 호출 지점 각각 삭제,
+**diff 밖** `_supported_output_langs` 룸 스코프 회귀, 입력 드롭다운 드리프트,
+RL-002 위반(클라이언트 room_id 사용).
+
+커버하지 않은 것: `_publish_to_viewers` 의 `repo is None` 조기 반환(기존 ISSUE-30 코드,
+diff 밖이며 main 에서도 미커버), 그리고 `language_update` 를 **실 SQLite** `Room` 에
+통과시키는 단일 테스트(fake repo + 별도 실 DB 통합 테스트로 나뉘어 있다).
+
+## 후속 이슈
+
+- WS 인증에 비밀이 없다 (S-1) — Streamlit 세션 HMAC 쿠키 재사용 또는 서버 발급 1회용 토큰
+- `_authenticate_client` 에 operator↔room 소유권 규칙 미적용 (S-2) — `admin_logic.py` 규칙 이식
+- `source_lang == target_lang` 자기 번역 낭비 — 이 PR 이후 **버그가 아니라 정상 기능**이
+  되지만 LLM 호출 낭비는 남는다. 현재 어느 이슈도 담고 있지 않다

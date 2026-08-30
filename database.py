@@ -13,6 +13,7 @@ from typing import Any
 import bcrypt
 
 from stage_config import normalize_stage_config, validate_stage_config
+from translation import SUPPORTED_OUTPUT_LANGS
 
 
 class InvalidRoomTransition(ValueError):
@@ -35,6 +36,12 @@ _ROOM_TRANSITIONS: dict[str, set[str]] = {
     "inactive": {"active", "closed"},
     "closed": set(),  # terminal
 }
+
+# 오퍼레이터 입력 언어 화이트리스트 (ISSUE-52).
+# 출처: components/webrtc.html 의 #selInputLang 옵션.
+# translation.SUPPORTED_OUTPUT_LANGS 를 재사용하지 **않는다** — 입력에는
+# 'auto'(자동 감지)가 정당한 값이라 두 목록은 의도적으로 다르다.
+_SESSION_INPUT_LANGS: tuple[str, ...] = ("auto", "ko", "zh", "en", "vi")
 
 
 class DatabaseManager:
@@ -1145,6 +1152,79 @@ class Room:
             cursor = conn.execute(
                 "UPDATE rooms SET stage_config = ? WHERE id = ?",
                 (payload, room_id),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def update_session_languages(
+        self, room_id: str, *, input_lang: str, output_lang: str
+    ) -> bool:
+        """오퍼레이터가 세션에서 고른 언어를 룸 행에 기록한다 (ISSUE-52).
+
+        **``primary_output_lang`` 이 권위 컬럼이다.** SSE/렌더 경로
+        (``sse_broadcast._handle_stage`` / ``_handle_view``)는 페이지 로드
+        시점의 구독 언어를 오직 이 컬럼에서 읽는다. ``output_lang``
+        (ISSUE-26 컬럼)은 admin 룸 목록이 보는 **미러**이며, 둘은 반드시 한
+        UPDATE 로 함께 쓴다 — 한쪽만 갱신하면 "같은 것을 뜻하는 두 컬럼이
+        서로 다른 값" 이라는 상태가 새로 생기고, 그게 정확히 이 메서드가
+        고치려는 결함의 모양이다 (RL-025).
+
+        ``rooms.output_langs`` 는 **의도적으로 건드리지 않는다.**
+        ``sse_broadcast._supported_output_langs`` 가 #91/#92 에서 그 컬럼을
+        무시하고 전역 지원 언어를 쓰기로 결정했으므로, 여기서 "쓰는 김에 같이
+        동기화" 하면 뷰어의 언어 선택이 룸 설정에 다시 묶여 그 결정이 무효화된다.
+
+        Args:
+            room_id: **서버가 확정한** 룸 id. 클라이언트 payload 의 room_id 를
+                넘기지 말 것 (RL-002).
+            input_lang: ``_SESSION_INPUT_LANGS`` 중 하나 ('auto' 포함).
+            output_lang: ``translation.SUPPORTED_OUTPUT_LANGS`` 중 하나.
+                목록을 import 해서 쓰므로 지원 언어가 늘어도 갈라지지 않는다
+                (RL-001).
+
+        Returns:
+            True  — 세 컬럼이 요청한 값을 갖는다 (UPDATE 를 실행했거나, 이미
+                    같은 값이라 생략했거나).
+            False — 검증 실패(사유는 서버 로그) 또는 존재하지 않는 room_id.
+                    어느 쪽이든 **예외를 던지지 않고 DB 도 건드리지 않는다.**
+                    호출자는 자막 파이프라인 한복판이므로 기록 실패가 세션을
+                    죽여서는 안 된다 (RL-006).
+
+        검증은 **두 인자에 대해 all-or-nothing** 이다 — ``input_lang`` 하나가
+        목록 밖이면 멀쩡한 ``output_lang`` 도 기록되지 않는다. 세 컬럼을 한
+        UPDATE 로 묶는다는 계약의 필연적 귀결이며(부분 기록은 이 메서드가
+        막으려는 컬럼 드리프트를 그대로 만든다), 의도된 동작이다.
+        """
+        if input_lang not in _SESSION_INPUT_LANGS:
+            print(
+                f"[Room] session input_lang rejected (room={room_id}): {input_lang!r}"
+            )
+            return False
+        if output_lang not in SUPPORTED_OUTPUT_LANGS:
+            print(
+                f"[Room] session output_lang rejected (room={room_id}): {output_lang!r}"
+            )
+            return False
+
+        current = self.get_by_id(room_id)
+        if current is None:
+            return False
+
+        # 재접속마다 쓰기가 도는 것을 막는 no-op 가드. 세 컬럼을 **모두**
+        # 비교해야 한다 — primary_output_lang 만 보고 스킵하면 어긋난 미러
+        # (output_lang)가 그대로 굳는다.
+        if (
+            current.get("input_lang") == input_lang
+            and current.get("output_lang") == output_lang
+            and current.get("primary_output_lang") == output_lang
+        ):
+            return True
+
+        with self.db.get_connection() as conn:
+            cursor = conn.execute(
+                "UPDATE rooms SET input_lang = ?, output_lang = ?, "
+                "primary_output_lang = ? WHERE id = ?",
+                (input_lang, output_lang, output_lang, room_id),
             )
             conn.commit()
             return cursor.rowcount > 0
