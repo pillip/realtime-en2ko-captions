@@ -1,0 +1,183 @@
+# 보안 가드 뮤테이션 카탈로그 (ISSUE-43, NFR-028 / RL-004).
+#
+# 각 [[mutation]] 은 "이 가드를 무력화하면 어떤 테스트가 깨져야 하는가" 를
+# 선언한다. 킬 테스트는 여기 적지 않는다 — 대응 관계의 단일 출처는 테스트
+# docstring 의 `Guard: <가드 ID>` 한 줄이다 (guard_mutations.py 모듈 docstring
+# 참고). 표기를 지우면 그 가드는 `unnamed` 이 되어 CI 가 깨진다.
+#
+# 규칙
+# - `file` 은 guard_mutations.ALLOWED_FILES 안에 있어야 한다 (러너 하드코딩).
+#   범위 확대는 이 파일이 아니라 러너의 허용 목록을 고치는 리뷰를 거친다.
+# - `find` 는 대상 파일에 **정확히 1회** 등장해야 한다. 0회/2회 이상이면
+#   러너가 뮤테이션을 적용하지 않고 실패한다 (PR #122 의 "스니펫이 3번
+#   등장해서 통과" 실패 모드를 카탈로그 자신이 반복하지 않게 하는 장치).
+# - `replace` 는 문법적으로 유효해야 하고 들여쓰기를 보존해야 한다. 러너가 쓰기
+#   전에 `compile()` 로 검증하며, 깨진 뮤턴트는 kill 이 아니라 ERROR 다 (킬
+#   테스트가 함수 안에서 import 하므로 import 실패도 exit=1 로 와서 kill 처럼
+#   보인다). 샌드박스는 린트하지 않으므로 포매팅은 상관없다.
+# - 분기 삭제는 `if False and <원식>:` 으로 표현한다. 줄 수와 들여쓰기를
+#   유지하므로 아래 블록을 건드리지 않고도 분기만 죽는다.
+#
+# 문자열은 전부 TOML literal string(작은따옴표)이라 백슬래시가 이스케이프되지
+# 않는다 — 소스에서 그대로 복사해 붙이면 된다.
+
+# ---------------------------------------------------------------------------
+# branding_assets.py — 유일한 사용자 업로드 경로 (NFR-028)
+# ---------------------------------------------------------------------------
+
+[[mutation]]
+guard = 'branding_assets._reject_path_signatures#separator'
+file = 'branding_assets.py'
+find = '    if "/" in value or "\\" in value:'
+replace = '    if False and ("/" in value or "\\" in value):'
+
+[[mutation]]
+guard = 'branding_assets._reject_path_signatures#dotdot'
+file = 'branding_assets.py'
+find = '    if ".." in value:'
+replace = '    if False and (".." in value):'
+
+[[mutation]]
+guard = 'branding_assets._reject_path_signatures#control'
+file = 'branding_assets.py'
+find = '    if any(ord(ch) < 32 or ord(ch) == 127 for ch in value):'
+replace = '    if False and any(ord(ch) < 32 or ord(ch) == 127 for ch in value):'
+
+[[mutation]]
+guard = 'branding_assets._sanitize_filename#extension'
+file = 'branding_assets.py'
+find = '    if suffix not in ALLOWED_EXTENSIONS:'
+replace = '    if False and (suffix not in ALLOWED_EXTENSIONS):'
+
+[[mutation]]
+guard = 'branding_assets._sanitize_room_id#charclass'
+file = 'branding_assets.py'
+find = '    if _DISALLOWED_CHARS.search(value):'
+replace = '    if False and _DISALLOWED_CHARS.search(value):'
+
+# 룸 디렉터리 자체가 루트 밖을 가리키는 심볼릭 링크일 때 유일하게 갈라진다.
+[[mutation]]
+guard = 'branding_assets._contained_room_dir#containment'
+file = 'branding_assets.py'
+find = '    if not room_dir.is_relative_to(root):'
+replace = '    if False and not room_dir.is_relative_to(root):'
+
+# 대상이 룸 **안**인 링크에서만 containment 와 갈라진다 (PR #123 리뷰).
+[[mutation]]
+guard = 'branding_assets.resolve_asset_path#symlink'
+file = 'branding_assets.py'
+find = '        if candidate.is_symlink():'
+replace = '        if False and candidate.is_symlink():'
+
+# 심볼릭 링크 가드가 우회된 상태(TOCTOU)에서만 도달하는 2단 방어.
+[[mutation]]
+guard = 'branding_assets.resolve_asset_path#containment'
+file = 'branding_assets.py'
+find = '        if not resolved.is_relative_to(room_dir):'
+replace = '        if False and not resolved.is_relative_to(room_dir):'
+
+# 미인증 공개 라우트의 로그 플러딩 방지 — 거부는 조용해야 한다.
+[[mutation]]
+guard = 'branding_assets.resolve_asset_path#quiet_reject'
+file = 'branding_assets.py'
+find = '''
+    except ValueError:
+        # 정상적인 거부 경로 (sanitize 실패, 널바이트). 로그를 남기지 않는다 —
+        # 공개 라우트라 잘못된 요청만으로 로그가 오염되면 안 된다.
+        return None'''
+replace = '''
+    except Exception as _mutant_exc:
+        print(f"[Branding] resolve rejected (room={room_id!r}): {_mutant_exc!r}")
+        return None'''
+
+[[mutation]]
+guard = 'branding_assets.list_assets#symlink'
+file = 'branding_assets.py'
+find = '            if entry.is_symlink() or not entry.is_file():'
+replace = '            if not entry.is_file():'
+
+# off-by-one: 정확히 상한인 파일이 거부되면 안 된다.
+[[mutation]]
+guard = 'branding_assets.save_asset#size_cap'
+file = 'branding_assets.py'
+find = '    if len(data) > MAX_ASSET_BYTES:'
+replace = '    if len(data) >= MAX_ASSET_BYTES:'
+
+[[mutation]]
+guard = 'branding_assets.save_asset#magic_bytes'
+file = 'branding_assets.py'
+find = '    if not _content_matches_extension(suffix, data):'
+replace = '    if False and not _content_matches_extension(suffix, data):'
+
+# off-by-one: 상한에 도달한 룸이 한 건 더 받아들이면 안 된다.
+[[mutation]]
+guard = 'branding_assets.save_asset#count_cap'
+file = 'branding_assets.py'
+find = '    if len(existing) >= MAX_ASSETS_PER_ROOM:'
+replace = '    if len(existing) > MAX_ASSETS_PER_ROOM:'
+
+# 배타 생성이 아니면 동시 업로드가 기존 파일을 덮어쓴다.
+[[mutation]]
+guard = 'branding_assets._write_without_overwriting#exclusive_create'
+file = 'branding_assets.py'
+find = '            with open(candidate, "xb") as fp:'
+replace = '            with open(candidate, "wb") as fp:'
+
+# `if suffix == ".svg":` 는 이 파일에 2번 나온다 — 블록째로 지목해야 1회다.
+[[mutation]]
+guard = 'branding_assets.build_asset_headers#svg_csp'
+file = 'branding_assets.py'
+find = '''
+    if suffix == ".svg":
+        headers["Content-Security-Policy"] = SVG_CSP'''
+replace = '''
+    if False and suffix == ".svg":
+        headers["Content-Security-Policy"] = SVG_CSP'''
+
+# ---------------------------------------------------------------------------
+# branding_routes.py — 미인증 공개 라우트
+# ---------------------------------------------------------------------------
+
+[[mutation]]
+guard = 'branding_routes.handle_branding_asset#not_found'
+file = 'branding_routes.py'
+find = '''
+        if path is None:
+            return web.Response(status=404, text=_NOT_FOUND_TEXT)'''
+replace = '''
+        if path is None:
+            return web.Response(status=200, text=_NOT_FOUND_TEXT)'''
+
+# ---------------------------------------------------------------------------
+# auth.py / admin_logic.py — 역할 판정 (RL-002)
+# ---------------------------------------------------------------------------
+
+[[mutation]]
+guard = 'auth.is_admin#role'
+file = 'auth.py'
+find = '    return user is not None and user.get("role") == "admin"'
+replace = '    return True'
+
+[[mutation]]
+guard = 'auth.is_operator#role'
+file = 'auth.py'
+find = '    return user is not None and user.get("role") == "operator"'
+replace = '    return True'
+
+[[mutation]]
+guard = 'auth.is_admin_or_operator#role'
+file = 'auth.py'
+find = '    return user.get("role") in ("admin", "operator")'
+replace = '    return True'
+
+[[mutation]]
+guard = 'admin_logic.filter_rooms_for_role#scope'
+file = 'admin_logic.py'
+find = '''
+    if user_role == "admin":
+        return list(rooms)
+    if user_role == "operator":
+        return [r for r in rooms if r.get("operator_id") == user_id]
+    return []'''
+replace = '''
+    return list(rooms)'''
