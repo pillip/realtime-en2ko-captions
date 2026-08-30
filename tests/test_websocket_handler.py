@@ -1404,3 +1404,262 @@ class TestLanguageUpdatePersistsToRoomRow:
 
         updated = next(m for m in sent if m["type"] == "language_updated")
         assert updated["output_lang"] == "en"
+
+
+# ============================================================
+# stage_control 메시지 + language_update 의 control 발행 (ISSUE-53 / TC-079)
+# ============================================================
+def _run_with_spy(ws, repo, spy, *, room_id="r1"):
+    """`_run_handler` 에 BroadcastManager 스파이를 끼워 넣는다."""
+    return _run_handler(
+        ws,
+        repo,
+        room_id=room_id,
+        extra_patches=(patch("websocket_handler._broadcast_manager", spy),),
+    )
+
+
+class TestStageControlMessage:
+    """무대 자막 배율 — 받는 쪽(서버) 계약. ISSUE-54 가 보내는 쪽을 만든다."""
+
+    def test_a_valid_scale_updates_state_publishes_once_and_acks(self):
+        from tests.broadcast_spy import SpyBroadcastManager
+
+        spy = SpyBroadcastManager()
+        ws = _ws_yielding([{"type": "stage_control", "caption_scale": 1.2}])
+
+        sent = _run_with_spy(ws, _RecordingRoomRepo(), spy)
+
+        assert spy.get_control("r1") == {"caption_scale": 1.2}
+        assert spy.control_count == 1, spy.control_calls
+        room_id, payload = spy.control_calls[0]
+        assert room_id == "r1"
+        assert payload["event"] == "control"
+        assert payload["caption_scale"] == 1.2
+        ack = next(m for m in sent if m["type"] == "stage_control_ack")
+        assert ack["caption_scale"] == 1.2
+
+    @pytest.mark.parametrize("scale", [0.8, 0.9, 1.0, 1.3, 1.6])
+    def test_the_whole_declared_range_is_accepted(self, scale):
+        """0.8–1.6 경계 포함 — 하한/상한을 배타 비교로 짜면 여기서 걸린다."""
+        from tests.broadcast_spy import SpyBroadcastManager
+
+        spy = SpyBroadcastManager()
+        ws = _ws_yielding([{"type": "stage_control", "caption_scale": scale}])
+
+        sent = _run_with_spy(ws, _RecordingRoomRepo(), spy)
+
+        assert spy.get_control("r1") == {"caption_scale": scale}
+        assert spy.control_count == 1
+        ack = next(m for m in sent if m["type"] == "stage_control_ack")
+        assert ack["caption_scale"] == scale
+
+    @pytest.mark.parametrize(
+        "scale",
+        [
+            0.1,
+            9,
+            0.79,
+            1.61,
+            "크게",
+            "1.2",
+            float("nan"),
+            float("inf"),
+            None,
+            True,
+            [1.2],
+        ],
+    )
+    def test_an_invalid_scale_changes_nothing_and_publishes_nothing(self, scale):
+        """범위 밖 / 비수치 → 상태 0건, 발행 0건, ack 없음.
+
+        `True` 는 `isinstance(x, int)` 가 참이라 1.0 으로 통과해 버리는 고전적
+        구멍이고, `"1.2"` 는 문자열 강제 변환을 넣으면 통과한다. 둘 다 값
+        단위로 막는다.
+        """
+        from tests.broadcast_spy import SpyBroadcastManager
+
+        spy = SpyBroadcastManager()
+        ws = _ws_yielding([{"type": "stage_control", "caption_scale": scale}])
+
+        sent = _run_with_spy(ws, _RecordingRoomRepo(), spy)
+
+        assert spy.get_control("r1") is None
+        assert spy.control_count == 0, spy.control_calls
+        assert all(m.get("type") != "stage_control_ack" for m in sent)
+        refusals = [m for m in sent if m.get("type") == "stage_control_error"]
+        assert len(refusals) == 1, sent
+
+    def test_a_missing_scale_key_is_refused(self):
+        from tests.broadcast_spy import SpyBroadcastManager
+
+        spy = SpyBroadcastManager()
+        ws = _ws_yielding([{"type": "stage_control"}])
+
+        sent = _run_with_spy(ws, _RecordingRoomRepo(), spy)
+
+        assert spy.get_control("r1") is None
+        assert spy.control_count == 0
+        assert len([m for m in sent if m.get("type") == "stage_control_error"]) == 1
+
+    def test_the_refusal_carries_no_internal_detail(self):
+        """RL-006 — 거절 문구는 이 파일의 고정 상수이고 값이 새지 않는다."""
+        from tests.broadcast_spy import SpyBroadcastManager
+
+        spy = SpyBroadcastManager()
+        ws = _ws_yielding(
+            [{"type": "stage_control", "caption_scale": "/var/db/app.db"}]
+        )
+
+        sent = _run_with_spy(ws, _RecordingRoomRepo(), spy)
+
+        wire = json.dumps(sent, ensure_ascii=False)
+        assert "/var/db/app.db" not in wire
+        assert "Traceback" not in wire
+        assert "ValueError" not in wire
+        assert "caption_scale" not in wire
+        # 일반 error 프레임으로 승격되어 세션을 흔들어서도 안 된다.
+        assert all(m.get("type") != "error" for m in sent)
+
+    def test_a_second_control_merges_instead_of_replacing(self):
+        """언어와 배율은 한 상태에 공존한다 — 부분 갱신이 앞 필드를 지우지 않는다."""
+        from tests.broadcast_spy import SpyBroadcastManager
+
+        spy = SpyBroadcastManager()
+        spy.set_control("r1", primary_lang="vi")
+        ws = _ws_yielding([{"type": "stage_control", "caption_scale": 1.4}])
+
+        _run_with_spy(ws, _RecordingRoomRepo(), spy)
+
+        assert spy.get_control("r1") == {"primary_lang": "vi", "caption_scale": 1.4}
+        _room, payload = spy.control_calls[0]
+        assert payload["primary_lang"] == "vi"
+        assert payload["caption_scale"] == 1.4
+
+    def test_the_control_reaches_every_language_channel_of_the_room(self):
+        """fan-out 회귀 — 배율은 옛 언어 채널에 남은 화면에도 닿아야 한다."""
+        from tests.broadcast_spy import SpyBroadcastManager
+
+        spy = SpyBroadcastManager()
+        loop = asyncio.new_event_loop()
+        try:
+            q_ko = loop.run_until_complete(spy.register_viewer("r1", "ko"))
+            q_vi = loop.run_until_complete(spy.register_viewer("r1", "vi"))
+        finally:
+            loop.close()
+
+        ws = _ws_yielding([{"type": "stage_control", "caption_scale": 1.4}])
+        _run_with_spy(ws, _RecordingRoomRepo(), spy)
+
+        assert q_ko.qsize() == 1
+        assert q_vi.qsize() == 1
+        assert q_ko.get_nowait()["caption_scale"] == 1.4
+
+    def test_transcript_traffic_never_touches_control_state(self):
+        """자막 hot path 는 control 경로를 타지 않는다."""
+        from tests.broadcast_spy import SpyBroadcastManager
+
+        spy = SpyBroadcastManager()
+        ws = _ws_yielding(
+            [
+                {"type": "transcript", "text": "hello", "is_final": True},
+                {"type": "transcript", "text": "world", "is_final": True},
+            ]
+        )
+
+        _run_handler(
+            ws,
+            _RecordingRoomRepo(),
+            extra_patches=(
+                patch("websocket_handler._handle_transcript", new=AsyncMock()),
+                patch("websocket_handler._broadcast_manager", spy),
+            ),
+        )
+
+        assert spy.control_count == 0
+        assert spy.get_control("r1") is None
+
+
+class TestLanguageUpdatePublishesControl:
+    """TC-079 뒷절반 — 세션 중 언어 변경도 control 을 정확히 1회 낸다."""
+
+    def test_a_changed_language_publishes_one_control(self):
+        from tests.broadcast_spy import SpyBroadcastManager
+
+        spy = SpyBroadcastManager()
+        repo = _RecordingRoomRepo()  # row 는 primary_output_lang='vi'
+        ws = _ws_yielding(
+            [{"type": "language_update", "input_lang": "ko", "output_lang": "en"}]
+        )
+
+        sent = _run_with_spy(ws, repo, spy)
+
+        assert spy.control_count == 1, spy.control_calls
+        room_id, payload = spy.control_calls[0]
+        assert room_id == "r1"
+        assert payload["event"] == "control"
+        assert payload["primary_lang"] == "en"
+        assert spy.get_control("r1") == {"primary_lang": "en"}
+        assert any(m["type"] == "language_updated" for m in sent)
+
+    def test_an_unchanged_language_publishes_nothing(self):
+        """행이 이미 vi 인데 vi 로 다시 보내면 발행 0회다."""
+        from tests.broadcast_spy import SpyBroadcastManager
+
+        spy = SpyBroadcastManager()
+        repo = _RecordingRoomRepo()  # row 는 primary_output_lang='vi'
+        ws = _ws_yielding(
+            [{"type": "language_update", "input_lang": "auto", "output_lang": "vi"}]
+        )
+
+        sent = _run_with_spy(ws, repo, spy)
+
+        assert spy.control_count == 0, spy.control_calls
+        assert spy.get_control("r1") is None
+        assert any(m["type"] == "language_updated" for m in sent)
+
+    def test_a_failing_write_publishes_nothing(self):
+        from tests.broadcast_spy import SpyBroadcastManager
+
+        spy = SpyBroadcastManager()
+        repo = _RecordingRoomRepo(raises=RuntimeError("boom"))
+        ws = _ws_yielding(
+            [{"type": "language_update", "input_lang": "ko", "output_lang": "en"}]
+        )
+
+        sent = _run_with_spy(ws, repo, spy)
+
+        assert spy.control_count == 0, spy.control_calls
+        assert any(m["type"] == "language_updated" for m in sent)
+
+    def test_memory_only_mode_publishes_nothing(self):
+        from tests.broadcast_spy import SpyBroadcastManager
+
+        spy = SpyBroadcastManager()
+        ws = _ws_yielding(
+            [{"type": "language_update", "input_lang": "ko", "output_lang": "en"}]
+        )
+
+        sent = _run_with_spy(ws, None, spy)
+
+        assert spy.control_count == 0, spy.control_calls
+        assert any(m["type"] == "language_updated" for m in sent)
+
+    def test_two_updates_publish_once_each_and_never_for_a_repeat(self):
+        """연속 변경은 각각 1회, 같은 값 반복은 0회 — 합계 2회다."""
+        from tests.broadcast_spy import SpyBroadcastManager
+
+        spy = SpyBroadcastManager()
+        repo = _RecordingRoomRepo()  # 'vi' 에서 시작
+        ws = _ws_yielding(
+            [
+                {"type": "language_update", "input_lang": "ko", "output_lang": "en"},
+                {"type": "language_update", "input_lang": "ko", "output_lang": "en"},
+                {"type": "language_update", "input_lang": "ko", "output_lang": "zh"},
+            ]
+        )
+
+        _run_with_spy(ws, repo, spy)
+
+        langs = [p["primary_lang"] for _r, p in spy.control_calls]
+        assert langs == ["en", "zh"], spy.control_calls

@@ -5,6 +5,7 @@ OpenAI Realtime API 통합, 번역 처리, 사용량 추적
 
 import asyncio
 import json
+import math
 import os
 import socket
 import time
@@ -21,7 +22,11 @@ from services import (
     get_aws_region,
     get_aws_secret_access_key,
 )
-from sse_broadcast import BroadcastManager, broadcast_translation_for_room
+from sse_broadcast import (
+    BroadcastManager,
+    broadcast_translation_for_room,
+    build_control_payload,
+)
 from translation import (
     detect_language,
     translate_with_llm,
@@ -30,6 +35,36 @@ from translation import (
 
 # Per-connection rate limit: max messages per minute (sliding window)
 WS_RATE_LIMIT_PER_MINUTE = int(os.getenv("WS_RATE_LIMIT_PER_MINUTE", "30"))
+
+# 무대 자막 배율의 허용 범위 (ISSUE-53). 하한이 1.0 미만이어도 되는 이유는
+# 대비 판정이 글자 크기와 무관하기 때문이다 — 무대/뷰어의 흐린 텍스트 알파는
+# large-text 완화(3:1)가 아니라 **일반 텍스트 4.5:1** 기준으로 정해졌으므로
+# (ISSUE-40/45) 축소가 AA 를 깨지 않는다.
+CAPTION_SCALE_MIN = 0.8
+CAPTION_SCALE_MAX = 1.6
+
+# RL-006: 클라이언트로 나가는 거절 문구는 이 상수 하나뿐이다. 검증 실패 사유나
+# 받은 값을 되돌려 주지 않는다 — 오퍼레이터 화면은 행사장에서 공유될 수 있다.
+_STAGE_CONTROL_REJECTED_MSG = "자막 크기를 적용하지 못했습니다."
+
+
+def _coerce_caption_scale(value):
+    """유효한 배율이면 float, 아니면 None.
+
+    ``bool`` 을 먼저 걷어내는 것이 핵심이다 — 파이썬에서 ``True`` 는 ``int``
+    이고 1.0 으로 통과해 버린다. 문자열은 강제 변환하지 않는다: ``"1.2"`` 를
+    받아 주면 프로토콜이 조용히 넓어지고, ``"크게"`` 는 ``float()`` 에서 터진다.
+    ``math.isfinite`` 가 NaN / inf 를 함께 막는다.
+    """
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    scale = float(value)
+    if not math.isfinite(scale):
+        return None
+    if scale < CAPTION_SCALE_MIN or scale > CAPTION_SCALE_MAX:
+        return None
+    return scale
+
 
 # Module-level RoomManager singleton.
 # Tests substitute this via `patch("websocket_handler._room_manager", ...)`.
@@ -121,6 +156,63 @@ def _persist_session_languages(room_id, language_settings) -> bool:
         # RL-006: 내부 예외는 서버 로그로만. 파이프라인은 계속 돈다.
         print(f"[Lang] 세션 언어 기록 실패 (room={room_id}): {e!r}")
         return False
+
+
+def _current_primary_lang(room_id):
+    """룸 행이 지금 기록하고 있는 송출 언어 (없으면 None).
+
+    control 발행 게이트 전용이다 (ISSUE-53). ``update_session_languages`` 의
+    bool 은 "세 컬럼이 요청한 값을 갖는다" 를 뜻하고 **이미 같은 값이라 UPDATE
+    를 생략한 경우에도 True** 이므로, 그것만으로는 "알릴 변화가 있었는가" 를
+    답할 수 없다. 재접속마다 control 을 쏘면 이미 보고 있는 무대 화면이 이유
+    없이 재구독하고 자막이 한 프레임 끊긴다.
+    """
+    if not room_id:
+        return None
+    repo = getattr(_room_manager, "_repo", None)
+    if repo is None:
+        return None
+    try:
+        row = repo.get_by_id(room_id)
+    except Exception as e:
+        # RL-006: 내부 예외는 서버 로그로만. 못 읽으면 "모른다"(None) 로 둔다.
+        print(f"[Lang] 룸 언어 조회 실패 (room={room_id}): {e!r}")
+        return None
+    return (row or {}).get("primary_output_lang")
+
+
+async def _publish_control(room_id, **fields):
+    """control 상태를 머지하고 그 룸의 모든 언어 채널에 방송한다 (ISSUE-53).
+
+    발행 실패는 서버 로그로만 흐른다 — 이 함수의 호출자는 인증과 자막
+    파이프라인이고, 메타데이터 방송 실패가 세션을 죽여서는 안 된다 (RL-006).
+    """
+    if not room_id:
+        return
+    try:
+        snapshot = _broadcast_manager.set_control(room_id, **fields)
+        await _broadcast_manager.publish_control(
+            room_id, build_control_payload(room_id, snapshot)
+        )
+    except Exception as e:
+        print(f"[Control] 발행 실패 (room={room_id}): {e!r}")
+
+
+async def _record_session_languages(room_id, language_settings):
+    """언어를 룸 행에 기록하고(ISSUE-52), **실제로 바뀐 경우에만** 방송한다.
+
+    발행 조건이 두 개인 이유는 각각 다른 실패를 막기 때문이다.
+      - 기록이 성공했는가 (`update_session_languages` 의 bool) — 검증 실패나
+        존재하지 않는 룸에 대해 방송하면 청중이 서버에 없는 채널로 옮겨 간다.
+      - 값이 실제로 달라졌는가 — 위 docstring 참조.
+    """
+    previous = _current_primary_lang(room_id)
+    if not _persist_session_languages(room_id, language_settings):
+        return
+    output_lang = language_settings.get("output_lang", "ko")
+    if previous == output_lang:
+        return
+    await _publish_control(room_id, primary_lang=output_lang)
 
 
 async def _authenticate_client(websocket):
@@ -264,7 +356,11 @@ async def _authenticate_client(websocket):
             # 무대 화면을 열 수 있으므로, 그 페이지가 읽을 행이 그 시점에 이미
             # 정확해야 한다. 세션 도중의 language_update 는 그런 경합이 없어
             # ack 지연을 없애는 쪽(먼저 응답)을 택했다.
-            _persist_session_languages(
+            #
+            # ISSUE-53: 기록이 실제로 룸의 송출 언어를 **바꿨을 때만** 여기서
+            # control 을 방송한다. 이미 열려 있는 무대/뷰어 화면이 새 채널로
+            # 옮겨 가는 지점이며, 응답보다 앞서야 아래 스냅샷이 그 값을 담는다.
+            await _record_session_languages(
                 resolved_room_id, validated_user["language_settings"]
             )
 
@@ -278,6 +374,10 @@ async def _authenticate_client(websocket):
                         "type": "auth_success",
                         "message": "인증 완료",
                         "room_id": resolved_room_id,
+                        # ISSUE-54 가 자막 크기 슬라이더를 서버 값으로 맞추는
+                        # 근거. 상태가 없으면 null 이다 — 기본값을 지어내면
+                        # 오퍼레이터 화면이 서버가 모르는 값을 권위처럼 표시한다.
+                        "control": _broadcast_manager.get_control(resolved_room_id),
                     }
                 )
             )
@@ -905,9 +1005,10 @@ async def handle_openai_websocket(websocket):
                     # SQLite 쓰기에 묶이지 않게 하고, 기록이 실패하더라도
                     # language_updated 는 이미 나가 있다 (ISSUE-52 / RL-006).
                     # 이 기록 덕분에 **이후 새로 여는** 무대/뷰어 페이지가 바뀐
-                    # 언어를 구독한다. 이미 열려 있는 화면의 실시간 추종은
-                    # ISSUE-53 담당.
-                    _persist_session_languages(
+                    # 언어를 구독하고, 기록이 실제로 값을 바꿨다면 뒤이은
+                    # control 발행이 **이미 열려 있는** 화면까지 데려간다
+                    # (ISSUE-53).
+                    await _record_session_languages(
                         user_info.get("room_id"), language_settings
                     )
                     print(
@@ -915,6 +1016,37 @@ async def handle_openai_websocket(websocket):
                         f"{language_settings['input_lang']} -> "
                         f"{language_settings['output_lang']}"
                     )
+
+                elif msg_type == "stage_control":
+                    # 무대 자막 배율 (ISSUE-53). 보내는 쪽 UI 는 ISSUE-54 다.
+                    # room_id 는 클라이언트 payload 가 아니라 인증이 확정한
+                    # 값이다 (RL-002) — 다른 룸의 화면을 조작할 수 없다.
+                    scale = _coerce_caption_scale(data.get("caption_scale"))
+                    room_id = user_info.get("room_id")
+                    if scale is None or not room_id:
+                        # 상태도 발행도 없다. 사유는 서버 로그로만 (RL-006).
+                        print(
+                            f"[Control] stage_control 거절 "
+                            f"(room={room_id}): {data.get('caption_scale')!r}"
+                        )
+                        await websocket.send(
+                            json.dumps(
+                                {
+                                    "type": "stage_control_error",
+                                    "message": _STAGE_CONTROL_REJECTED_MSG,
+                                }
+                            )
+                        )
+                    else:
+                        await _publish_control(room_id, caption_scale=scale)
+                        await websocket.send(
+                            json.dumps(
+                                {
+                                    "type": "stage_control_ack",
+                                    "caption_scale": scale,
+                                }
+                            )
+                        )
 
                 elif msg_type == "transcript":
                     await _handle_transcript(

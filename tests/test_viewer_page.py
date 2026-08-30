@@ -1448,3 +1448,206 @@ class TestViewerCaptionLiveRegion:
                 f"paths that change what the active state is showing: {body!r}"
             )
             assert "syncStateAnnouncement();" in body, missed
+
+
+# ---------------------------------------------------------------------------
+# control 이벤트 수신 — 언어 추종 + 자막 배율 (ISSUE-53, FR-085 / TC-083 · TC-086)
+# ---------------------------------------------------------------------------
+_VIEWER_CONNECT_BODY = r"function connect\(lang\) \{(.*?)\n    \}"
+_SWITCH_LANGUAGE_BODY = r"function switchLanguage\(next\) \{(.*?)\n    \}"
+_HANDLE_CONTROL_BODY = r"function handleControl\(payload\) \{(.*?)\n    \}"
+_APPLY_SCALE_BODY = r"function applyCaptionScale\(value\) \{(.*?)\n    \}"
+_CLEAR_CAPTIONS_BODY = r"function clearCaptions\(\) \{(.*?)\n    \}"
+
+
+class TestViewerControlChannel:
+    """청중이 직접 고른 언어는 control 에 끌려가지 않는다 (헤드라인 규칙)."""
+
+    def test_control_has_its_own_named_listener(self, viewer_html):
+        """자막 hot path 에 조건문을 늘리지 않는다 — 분리된 리스너다."""
+        assert 'addEventListener("control"' in viewer_html
+        body = re.search(
+            r'es\.addEventListener\("message", \(ev\) => \{(.*?)\n      \}\);',
+            viewer_html,
+            re.S,
+        )
+        assert body is not None, "message 리스너를 찾지 못했다"
+        assert "payload.event" not in body.group(1), body.group(1)
+
+    def test_the_dropdown_is_the_only_explicit_selection_signal(self, viewer_html):
+        """`langLocked` 는 드롭다운 `change` 에서만 세워진다.
+
+        뷰어는 `?lang=` 을 읽지 않으므로(브라우저 파싱 금지) 명시적 선택의
+        신호는 드롭다운 하나뿐이다.
+        """
+        change = re.search(
+            r'langSelect\.addEventListener\("change", \(ev\) => \{(.*?)\n    \}\);',
+            viewer_html,
+            re.S,
+        )
+        assert change is not None, "langSelect change 핸들러를 찾지 못했다"
+        assert "langLocked = true;" in change.group(1), change.group(1)
+
+        writes = re.findall(r"langLocked\s*=\s*(?!=)", viewer_html)
+        assert len(writes) == 2, (
+            f"langLocked is assigned {len(writes)} time(s); exactly two are "
+            "allowed — the `let` initialiser and the dropdown change handler. "
+            "Any other writer means something else can lock or unlock the "
+            "attendee's choice"
+        )
+
+    def test_the_lock_is_not_persisted_across_sessions(self, viewer_html):
+        """`localStorage` 로 잠금을 남기면 다음 세션의 다른 언어까지 따라온다."""
+        assert "localStorage" not in viewer_html
+        assert "sessionStorage" not in viewer_html
+
+    def test_control_respects_the_lock_before_it_switches(self, viewer_html):
+        body = _js_body(viewer_html, _HANDLE_CONTROL_BODY)
+        lock_at = body.find("langLocked")
+        switch_at = body.find("switchLanguage(")
+        assert lock_at != -1, f"handleControl must honour langLocked: {body!r}"
+        assert switch_at != -1, f"handleControl must be able to switch: {body!r}"
+        assert (
+            lock_at < switch_at
+        ), f"the langLocked guard must precede the switch: {body!r}"
+
+    def test_control_respects_the_ended_state(self, viewer_html):
+        """종료 상태의 뷰어는 재구독하지 않는다.
+
+        범위 밖인 RL-022(`session_end` 가 종료 플래그를 세우지 않는 문제)를
+        여기서 고치지는 않되, **새로 붙는 이 리스너**는 실제 종료 상태를 읽고
+        스스로 물러난다.
+        """
+        body = _js_body(viewer_html, _HANDLE_CONTROL_BODY)
+        ended_at = body.find("stateNodes.ended")
+        switch_at = body.find("switchLanguage(")
+        assert ended_at != -1, f"handleControl must check the ended state: {body!r}"
+        assert ended_at < switch_at, body
+
+    def test_control_moves_the_dropdown_with_the_subscription(self, viewer_html):
+        """구독과 UI 가 갈라지지 않는다 — 표시값도 함께 움직인다."""
+        body = _js_body(viewer_html, _HANDLE_CONTROL_BODY)
+        assert "langSelect.value = next;" in body, body
+
+    def test_an_unsupported_or_repeated_language_is_a_noop(self, viewer_html):
+        body = _js_body(viewer_html, _HANDLE_CONTROL_BODY)
+        assert "next === currentLang" in body, body
+        assert "includes(next)" in body, body
+
+    def test_switch_language_measures_follow_before_it_writes(self, viewer_html):
+        """재구독 경로도 `_lockLine()` 과 같은 순서 규칙을 지킨다.
+
+        스택을 비우고 대기 문구를 다시 그리는 것은 큰 DOM 쓰기다. 쓴 뒤에
+        `isUserAtBottom()` 을 물으면 방금 바뀐 높이가 gap 으로 잡혀 크레딧 롤이
+        영구히 꺼진다 — 되돌릴 계기가 없는 결함이다.
+        """
+        body = _js_body(viewer_html, _SWITCH_LANGUAGE_BODY)
+        measured = body.find("isUserAtBottom()")
+        cleared = body.find("clearCaptions()")
+        assert measured != -1, f"switchLanguage must measure follow: {body!r}"
+        assert cleared != -1, f"switchLanguage must clear the stack: {body!r}"
+        assert measured < cleared, (
+            "switchLanguage must call isUserAtBottom() BEFORE it clears the "
+            f"caption stack, got offsets {measured}/{cleared}: {body!r}"
+        )
+        assert (
+            "if (follow) _scrollToBottom();" in body
+        ), f"switchLanguage must scroll on the pre-measured flag: {body!r}"
+        assert "_scrollIfBottom()" not in body, body
+
+    def test_switch_language_runs_the_fixed_order(self, viewer_html):
+        body = _js_body(viewer_html, _SWITCH_LANGUAGE_BODY)
+        cleared = body.find("clearCaptions()")
+        opened = body.find("connect(next)")
+        waiting = body.find("applyWaitingText(next)")
+        assert cleared < opened < waiting, (
+            "switchLanguage must run clear -> connect -> waiting-text, got "
+            f"offsets {cleared}/{opened}/{waiting}: {body!r}"
+        )
+
+    def test_the_old_stream_closes_before_the_new_one_opens(self, viewer_html):
+        body = _js_body(viewer_html, _VIEWER_CONNECT_BODY)
+        closed = body.find("closeStream()")
+        opened = body.find("new EventSource(")
+        assert closed != -1, f"connect must close any live stream first: {body!r}"
+        assert (
+            closed < opened
+        ), f"connect must close before it opens, got {closed}/{opened}: {body!r}"
+
+    def test_clear_captions_resets_the_whole_typewriter_tuple(self, viewer_html):
+        """RL-022 — 핸들 하나만 비우고 나머지를 무장한 채 두지 않는다."""
+        body = _js_body(viewer_html, _CLEAR_CAPTIONS_BODY)
+        for statement in (
+            "_twStop();",
+            "currentLine = null;",
+            'twTarget = "";',
+            "twShown = 0;",
+            "twFinalize = false;",
+        ):
+            assert (
+                statement in body
+            ), f"`{statement}` missing from clearCaptions: {body!r}"
+        stop = body.find("_twStop();")
+        cleared = body.find("replaceChildren()")
+        assert stop < cleared, (
+            "the timer must stop before the nodes it writes to are removed, got "
+            f"offsets {stop}/{cleared}: {body!r}"
+        )
+
+    def test_the_dropdown_and_control_share_one_switch_path(self, viewer_html):
+        """재구독 함수는 하나다 — 두 경로가 갈라지면 규칙도 갈라진다 (RL-001)."""
+        callers = re.findall(r"(?<!function )\bswitchLanguage\(([^)]*)\)", viewer_html)
+        assert sorted(callers) == ["next", "next"], (
+            f"switchLanguage is called with {callers}; exactly two call sites "
+            "are allowed — the dropdown handler and the control listener"
+        )
+
+
+class TestViewerCaptionScale:
+    def test_root_declares_the_scale_default(self, viewer_html):
+        block = _rule_block(viewer_html, ":root")
+        match = re.search(r"--caption-scale:\s*([^;]+);", block)
+        assert match is not None, f":root must declare --caption-scale: {block!r}"
+        assert match.group(1).strip() == "1", match.group(1)
+
+    def test_the_scale_multiplies_only_the_caption_line(self, viewer_html):
+        line = _rule_block(viewer_html, ".caption-line")
+        assert "var(--caption-scale)" in line, line
+        assert re.search(
+            r"font-size:\s*calc\(clamp\(.*?\)\s*\*\s*var\(--caption-scale\)\)", line
+        ), line
+
+        for selector in (".caption-empty", ".state-message", ".conn-error"):
+            block = _rule_block(viewer_html, selector)
+            assert (
+                "--caption-scale" not in block
+            ), f"{selector} must not scale with the caption slider: {block!r}"
+
+    def test_caption_typography_survives_the_scale(self, viewer_html):
+        block = _rule_block(viewer_html, ".caption-line")
+        assert "word-break: keep-all" in block, block
+        assert "overflow-wrap: break-word" in block, block
+
+    def test_the_client_clamps_the_scale_to_the_declared_range(self, viewer_html):
+        assert "const CAPTION_SCALE_MIN = 0.8;" in viewer_html
+        assert "const CAPTION_SCALE_MAX = 1.6;" in viewer_html
+        body = _js_body(viewer_html, _APPLY_SCALE_BODY)
+        assert "Math.min(CAPTION_SCALE_MAX" in body, body
+        assert "Math.max(CAPTION_SCALE_MIN" in body, body
+        assert 'typeof value !== "number"' in body, body
+        assert "isFinite(value)" in body, body
+
+    def test_the_caption_line_stays_aa_at_the_lower_bound(self, viewer_html):
+        """AC — 배율 0.8 에서도 4.5:1 이상 (`tests/wcag.py` 공용 헬퍼 사용)."""
+        canvas = _hex_rgb("#0b0b0c")
+        ratio = _contrast_ratio(_rule_rgba(viewer_html, ".caption-line"), canvas)
+        assert (
+            ratio >= 4.5
+        ), f".caption-line is {ratio:.2f}:1 at any scale; WCAG AA needs 4.5:1"
+
+    def test_the_sub_one_lower_bound_carries_its_rationale(self, viewer_html):
+        block = _rule_block(viewer_html, ":root")
+        assert "4.5:1" in block, (
+            "the --caption-scale declaration must record why a sub-1.0 lower "
+            f"bound is safe: {block!r}"
+        )

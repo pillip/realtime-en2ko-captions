@@ -284,6 +284,7 @@ class TestStageHtmlMarkup:
             "{{ROOM_NAME}}",
             "{{OUTPUT_LANGS_JSON}}",
             "{{PRIMARY_LANG}}",
+            "{{LANG_PINNED}}",
             "{{INITIAL_STATE}}",
             "{{STAGE_CONFIG_JSON}}",
         ):
@@ -587,7 +588,9 @@ class TestStageCaptionColumn:
         """
         block = _rule_block(stage_html, ".caption-line")
         for declaration in (
-            "font-size: clamp(20px, 1.4vw + 8px, 32px);",
+            # ISSUE-53 이 clamp() 를 `--caption-scale` 로 감쌌다. clamp 의 세 값은
+            # 그대로이며, 배율 곱까지 **같은 규칙 안에** 있다는 것을 함께 못 박는다.
+            "font-size: calc(clamp(20px, 1.4vw + 8px, 32px) * var(--caption-scale));",
             "line-height: 1.45;",
             "word-break: keep-all;",
             "overflow-wrap: anywhere;",
@@ -723,16 +726,42 @@ class TestStageCaptionColumn:
         assert ratio >= 4.5, f".conn-error text is {ratio:.2f}:1, WCAG AA needs 4.5:1"
 
     def test_stream_subscription_uses_the_bootstrapped_caption_lang(self, stage_html):
-        """AC — 언어는 조작 UI 가 아니라 서버가 확정한 `caption_lang` 으로 고정.
+        """ISSUE-40 가드의 **강화판** — 초기 구독은 부트스트랩 값을 쓴다.
 
-        서버(`_handle_stage`)가 `?lang=` 을 검증해 `caption_lang` 으로 내려주므로
-        클라이언트는 그 값을 그대로 쓴다 — 브라우저에서 다시 파싱하면 서버가
-        거부한 코드가 되살아난다.
+        원래 단언("언어는 조작 UI 가 아니라 서버가 확정한 값으로 고정")은
+        ISSUE-53 이 control 재구독을 도입하면서 문자 그대로는 성립하지 않는다.
+        의도는 그대로 살린다: **브라우저가 쿼리를 다시 파싱하지 않고**, 첫
+        구독은 서버가 내려준 `CONFIG.caption_lang` 이며, 그 뒤 구독은 오직
+        control 이벤트가 정한다. 삭제 대신 더 구체적으로 못 박는 처리다
+        (ISSUE-42 가 ISSUE-40 의 keydown 가드에 한 것과 같다).
         """
         assert "new EventSource(" in stage_html
         assert '"/stream/"' in stage_html
         assert "encodeURIComponent(CONFIG.room_id)" in stage_html
-        assert "CONFIG.caption_lang" in stage_html
+
+        # (1) 초기 구독은 부트스트랩 값에서 출발한다.
+        seed = re.search(r"let currentLang\s*=\s*CONFIG\.caption_lang\b", stage_html)
+        assert seed is not None, (
+            "the module-level current language must be seeded from "
+            "CONFIG.caption_lang"
+        )
+
+        # (2) 브라우저에서 쿼리를 다시 파싱하지 않는다 — 서버가 거부한 코드가
+        #     되살아나는 경로다. `?debug=1` 오버레이만이 유일한 예외다.
+        parses = re.findall(r"URLSearchParams\(location\.search\)", stage_html)
+        assert len(parses) == 1, (
+            f"stage.html parses location.search {len(parses)} time(s); only the "
+            "?debug=1 overlay may do so — the caption language comes from the "
+            "server, never from a browser-side re-parse"
+        )
+        # (3) 그 뒤의 구독 변경 경로는 control 하나뿐이다.
+        callers = re.findall(r"(?<!function )\bconnect\(([^)]*)\)", stage_html)
+        assert sorted(callers) == ["CONFIG.caption_lang", "next"], (
+            f"connect() is called with {callers}; exactly two call sites are "
+            "allowed — the bootstrap seed and the control re-subscribe"
+        )
+        resub = _stage_js_body(stage_html, _STAGE_RESUBSCRIBE_BODY)
+        assert "connect(next)" in resub, resub
 
     def test_waiting_copy_is_localised_per_caption_lang(self, stage_html):
         """대기 문구는 viewer.html 의 `WAITING_MSG` 맵을 재사용한다."""
@@ -1366,3 +1395,264 @@ class TestStageHasNoCaptionPipeline:
         """
         assert "EventSource" in stage_html
         assert stage_html.count("getDisplayMedia") >= 1
+
+
+# ---------------------------------------------------------------------------
+# control 이벤트 수신 — 언어 재구독 + 자막 배율 (ISSUE-53, FR-085 / TC-083 · TC-086)
+# ---------------------------------------------------------------------------
+# 최상위 함수 본문은 4칸 들여쓰기로 닫힌다 (test_viewer_page.py 와 동일 규칙).
+_STAGE_CONNECT_BODY = r"function connect\(lang\) \{(.*?)\n    \}"
+_STAGE_RESUBSCRIBE_BODY = r"function resubscribe\(next\) \{(.*?)\n    \}"
+_STAGE_HANDLE_CONTROL_BODY = r"function handleControl\(payload\) \{(.*?)\n    \}"
+_STAGE_APPLY_SCALE_BODY = r"function applyCaptionScale\(value\) \{(.*?)\n    \}"
+
+
+def _stage_js_body(source: str, pattern: str) -> str:
+    """함수 본문에서 주석 줄을 걷어낸 코드만 돌려준다 (순서 단언 오염 방지)."""
+    match = re.search(pattern, source, re.S)
+    assert match is not None, f"no match for {pattern!r} in stage.html"
+    lines = match.group(1).splitlines()
+    return "\n".join(ln for ln in lines if not ln.strip().startswith("//"))
+
+
+class TestStageControlChannel:
+    @pytest.fixture
+    def stage_html(self) -> str:
+        assert _STAGE_TEMPLATE.exists(), f"stage.html missing: {_STAGE_TEMPLATE}"
+        return _STAGE_TEMPLATE.read_text(encoding="utf-8")
+
+    def test_control_has_its_own_named_listener(self, stage_html):
+        """SSE named event 를 쓰는 이유를 지킨다 — message 안에서 분기하지 않는다.
+
+        `message` 핸들러 안에서 `payload.event` 를 보면 자막 hot path 에 조건문이
+        하나 늘고, 서버가 이름을 붙여 보내는 의미가 사라진다.
+        """
+        assert 'addEventListener("control"' in stage_html
+        message_body = re.search(
+            r'es\.addEventListener\("message", function \(ev\) \{(.*?)\n      \}\);',
+            stage_html,
+            re.S,
+        )
+        assert message_body is not None, "message 리스너를 찾지 못했다"
+        body = message_body.group(1)
+        assert "payload.event" not in body, body
+        assert "control" not in body, body
+
+    def test_the_control_listener_respects_the_ended_session(self, stage_html):
+        """AC — 종료 후 늦게 도착한 control 로 재구독하지 않는다."""
+        body = _stage_js_body(stage_html, _STAGE_HANDLE_CONTROL_BODY)
+        assert "sessionEnded" in body, body
+        guard = body.find("sessionEnded")
+        for later in ("applyCaptionScale", "applyPrimaryLang"):
+            at = body.find(later)
+            assert at != -1, f"{later} missing from handleControl: {body!r}"
+            assert guard < at, (
+                "the sessionEnded guard must precede every effect in "
+                f"handleControl, got {body!r}"
+            )
+
+    def test_connect_takes_the_language_as_an_argument(self, stage_html):
+        """`connect(lang)` — viewer.html 과 같은 시그니처 (RL-001 파리티)."""
+        assert re.search(r"function connect\(lang\)", stage_html) is not None
+        body = _stage_js_body(stage_html, _STAGE_CONNECT_BODY)
+        assert "encodeURIComponent(lang)" in body, body
+        assert "CONFIG.caption_lang" not in body, (
+            "connect() must subscribe to its argument, not re-read the "
+            f"bootstrap value: {body!r}"
+        )
+
+    def test_the_bootstrap_value_is_never_reassigned(self, stage_html):
+        """`CONFIG.caption_lang` 은 '서버가 무엇을 줬는가' 의 기록으로 남는다.
+
+        가변 상태로 재활용하면 `lang_pinned` 판정과 디버깅의 근거가 사라진다.
+        정적 단언: 대입 구문이 0건이다.
+        """
+        writes = re.findall(r"CONFIG\.caption_lang\s*(?:=[^=]|\+\+|--)", stage_html)
+        assert writes == [], f"CONFIG.caption_lang is assigned to: {writes}"
+
+    def test_resubscribe_runs_the_fixed_order(self, stage_html):
+        """AC — ③ _twStop → ④ 상태 초기화 → ⑤ replaceChildren → ⑦ connect.
+
+        `_twStop()` 이 `replaceChildren()` 보다 앞서야 rAF 콜백이 방금 지운
+        노드에 쓰지 않는다. 존재가 아니라 **순서**를 단언한다 (RL-004).
+        """
+        body = _stage_js_body(stage_html, _STAGE_RESUBSCRIBE_BODY)
+        stop = body.find("_twStop()")
+        cleared = body.find("replaceChildren()")
+        opened = body.find("connect(next)")
+        assert stop != -1, f"resubscribe must stop the typewriter: {body!r}"
+        assert cleared != -1, f"resubscribe must clear the stack: {body!r}"
+        assert opened != -1, f"resubscribe must open the new stream: {body!r}"
+        assert stop < cleared < opened, (
+            "resubscribe must run stop -> clear -> connect, got offsets "
+            f"{stop}/{cleared}/{opened}: {body!r}"
+        )
+
+    def test_resubscribe_resets_the_whole_typewriter_tuple(self, stage_html):
+        """RL-022 — 핸들 하나만 비우고 나머지를 무장한 채 두지 않는다."""
+        body = _stage_js_body(stage_html, _STAGE_RESUBSCRIBE_BODY)
+        for statement in (
+            "currentLine = null;",
+            'twTarget = "";',
+            "twShown = 0;",
+            "twFinalize = false;",
+        ):
+            assert (
+                statement in body
+            ), f"`{statement}` missing from resubscribe: {body!r}"
+
+    def test_the_old_stream_closes_before_the_new_one_opens(self, stage_html):
+        """⑥ before ⑦ — 두 스트림이 한 컬럼에 섞이면 자막이 교차한다."""
+        body = _stage_js_body(stage_html, _STAGE_CONNECT_BODY)
+        closed = body.find("closeStream()")
+        opened = body.find("new EventSource(")
+        assert closed != -1, f"connect must close any live stream first: {body!r}"
+        assert opened != -1, f"connect must open a stream: {body!r}"
+        assert (
+            closed < opened
+        ), f"connect must close before it opens, got {closed}/{opened}: {body!r}"
+
+    def test_resubscribe_does_not_write_the_live_region_directly(self, stage_html):
+        """RL-019 — 라이브 리전 쓰기 경로는 `setCaptionState()` 하나로 유지된다."""
+        body = _stage_js_body(stage_html, _STAGE_RESUBSCRIBE_BODY)
+        assert "announce(" not in body, (
+            "resubscribe must not call announce() — setCaptionState() already "
+            f"owns the waiting-text narration (RL-019): {body!r}"
+        )
+        assert "setCaptionState(" in body, body
+
+    def test_resubscribe_rebuilds_the_waiting_text_in_the_new_language(
+        self, stage_html
+    ):
+        body = _stage_js_body(stage_html, _STAGE_RESUBSCRIBE_BODY)
+        assert "currentLang = next;" in body, body
+        lang_at = body.find("currentLang = next;")
+        state_at = body.find("setCaptionState(")
+        assert lang_at < state_at, (
+            "the current language must be updated before setCaptionState() reads "
+            f"it for the waiting narration: {body!r}"
+        )
+
+    def test_resubscribe_keeps_the_stage_free_of_scroll_affordances(self, stage_html):
+        """무대에는 조작자가 없다 — 추종 측정 분기를 이식하지 않는다.
+
+        `test_no_user_scroll_override_controls` 와 같은 규칙이며, 재구독 경로가
+        그 규칙의 예외가 되지 않는지 함수 본문 단위로 확인한다.
+        """
+        body = _stage_js_body(stage_html, _STAGE_RESUBSCRIBE_BODY)
+        assert "isUserAtBottom" not in body, body
+
+    def test_an_unsupported_language_is_rejected_client_side(self, stage_html):
+        """서버가 이미 막지만 클라이언트도 자기 목록으로 판정한다."""
+        body = _stage_js_body(
+            stage_html, r"function applyPrimaryLang\(next\) \{(.*?)\n    \}"
+        )
+        assert "CONFIG.output_langs" in body, body
+        assert "includes(next)" in body, body
+        assert "CONFIG.lang_pinned" in body, body
+        assert "next === currentLang" in body, body
+
+
+class TestStageCaptionScale:
+    @pytest.fixture
+    def stage_html(self) -> str:
+        return _STAGE_TEMPLATE.read_text(encoding="utf-8")
+
+    def test_root_declares_the_scale_default(self, stage_html):
+        block = _rule_block(stage_html, ":root")
+        match = re.search(r"--caption-scale:\s*([^;]+);", block)
+        assert match is not None, f":root must declare --caption-scale: {block!r}"
+        assert match.group(1).strip() == "1", match.group(1)
+
+    def test_the_scale_multiplies_only_the_caption_line(self, stage_html):
+        """상태 문구에는 걸지 않는다 — 오퍼레이터가 키우려는 것은 자막이다."""
+        line = _rule_block(stage_html, ".caption-line")
+        assert "var(--caption-scale)" in line, line
+        assert re.search(
+            r"font-size:\s*calc\(clamp\(.*?\)\s*\*\s*var\(--caption-scale\)\)", line
+        ), line
+
+        for selector in (".caption-empty", ".caption-ended", ".conn-error"):
+            block = _rule_block(stage_html, selector)
+            assert (
+                "--caption-scale" not in block
+            ), f"{selector} must not scale with the caption slider: {block!r}"
+
+    def test_narrow_column_typography_survives_the_scale(self, stage_html):
+        """배율을 올리면 좁은 컬럼에서 긴 토큰이 넘칠 위험이 오히려 커진다."""
+        block = _rule_block(stage_html, ".caption-line")
+        assert "word-break: keep-all" in block, block
+        assert "overflow-wrap: anywhere" in block, block
+
+    def test_the_client_clamps_the_scale_to_the_declared_range(self, stage_html):
+        """범위 밖 값이 도달해도 레이아웃이 깨지지 않는다."""
+        assert "const CAPTION_SCALE_MIN = 0.8;" in stage_html
+        assert "const CAPTION_SCALE_MAX = 1.6;" in stage_html
+        body = _stage_js_body(stage_html, _STAGE_APPLY_SCALE_BODY)
+        assert "Math.min(CAPTION_SCALE_MAX" in body, body
+        assert "Math.max(CAPTION_SCALE_MIN" in body, body
+        # 비수치는 클램프가 아니라 무시한다 — Number("크게") 는 NaN 이고
+        # NaN 을 clamp 하면 NaN 이 CSS 로 들어가 규칙 전체가 무효가 된다.
+        assert 'typeof value !== "number"' in body, body
+        assert "isFinite(value)" in body, body
+
+    def test_the_caption_line_stays_aa_at_the_lower_bound(self, stage_html):
+        """AC — 배율 0.8 에서도 4.5:1 이상.
+
+        알파는 애초에 **일반 텍스트 4.5:1** 기준으로 정해졌다 (large-text 3:1
+        완화 미사용, ISSUE-40/45). 대비 판정은 글자 크기와 무관하므로 축소가
+        AA 를 깨지 않는다 — 그 사실을 수치로 남긴다. `tests/wcag.py` 공용
+        헬퍼를 쓴다 (복사 금지, RL-001).
+        """
+        ratio = _contrast_ratio(_rule_rgba(stage_html, ".caption-line"), _CANVAS_RGB)
+        assert ratio >= 4.5, (
+            f".caption-line is {ratio:.2f}:1 at any scale; WCAG AA needs 4.5:1. "
+            "The alpha was chosen against the normal-text threshold precisely so "
+            "that shrinking the rendered size cannot invalidate it"
+        )
+
+    def test_the_sub_one_lower_bound_carries_its_rationale(self, stage_html):
+        """주석이 없으면 다음 사람이 '축소하면 대비가 위험하다' 로 되돌린다."""
+        block = _rule_block(stage_html, ":root")
+        assert "4.5:1" in block, (
+            "the --caption-scale declaration must record why a sub-1.0 lower "
+            f"bound is safe: {block!r}"
+        )
+
+
+class TestStageTemplatePlaceholders:
+    @pytest.fixture
+    def stage_html(self) -> str:
+        return _STAGE_TEMPLATE.read_text(encoding="utf-8")
+
+    def test_lang_pinned_placeholder_exists(self, stage_html):
+        assert "{{LANG_PINNED}}" in stage_html
+        assert "lang_pinned: {{LANG_PINNED}}" in stage_html
+
+    def test_every_template_placeholder_is_mapped(self):
+        """미매핑 플레이스홀더가 페이지로 새어 나가지 않는다.
+
+        `_render_stage_html` 은 뷰어와 달리 `values.get(key, 원문)` 이라 오타나
+        누락이 **조용히** `{{LANG_PINNED}}` 문자열 그대로 렌더된다. 뷰어의
+        `test_every_template_placeholder_is_mapped` 대응물이 여기 필요한 이유다.
+        """
+        from sse_broadcast import (
+            _PLACEHOLDER_RE,
+            _STAGE_TEMPLATE_PATH,
+            _render_stage_html,
+        )
+
+        template = _STAGE_TEMPLATE_PATH.read_text(encoding="utf-8")
+        keys = set(_PLACEHOLDER_RE.findall(template))
+        assert keys, "template has no placeholders — regex or template drifted"
+        body = _render_stage_html(
+            room_id="r",
+            room_name="n",
+            output_langs=["ko"],
+            caption_lang="ko",
+            lang_pinned=False,
+            initial_state="waiting",
+            stage_config={},
+        )
+        left = _PLACEHOLDER_RE.findall(body)
+        assert left == [], f"unsubstituted placeholders: {left}"
