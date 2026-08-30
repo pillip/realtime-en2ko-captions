@@ -69,6 +69,45 @@ jobs:
       - name: Run tests with coverage
         run: uv run pytest -m 'not e2e' --cov=. --cov-report=term-missing --cov-fail-under=60
 
+  # Security-guard mutation check (ISSUE-43, NFR-028 / RL-004). Runs in
+  # parallel with e2e. Deliberately NOT a whole-repo mutation run: the
+  # runner walks a fixed catalogue (guard_mutations.toml) restricted to a
+  # hardcoded allowlist and executes only the pytest nodes that declare
+  # "Guard: <id>" in their docstring. Measured locally at ~10s for 20
+  # guards, so the job cost is dominated by checkout + uv sync.
+  #
+  # The `test` job command above is intentionally untouched — adding a gate
+  # must never weaken an existing one.
+  mutation:
+    name: Guard mutation check
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Cache venv
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-py3.11-${{ hashFiles('uv.lock') }}
+          restore-keys: |
+            venv-${{ runner.os }}-py3.11-
+
+      # Non-zero exit means a security guard was deleted without any test
+      # noticing, or a guard lost its `Guard:` owner. Both are hard failures.
+      - name: Run security guard mutation check
+        run: uv run python guard_mutations.py
+
   e2e:
     name: E2E (Playwright)
     runs-on: ubuntu-latest

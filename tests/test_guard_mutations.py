@@ -1,0 +1,459 @@
+"""보안 가드 뮤테이션 러너(`guard_mutations.py`) 자체 단위 테스트 (ISSUE-43).
+
+러너는 "가드를 지우면 반드시 이름 있는 테스트가 깨진다"를 증명하는 장치다.
+그 장치가 스스로 RL-004(무의미하게 통과하는 단언)를 반복하면 아무것도 증명하지
+못하므로, 여기서는 **러너가 실패를 실패라고 말하는지**를 먼저 검증한다.
+
+검증 대상:
+- 아무 테스트도 깨지 않는 무해한 뮤테이션 → `survived` + 비정상 종료
+- 가드를 실제로 무력화하는 뮤테이션 → `killed by <노드 ID>` + 종료 코드 0
+- `find` 스니펫이 1회가 아닌 항목 → 뮤테이션 미적용 + 비정상 종료
+- 뮤테이션 직후 예외 → 대상 파일 바이트 동일 + 샌드박스 제거
+- 허용 목록 밖 파일 → 거부, 그 파일 미수정
+- `Guard:` 로 아무도 지목하지 않은 가드 → `unnamed` + 비정상 종료
+- pytest 종료 코드 1 이 아닌 값(수집 오류/미수집/타임아웃) → kill 이 아니라 ERROR
+- 실제 카탈로그의 정적 대응 관계 (고아 가드 0, 고아 `Guard:` 표기 0)
+
+Note: 대부분의 테스트는 `tmp_path` 안에 만든 **가짜 저장소**를 대상으로 돈다
+(실제 스위트를 재실행하지 않으므로 빠르다). 전체 카탈로그 종단 실행은
+`GUARD_MUTATION_FULL=1` 일 때만 도는 별도 테스트이며 CI 의 `mutation` job 이
+그 역할을 맡는다. 외부 네트워크 호출 없음.
+"""
+
+from __future__ import annotations
+
+import io
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+import guard_mutations
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+REAL_CATALOG = REPO_ROOT / "guard_mutations.toml"
+
+FAKE_GUARD = "branding_assets.is_safe#reject"
+
+# 가짜 저장소의 "프로덕션" 모듈. 허용 목록은 파일명 기준이라 이름을
+# `branding_assets.py` 로 두어야 러너가 실제 경로와 같은 규칙으로 다룬다.
+FAKE_MODULE = '''\
+"""Fake allowlisted module used by the guard-mutation runner tests."""
+
+
+def is_safe(value: str) -> bool:
+    # harmless comment
+    if value == "bad":
+        return False
+    return True
+'''
+
+# `find` 가 2회 등장하는 변형 (정확히 1회 규칙을 깨는 입력).
+FAKE_MODULE_DUPLICATED = '''\
+"""Fake module whose guard snippet appears twice."""
+
+
+def is_safe(value: str) -> bool:
+    if value == "bad":
+        return False
+    return True
+
+
+def is_safe_again(value: str) -> bool:
+    if value == "bad":
+        return False
+    return True
+'''
+
+FAKE_TEST = '''\
+"""Fake test module for the guard-mutation runner."""
+
+import branding_assets
+
+
+def test_rejects_bad_value():
+    """{marker} {guard}
+
+    가짜 저장소용 킬 테스트.
+    """
+    assert branding_assets.is_safe("bad") is False
+'''
+
+FAKE_TEST_WITHOUT_ANNOTATION = '''\
+"""Fake test module with no guard annotation."""
+
+import branding_assets
+
+
+def test_rejects_bad_value():
+    """어떤 가드도 지목하지 않는 테스트."""
+    assert branding_assets.is_safe("bad") is False
+'''
+
+# 가짜 저장소의 rootdir 을 고정한다 — 이게 없으면 pytest 가 tmp 경로 위쪽의
+# 설정 파일을 주워 실제 저장소의 addopts 를 상속할 수 있다.
+FAKE_PYPROJECT = """\
+[tool.pytest.ini_options]
+addopts = ""
+testpaths = ["tests"]
+"""
+
+
+def _catalog_toml(entries: list[dict[str, str]]) -> str:
+    """카탈로그 TOML 문자열을 만든다 (스니펫은 escape 없는 literal string)."""
+    chunks = []
+    for entry in entries:
+        chunks.append(
+            "[[mutation]]\n"
+            f"guard = '{entry['guard']}'\n"
+            f"file = '{entry['file']}'\n"
+            f"find = '''\n{entry['find']}'''\n"
+            f"replace = '''\n{entry['replace']}'''\n"
+        )
+    return "\n".join(chunks)
+
+
+def _build_fake_repo(
+    tmp_path: Path,
+    entries: list[dict[str, str]],
+    *,
+    module_src: str = FAKE_MODULE,
+    annotate: bool = True,
+) -> Path:
+    """`tmp_path` 안에 최소 저장소(모듈 + 테스트 + 카탈로그)를 만든다."""
+    repo = tmp_path / "fake-repo"
+    (repo / "tests").mkdir(parents=True)
+    (repo / "pyproject.toml").write_text(FAKE_PYPROJECT, encoding="utf-8")
+    (repo / "branding_assets.py").write_text(module_src, encoding="utf-8")
+    # 허용 목록 밖 파일 — 어떤 경로로도 수정되면 안 된다.
+    (repo / "translation.py").write_text('SECRET = "untouched"\n', encoding="utf-8")
+    test_src = (
+        # "Guard:" 표기를 이 파일 안에 literal 로 두면 실제 카탈로그의 고아
+        # 표기 검사에 걸리므로 런타임에 조립한다.
+        FAKE_TEST.format(marker="Guard:", guard=FAKE_GUARD)
+        if annotate
+        else FAKE_TEST_WITHOUT_ANNOTATION
+    )
+    (repo / "tests" / "test_fake_guard.py").write_text(test_src, encoding="utf-8")
+    (repo / "guard_mutations.toml").write_text(_catalog_toml(entries), encoding="utf-8")
+    return repo
+
+
+def _run(repo: Path, stream: io.StringIO | None = None):
+    stream = stream if stream is not None else io.StringIO()
+    catalog = guard_mutations.load_catalog(repo / "guard_mutations.toml")
+    report = guard_mutations.run_catalog(
+        repo_root=repo,
+        catalog=catalog,
+        tests_root=repo / "tests",
+        stream=stream,
+    )
+    return report, stream.getvalue()
+
+
+def _harmless_entry() -> dict[str, str]:
+    """어떤 테스트도 깨지 않는 뮤테이션 (주석 문자열 치환)."""
+    return {
+        "guard": FAKE_GUARD,
+        "file": "branding_assets.py",
+        "find": "    # harmless comment",
+        "replace": "    # mutated comment",
+    }
+
+
+def _lethal_entry() -> dict[str, str]:
+    """가드를 실제로 무력화하는 뮤테이션."""
+    return {
+        "guard": FAKE_GUARD,
+        "file": "branding_assets.py",
+        "find": '    if value == "bad":',
+        "replace": '    if False and value == "bad":',
+    }
+
+
+# ---------------------------------------------------------------------------
+# 러너 계약 — 살아남은 뮤턴트는 실패다 (러너가 RL-004 를 반복하지 않음을 증명)
+# ---------------------------------------------------------------------------
+class TestRunnerVerdicts:
+    def test_harmless_mutation_is_reported_as_survived_and_run_fails(self, tmp_path):
+        """무해한 뮤테이션은 `survived` 로 보고되고 종료 코드가 0 이 아니다."""
+        repo = _build_fake_repo(tmp_path, [_harmless_entry()])
+
+        report, output = _run(repo)
+
+        assert report.ok is False
+        assert [r.status for r in report.results] == [guard_mutations.SURVIVED]
+        assert "SURVIVED" in output
+        # 원본 파일·행 위치가 출력된다 (AC).
+        assert "branding_assets.py:5" in output
+        assert "tests/test_fake_guard.py::test_rejects_bad_value" in output
+
+    def test_guard_removal_is_reported_as_killed_by_the_owning_node(self, tmp_path):
+        """가드를 무력화하면 `killed by <노드 ID>` 가 출력되고 성공 종료한다."""
+        repo = _build_fake_repo(tmp_path, [_lethal_entry()])
+
+        report, output = _run(repo)
+
+        assert report.ok is True
+        assert [r.status for r in report.results] == [guard_mutations.KILLED]
+        assert (
+            f"{FAKE_GUARD} killed by tests/test_fake_guard.py::test_rejects_bad_value"
+            in output
+        )
+        assert "1 guards, 1 killed, 0 survived, 0 errors" in output
+
+    def test_unexpected_pytest_exit_code_is_an_error_not_a_kill(
+        self, tmp_path, monkeypatch
+    ):
+        """수집 오류/미수집(종료 코드 1 이 아닌 값)을 kill 로 세면 안 된다.
+
+        `--cov-fail-under` 같은 부분 실행 오탐이 "뮤턴트를 죽인 것"처럼 보이는
+        것이 RL-004 의 재발 경로다. 1 이 아닌 종료 코드는 전부 ERROR 다.
+        """
+        repo = _build_fake_repo(tmp_path, [_lethal_entry()])
+        calls: list[list[str]] = []
+
+        def _fake(sandbox, nodes, timeout):
+            calls.append(list(nodes))
+            return (0, "") if len(calls) == 1 else (5, "no tests ran")
+
+        monkeypatch.setattr(guard_mutations, "_run_pytest", _fake)
+
+        report, output = _run(repo)
+
+        assert report.ok is False
+        assert [r.status for r in report.results] == [guard_mutations.ERROR]
+        assert "killed" not in output.lower().split("errors")[0].replace("0 killed", "")
+        assert "exit=5" in output
+
+    def test_baseline_failure_is_reported_before_any_mutation_is_credited(
+        self, tmp_path, monkeypatch
+    ):
+        """뮤테이션 전에 이미 실패하는 테스트는 kill 의 증거가 될 수 없다."""
+        repo = _build_fake_repo(tmp_path, [_lethal_entry()])
+        monkeypatch.setattr(
+            guard_mutations, "_run_pytest", lambda *a, **k: (1, "FAILED baseline")
+        )
+
+        report, output = _run(repo)
+
+        assert report.ok is False
+        assert [r.status for r in report.results] == [guard_mutations.ERROR]
+        assert "baseline-failed" in output
+
+
+# ---------------------------------------------------------------------------
+# 카탈로그 검증 — 잘못된 항목은 아무것도 건드리지 않고 즉시 실패한다
+# ---------------------------------------------------------------------------
+class TestCatalogValidation:
+    def test_find_snippet_appearing_twice_aborts_and_leaves_file_untouched(
+        self, tmp_path
+    ):
+        """`find` 가 2회 등장하면 적용하지 않고 "정확히 1회" 오류로 실패한다."""
+        repo = _build_fake_repo(
+            tmp_path, [_lethal_entry()], module_src=FAKE_MODULE_DUPLICATED
+        )
+        before = (repo / "branding_assets.py").read_bytes()
+
+        report, output = _run(repo)
+
+        assert report.ok is False
+        assert [r.status for r in report.results] == [guard_mutations.ERROR]
+        assert "2회" in output
+        assert "정확히 1회" in output
+        assert (repo / "branding_assets.py").read_bytes() == before
+
+    def test_entry_outside_the_allowlist_is_rejected_and_file_unmodified(
+        self, tmp_path
+    ):
+        """허용 목록 밖 파일(translation.py)은 뮤테이션 대상이 될 수 없다."""
+        entry = {
+            "guard": FAKE_GUARD,
+            "file": "translation.py",
+            "find": '    SECRET = "untouched"',
+            "replace": '    SECRET = "mutated"',
+        }
+        repo = _build_fake_repo(tmp_path, [entry])
+        before = (repo / "translation.py").read_bytes()
+
+        report, output = _run(repo)
+
+        assert report.ok is False
+        assert [r.status for r in report.results] == [guard_mutations.ERROR]
+        assert "허용 목록" in output
+        assert "translation.py" in output
+        assert (repo / "translation.py").read_bytes() == before
+
+    def test_guard_without_any_owning_test_is_reported_unnamed(self, tmp_path):
+        """`Guard:` 로 아무도 지목하지 않은 가드는 `unnamed` 로 보고된다."""
+        repo = _build_fake_repo(tmp_path, [_lethal_entry()], annotate=False)
+
+        report, output = _run(repo)
+
+        assert report.ok is False
+        assert [r.status for r in report.results] == [guard_mutations.UNNAMED]
+        assert (
+            f'{FAKE_GUARD} unnamed — no test declares "Guard: {FAKE_GUARD}"' in output
+        )
+
+    def test_annotation_that_is_not_in_the_catalog_is_an_error(self, tmp_path):
+        """카탈로그에 없는 `Guard:` 표기는 고아다 — 조용히 넘어가지 않는다."""
+        entry = _lethal_entry() | {"guard": "branding_assets.is_safe#other"}
+        repo = _build_fake_repo(tmp_path, [entry])
+
+        report, output = _run(repo)
+
+        assert report.ok is False
+        assert FAKE_GUARD in output
+        assert "카탈로그에 없는" in output
+
+    def test_duplicate_guard_id_is_rejected_when_loading(self, tmp_path):
+        """같은 가드 ID 가 두 번 선언되면 카탈로그 로드 자체가 실패한다."""
+        repo = _build_fake_repo(tmp_path, [_lethal_entry(), _harmless_entry()])
+
+        with pytest.raises(guard_mutations.CatalogError) as exc:
+            guard_mutations.load_catalog(repo / "guard_mutations.toml")
+
+        assert FAKE_GUARD in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# 격리 — 작업 트리는 어떤 종료 경로에서도 변경되지 않는다
+# ---------------------------------------------------------------------------
+class TestWorkingTreeIsolation:
+    def test_crash_after_mutation_leaves_source_intact_and_removes_sandbox(
+        self, tmp_path, monkeypatch
+    ):
+        """뮤테이션 적용 직후 예외가 나도 원본은 바이트 단위로 동일하다."""
+        repo = _build_fake_repo(tmp_path, [_lethal_entry()])
+        before = (repo / "branding_assets.py").read_bytes()
+        sandboxes: list[Path] = []
+
+        def _boom(sandbox, nodes, timeout):
+            sandboxes.append(Path(sandbox))
+            if len(sandboxes) == 1:
+                return 0, ""  # baseline 통과
+            raise RuntimeError("simulated crash right after mutating")
+
+        monkeypatch.setattr(guard_mutations, "_run_pytest", _boom)
+
+        with pytest.raises(RuntimeError):
+            _run(repo)
+
+        assert (repo / "branding_assets.py").read_bytes() == before
+        # 샌드박스는 예외 경로에서도 제거된다.
+        assert sandboxes and not sandboxes[0].exists()
+        assert guard_mutations._SANDBOXES == []
+
+    def test_normal_run_never_writes_into_the_repo_root(self, tmp_path):
+        """정상 실행에서도 원본 트리에는 어떤 파일도 쓰이지 않는다."""
+        repo = _build_fake_repo(tmp_path, [_lethal_entry()])
+        before = {
+            p.relative_to(repo): p.read_bytes()
+            for p in sorted(repo.rglob("*"))
+            if p.is_file()
+        }
+
+        _run(repo)
+
+        after = {
+            p.relative_to(repo): p.read_bytes()
+            for p in sorted(repo.rglob("*"))
+            if p.is_file()
+        }
+        assert after == before
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+class TestCommandLine:
+    def test_main_returns_non_zero_for_a_surviving_mutant(self, tmp_path, capsys):
+        repo = _build_fake_repo(tmp_path, [_harmless_entry()])
+
+        code = guard_mutations.main(
+            [
+                "--catalog",
+                str(repo / "guard_mutations.toml"),
+                "--repo-root",
+                str(repo),
+                "--tests-root",
+                str(repo / "tests"),
+            ]
+        )
+
+        assert code != 0
+        assert "SURVIVED" in capsys.readouterr().out
+
+    def test_main_reports_unknown_guard_id(self, tmp_path, capsys):
+        repo = _build_fake_repo(tmp_path, [_lethal_entry()])
+
+        code = guard_mutations.main(
+            [
+                "--catalog",
+                str(repo / "guard_mutations.toml"),
+                "--repo-root",
+                str(repo),
+                "--tests-root",
+                str(repo / "tests"),
+                "--guard",
+                "does.not#exist",
+            ]
+        )
+
+        assert code != 0
+        assert "does.not#exist" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# 실제 카탈로그 — 정적 대응 관계 (subprocess 없이 ast 만, 빠르다)
+# ---------------------------------------------------------------------------
+class TestRealCatalogBindings:
+    def test_every_guard_is_owned_and_no_annotation_is_orphaned(self):
+        """가드 ↔ `Guard:` 표기가 양방향으로 정확히 대응한다.
+
+        한쪽이라도 어긋나면 러너가 잡아 주지만, 그 검사가 CI 의 느린 job
+        에서만 돌면 로컬에서 즉시 알 수 없다. 여기서 빠르게 고정한다.
+        """
+        catalog = guard_mutations.load_catalog(REAL_CATALOG)
+        annotations = guard_mutations.collect_guard_annotations(
+            REPO_ROOT / "tests", REPO_ROOT
+        )
+        guards = {m.guard for m in catalog}
+
+        assert sorted(g for g in guards if g not in annotations) == []
+        assert sorted(a for a in annotations if a not in guards) == []
+
+    def test_catalog_targets_only_allowlisted_files_with_unique_snippets(self):
+        """모든 항목이 허용 목록 안 파일을 겨냥하고 `find` 는 정확히 1회 등장한다."""
+        catalog = guard_mutations.load_catalog(REAL_CATALOG)
+
+        assert len(catalog) >= 20  # 이슈가 정의한 초기 카탈로그 규모
+        for mutation in catalog:
+            assert mutation.file in guard_mutations.ALLOWED_FILES
+            source = (REPO_ROOT / mutation.file).read_text(encoding="utf-8")
+            assert source.count(mutation.find) == 1, mutation.guard
+            assert mutation.replace != mutation.find, mutation.guard
+
+
+# ---------------------------------------------------------------------------
+# 종단 실행 — CI 의 `mutation` job 이 담당한다 (로컬 기본 스위트에서는 제외)
+# ---------------------------------------------------------------------------
+@pytest.mark.skipif(
+    not os.getenv("GUARD_MUTATION_FULL"),
+    reason="전체 카탈로그 실행은 1~2분 걸린다. GUARD_MUTATION_FULL=1 로 활성화",
+)
+def test_full_catalog_run_kills_every_guard():
+    """카탈로그 전체를 서브프로세스로 돌리면 종료 코드 0 이고 생존 0 건이다."""
+    proc = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "guard_mutations.py")],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+
+    assert "SURVIVED" not in proc.stdout
+    assert proc.returncode == 0, proc.stdout + proc.stderr
