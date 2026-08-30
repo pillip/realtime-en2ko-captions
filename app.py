@@ -189,16 +189,25 @@ with st.sidebar:
                 st.session_state.get("operator_display_mode")
             )
             mode_options = list(DISPLAY_MODES)
+            # 세션이 도는 중에는 잠근다. `display_mode` 는 컴포넌트 부트스트랩
+            # payload 에 실리고, Streamlit 은 그 문자열을 iframe `srcdoc` 으로
+            # 넣는다 — 값이 바뀌면 iframe 문서가 통째로 새로 로드되어
+            # RTCPeerConnection·마이크 스트림·WS 연결·자막 스크롤백이 전부
+            # 날아간다. 룸 선택도 같은 성질이지만 그쪽은 "세션을 바꾼다" 는
+            # 의미라 오퍼레이터가 중단을 예상한다. 표시 모드는 그렇지 않다.
+            session_is_live = st.session_state.get("action") in ("start", "starting")
             chosen_display_mode = st.radio(
                 "표시 모드",
                 options=mode_options,
                 index=mode_options.index(display_mode_default),
                 format_func=format_display_mode_label,
                 key="operator_display_mode_selector",
+                disabled=session_is_live,
                 help=(
                     "무대 화면을 선택하면 프로젝터용 무대 화면을 새 창으로 "
-                    "열 수 있습니다. 자막 시작/정지와 번역 동작은 두 모드가 "
-                    "같습니다."
+                    "열 수 있습니다. 번역 파이프라인은 두 모드가 동일합니다. "
+                    "자막 세션이 도는 중에는 바꿀 수 없습니다 — 정지 후 "
+                    "변경하세요."
                 ),
                 horizontal=True,
             )

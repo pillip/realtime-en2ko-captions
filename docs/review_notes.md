@@ -1784,3 +1784,90 @@ behavioural assertions.* `<video autoplay muted playsinline>` and similar
 appear in no code path, so neither a substring guard nor a DOM-behaviour test discriminates
 them. Prevention: assert the corresponding DOM **property** (`v.muted === true`), not the
 attribute string. Observed-In: ISSUE-42 (PR #129), review mutations M33/M34.
+
+---
+
+# PR #137 — ISSUE-47 오퍼레이터 무대 모드 (code review)
+
+리뷰 대상 커밋 `b8051f4`. 리뷰어 전용 워크트리에서 수행(UI 리뷰어와 별도 트리).
+검증된 상태: 1223 passed / 112 deselected / 94.17%, ruff·black clean, ISSUE-47 e2e 12/12.
+
+## Code Review
+
+### F-1 (High, 수정됨) — 첫 자막이 무대 버튼을 파괴해 AC4 가 성립하지 않음
+`.stage-launch` 가 `.welcome-state` 안에 있었고 `appendLine()` 이 그 서브트리를
+통째로 `remove()` 한다. Chromium 측정: 자막 전 버튼 1개 → 자막 1건 후 **0개**.
+복구 경로는 정지 → 시작뿐인데 AC4 가 명시적으로 금지한 룸 재시작이다. 발표자가
+한 문장만 말하면 이슈의 핵심 컨트롤이 사라진다.
+**UI 리뷰어가 독립적으로 같은 결함(H-1)을 찾았다.**
+→ 수정: 컨트롤을 `#captionContainer` 밖 지속 오버레이 층(`.status-overlay` /
+`.back-to-live` 와 같은 층)으로 이동. 복제본 2벌이 1벌로 줄고 `clearViewer()` 의
+재주입 호출도 불필요해졌다. 가드 2종 추가(정적 배치 규칙 + e2e 행동 테스트).
+
+### F-2 (High, 완화됨) — 세션 중 표시 모드 토글이 파이프라인을 무너뜨림
+`display_mode` 가 BOOT payload 에 실리고 Streamlit 은 그 문자열을 iframe `srcdoc`
+으로 넣으므로, 값이 바뀌면 문서가 새로 로드되어 RTCPeerConnection·마이크
+스트림·WS·자막 스크롤백이 전부 사라진다. Streamlit 1.48.1 에서 측정: 값 변경 →
+reload, 동일 rerun → reload 없음. 도움말 문구("두 모드가 같습니다")가 이 위험을
+적극적으로 부인하고 있었다.
+→ 수정: `action in ("start","starting")` 인 동안 라디오를 `disabled` 로 잠그고
+도움말을 정정("세션 중에는 바꿀 수 없습니다 — 정지 후 변경하세요"). 근본 해법
+(컨트롤을 컴포넌트 밖으로)은 별도 이슈로 제안.
+
+### F-3 (Low, 수정됨) — 리스너 누적 방어가 우연에 의존
+`clearViewer()` 가 노드를 갈아치우기 때문에 우연히 안전했을 뿐. F-1 수정으로
+노드가 지속되면서 이 우연이 사라졌다 → `dataset.stageBound` 가드 + 두 번 호출 후
+클릭이 창을 하나만 여는 e2e 테스트 추가(재검증 뮤턴트 N5 로 비공허성 확인).
+
+### F-4 (Low, 수정됨) — "새 창"이 실제로는 탭
+windowFeatures 없는 `window.open` 은 크롬/엣지/파이어폭스에서 **탭**을 연다.
+NFR-029 의 근거(보조 디스플레이로 분리)와 힌트 문구가 모두 창을 전제한다.
+→ `'popup=yes,width=1280,height=720'` 추가. `popup` 은 noopener 와 달리 null
+반환을 유발하지 않는다.
+
+### F-5 (Low, 미수정) — `format_display_mode_label` 의 fallback 분기는 도달 불가
+`st.radio(options=list(DISPLAY_MODES))` 가 유일한 호출부라 알 수 없는 코드가
+들어올 수 없다. `format_room_status_label` 선례와 동일한 관용이라 유지하되,
+실질 커버리지로 계산하지 않는다.
+
+## Security Findings
+
+### S-1 (Medium, 기존 결함 — 이 PR 이 유발하지 않음, 후속 이슈 필요)
+`html_template.replace("{{BOOTSTRAP_JSON}}", json.dumps(payload))` 는 raw
+`<script>` 싱크인데 `json.dumps` 는 `<` 와 `/` 를 이스케이프하지 않는다.
+`room_name` 은 admin 자유 입력(길이 검증만). 측정: `room_name` 에
+`</script><script>…</script>` 를 넣으면 `window.__pwned = 1` 이 실행되고
+`BOOT` 가 정의되지 않아 컴포넌트 부트스트랩이 통째로 죽는다. Streamlit 컴포넌트
+샌드박스에 `allow-same-origin` 이 있어 주입 스크립트가 `localhost:8501` 오리진에서
+실행된다(쿠키·localStorage 접근). admin 권한이 필요해 Medium.
+RL-016 / RL-020 이 예측한 지점. ISSUE-47 은 악화시키지 않는다 — `display_mode` 는
+닫힌 집합이고 `stage_url` 은 서버 생성 room id + 기존에 노출되던 `VIEWER_BASE_URL`.
+→ 후속 이슈: `sse_broadcast.py` 에 이미 있는 script-context 이스케이프 헬퍼를
+공유해 `app.py` 에서도 쓴다.
+
+### S-2 (Low) — base URL 스킴 미검증
+`_resolve_viewer_base_url()` 은 의도적으로 형식 검증을 하지 않는다.
+`VIEWER_BASE_URL=javascript:…` 면 `window.open` / `fallback.href` 가 오퍼레이터
+오리진에서 실행한다. 배포자 제어 환경변수이고 기존 `view_url` 로도 동일 노출이
+있어 Low. 환경변수 외의 경로에서 base URL 을 받게 되는 순간 High 로 승격된다.
+
+### S-3 (Low, 미해결 — 후속) — opener 차단은 실제로 동작하나 행동 커버리지가 없다
+두 오리진(:18501 / :18766) 실제 Chromium 팝업으로 측정: `opened.opener = null` 은
+**throw 하지 않고**, 팝업이 크로스 오리진으로 내비게이트한 뒤에도
+`window.opener === null` 로 유지된다(SEVERED). 이유: `window.open` 이 반환하는
+순간의 활성 문서는 아직 오리진을 상속한 `about:blank` 이라 그 대입은 동일 오리진
+쓰기다. 다만 이 대입이 동기 실행 구간 밖으로 옮겨지면 크로스 오리진 `[[Set]]` 이
+되어 `SecurityError` 를 던지고, 현재 `try/catch` 가 이를 `console.debug` 로
+삼켜 **조용히 무력화**된다. e2e 스텁은 같은 realm 의 평범한 객체를 돌려주므로
+어느 쪽이든 성공한다 → 실질 커버리지 0 (RL-026 형태). 두 오리진 HTTP fixture 가
+필요해 이번 PR 범위 밖.
+
+## Over-Engineering
+- `operator_ui.py` `format_display_mode_label` 미도달 fallback (F-5) — 선례 유지로 존치
+- `app.py` `_build_stage_url` 의 try/except — `build_stage_url` 은 빈 입력에서만
+  raise 하고 두 경우 모두 상위 가드가 이미 배제한다. 형제 함수와의 대칭성 및
+  향후 `build_stage_url` 변경에 대한 방어로 존치(리뷰어 의견과 다른 결론, 명시).
+- 구조적 대안(컨트롤을 `st.link_button` 으로 사이드바에 렌더)은 F-1·F-2·S-3 을
+  한꺼번에 없애고 ~400줄을 삭제하지만, 이슈의 Implementation Notes / TC-068~070 이
+  컴포넌트 + `window.open` + 폴백을 명시하므로 **일방적으로 변경하지 않고 후속
+  이슈로 제안**한다.

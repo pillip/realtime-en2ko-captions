@@ -149,6 +149,61 @@ class TestStageLaunchButton:
         page.wait_for_timeout(300)
         assert len(page.evaluate("window.__openCalls")) == 2
 
+    def test_button_survives_the_first_caption(self, load_webrtc):
+        """AC4 — 자막이 흐르기 시작해도 무대 버튼은 계속 눌러야 한다.
+
+        `appendLine()` 은 첫 자막이 들어오는 순간 `.welcome-state` 를 통째로
+        `remove()` 한다. 무대 컨트롤이 그 안에 있으면 발표자가 한 문장만
+        말해도 버튼이 DOM 에서 사라지고, 되살리는 유일한 방법이 정지 →
+        시작 — AC4 가 명시적으로 금지한 "룸 재시작"이다.
+
+        코드 리뷰 F-1. 경계 뮤테이션 19건 배치가 이걸 놓친 이유는 결함이
+        `appendLine()` 안에 있어서다 — 무대 런치 경로만 변이시킨 배치는
+        건드릴 이유가 없는 함수였다.
+        """
+        page = load_webrtc(_boot_payload(display_mode="stage", stage_url=_STAGE_URL))
+        assert page.locator("[data-stage-open]").count() == 1
+
+        # 자막 한 줄이 도착한 상황을 실제 렌더 경로로 재현한다.
+        page.evaluate("appendLine('첫 자막입니다', 'stable')")
+        page.wait_for_timeout(200)
+
+        assert page.locator(".caption-line").count() >= 1, "자막이 실제로 렌더되지 않음"
+        assert page.locator("[data-stage-open]").count() == 1, (
+            "the 무대 화면 열기 button was destroyed by the first caption — "
+            "AC4 requires it to stay available without restarting the room"
+        )
+        # 사라지지 않았을 뿐 아니라 실제로 눌려야 한다.
+        page.locator("[data-stage-open]").click()
+        page.wait_for_timeout(200)
+        assert len(page.evaluate("window.__openCalls")) == 1
+
+    def test_rebinding_does_not_open_two_windows(self, load_webrtc):
+        """한 번의 클릭은 창 하나다 — 두 번 바인딩되어도.
+
+        컨트롤이 지속 노드가 된 뒤로 `applyStageLaunchToWelcome()` 이 두 번
+        불리면 같은 버튼에 리스너가 **누적**된다. 예전에는 `clearViewer()` 가
+        노드를 통째로 갈아치워서 우연히 안전했을 뿐이라, 이제는 명시적
+        가드(`dataset.stageBound`)가 그 역할을 한다.
+
+        이 테스트가 없으면 가드를 지워도 아무도 죽지 않는다(재검증 뮤턴트 N5
+        생존). 미래의 리팩터가 호출부를 하나 더 만드는 순간 클릭 한 번에 무대
+        창이 두 개 열리는데, 그때 잡아야 할 그물이 여기다.
+        """
+        page = load_webrtc(_boot_payload(display_mode="stage", stage_url=_STAGE_URL))
+        # 호출부가 하나 더 생긴 상황을 그대로 재현한다.
+        page.evaluate("applyStageLaunchToWelcome()")
+        page.evaluate("applyStageLaunchToWelcome()")
+        page.wait_for_timeout(200)
+
+        page.locator("[data-stage-open]").click()
+        page.wait_for_timeout(300)
+        calls = page.evaluate("window.__openCalls")
+        assert len(calls) == 1, (
+            f"one click opened {len(calls)} windows — the click listener was "
+            f"bound more than once: {calls!r}"
+        )
+
 
 class TestPopupBlockedFallback:
     def test_fallback_link_appears_with_the_same_url(self, load_webrtc):
@@ -178,6 +233,12 @@ class TestPopupBlockedFallback:
         )
         page.locator("[data-stage-open]").click()
         page.wait_for_timeout(400)
+
+        # RL-004 게이트: 이게 없으면 폴백이 아예 렌더되지 않았을 때도 누출
+        # 스캔이 공허하게 통과한다 (빈 화면은 아무것도 누출하지 않는다).
+        assert (
+            page.locator("[data-stage-fallback]:visible").count() == 1
+        ), "the popup-blocked fallback never appeared — the leak scan would be vacuous"
 
         body_text = page.locator("body").inner_text()
         for leaked in (

@@ -513,12 +513,26 @@
     /* ISSUE-47 — 무대 화면 열기 (표시 모드가 '무대 화면' 일 때만 JS 가 보여줌).
        색은 눈대중이 아니라 수치로 고른다 (RL-018): 버튼은 #ffffff on #1858c4
        = 6.50:1, 폴백 링크는 #9ec5ff on #0b0b0c = 11.13:1, 도움말은
-       #a8a8b3 on #0b0b0c = 8.36:1 — 모두 WCAG AA(4.5:1) 위. 대비는
-       tests/test_webrtc_stage_launch.py 가 합성값으로 다시 계산해 검증한다. */
+       #a8a8b3 on #0b0b0c = 8.35:1 — 모두 WCAG AA(4.5:1) 위. 대비는
+       tests/test_webrtc_stage_launch.py 가 합성값으로 다시 계산해 검증한다.
+
+       세 색 모두 **불투명 hex** 인 것이 의도다. 이 컨트롤은 body(#0b0b0c) 위에도
+       #viewer:fullscreen(#000) 위에도 렌더되는데, 알파를 쓰면 합성 backdrop 이
+       바뀌어 두 값이 갈라진다 (RL-018 이 두 번 물린 지점). 불투명이면 #000 쪽이
+       항상 더 어두워 대비가 올라가므로(각각 8.92:1 / 11.88:1) 한쪽만 계산해도
+       구조적으로 안전하다 — 테스트가 두 backdrop 을 모두 확인한다.
+
+       위치: `.status-overlay` / `.back-to-live` 와 같은 지속 오버레이 층에 둔다.
+       `#captionContainer` 안에 두면 첫 자막에서 `appendLine()` 이 `.welcome-state`
+       를 remove 하며 함께 사라진다 (코드 리뷰 F-1 / UI 리뷰 H-1, AC4 위반). */
     .stage-launch {
       display: none; /* JS shows it when BOOT.display_mode === 'stage' */
-      margin: 28px auto 0;
-      text-align: center;
+      position: absolute;
+      top: 28px;
+      left: 28px;
+      z-index: 998;
+      max-width: 300px;
+      text-align: left;
     }
     .stage-launch-button {
       display: inline-flex;
@@ -542,13 +556,19 @@
     }
     .stage-launch-hint {
       margin-top: 10px;
-      font-size: 12px;
+      /* 13px — 파일의 다른 보조 텍스트(.hint / .welcome-rules)와 같은 단계.
+         12px 는 이 파일에서 유일한 예외가 되어 타입 스케일이 깨진다. */
+      font-size: 13px;
       line-height: 1.6;
       color: #a8a8b3;
     }
     .stage-launch-fallback {
       display: none; /* JS reveals it only when the popup was blocked */
       margin-top: 10px;
+      /* padding 으로 터치 타깃을 24px 이상으로 올린다 (WCAG 2.2 SC 2.5.8).
+         이 링크는 팝업이 차단된 오퍼레이터의 유일한 탈출구이고 행사 중
+         급하게 눌러야 하므로, 인라인 예외에 기대지 않는다. */
+      padding: 6px 10px;
       font-size: 13px;
       line-height: 1.6;
       color: #9ec5ff;
@@ -564,6 +584,7 @@
       .caption-line.stable, .caption-line.typing { font-size: calc(var(--translation-font-size) * 0.82); }
       .caption-line.original { font-size: calc(var(--original-font-size) * 0.92); margin-bottom: 6px; }
       .status-overlay { bottom: 14px; left: 14px; }
+      .stage-launch { top: 14px; left: 14px; max-width: 62vw; }
       .back-to-live { bottom: 14px; right: 14px; padding: 8px 14px; font-size: 12px; }
       .settings-fab { top: calc(12px + 4%); right: 12px; width: 42px; height: 42px; }
       .fullscreen-fab { top: calc(64px + 4%); right: 12px; width: 42px; height: 42px; }
@@ -577,6 +598,7 @@
       .caption-line.original { margin-bottom: 4px; }
       .settings-panel { padding: 40px 16px 16px; }
       .status-overlay { bottom: 8px; left: 8px; }
+      .stage-launch { top: 8px; left: 8px; max-width: 70vw; }
       .back-to-live { bottom: 8px; right: 8px; padding: 6px 12px; font-size: 11px; }
       .settings-fab { top: calc(6px + 4%); right: 8px; width: 38px; height: 38px; }
       .fullscreen-fab { top: calc(50px + 4%); right: 8px; width: 38px; height: 38px; }
@@ -684,6 +706,28 @@
     실시간으로
   </button>
 
+  <!-- ISSUE-47: 무대 화면 열기 — JS 가 BOOT.display_mode === 'stage' 이고
+       stage_url 이 있을 때만 보여준다. 여기서 파이프라인은 건드리지 않는다.
+       **위치가 계약이다**: `#captionContainer` 밖에 둬야 한다. `.welcome-state`
+       안에 있으면 첫 자막이 들어오는 순간 `appendLine()` 이 통째로 remove 해
+       버려 버튼이 사라진다 (코드 리뷰 F-1, AC4 위반). -->
+  <div class="stage-launch" data-stage-launch>
+    <!-- aria-describedby: 힌트를 버튼에 묶지 않으면 스크린리더 사용자는
+         "무대 화면 열기, 버튼" 만 듣고 새 창이 열린다는 사실을 알 수 없다.
+         `.stage-launch` 는 문서에 정확히 하나뿐이라 id 충돌이 없다. -->
+    <button class="stage-launch-button" type="button" data-stage-open
+            aria-describedby="stage-launch-hint">
+      <span aria-hidden="true">🎬</span>무대 화면 열기
+    </button>
+    <div class="stage-launch-hint" id="stage-launch-hint">
+      새 창으로 열립니다. 프로젝터 화면으로 옮긴 뒤 전체 화면으로 전환하세요.<br>
+      이 탭의 자막 세션은 계속 유지됩니다.
+    </div>
+    <a class="stage-launch-fallback" data-stage-fallback target="_blank" rel="noopener">
+      팝업이 차단되었습니다. 눌러서 무대 화면을 여세요
+    </a>
+  </div>
+
   <!-- 메인 캡션 뷰어 -->
   <div id="viewer">
     <!-- 전체화면 전용 폰트 크기 조절 -->
@@ -720,20 +764,6 @@
             카메라로 스캔하면 자막을 볼 수 있습니다<br>
             <strong data-qr-url></strong>
           </div>
-        </div>
-        <!-- ISSUE-47: 무대 화면 열기 — JS 가 BOOT.display_mode === 'stage' 이고
-             stage_url 이 있을 때만 보여준다. 여기서 파이프라인은 건드리지 않는다. -->
-        <div class="stage-launch" data-stage-launch>
-          <button class="stage-launch-button" type="button" data-stage-open>
-            <span aria-hidden="true">🎬</span>무대 화면 열기
-          </button>
-          <div class="stage-launch-hint">
-            새 창으로 열립니다. 프로젝터 화면으로 옮긴 뒤 전체화면하세요.<br>
-            이 탭의 자막 세션은 계속 유지됩니다.
-          </div>
-          <a class="stage-launch-fallback" data-stage-fallback target="_blank" rel="noopener">
-            팝업이 차단되었습니다 — 여기를 눌러 무대 화면을 여세요
-          </a>
         </div>
       </div>
     </div>
@@ -940,6 +970,11 @@ try {
           fallback.style.display = 'none';
           fallback.href = stageUrl;
         }
+        // 이 노드는 이제 지속 오버레이라 절대 다시 만들어지지 않는다. 따라서
+        // 리스너를 두 번 달면 클릭 한 번에 창이 두 개 열린다 — 예전에는
+        // clearViewer 가 노드를 통째로 갈아치워서 우연히 안전했을 뿐이다.
+        if (c.dataset.stageBound === '1') return;
+        c.dataset.stageBound = '1';
         button.addEventListener('click', () => {
           // 팝업 차단을 피하려면 클릭 핸들러의 **동기 실행 경로**에서 바로
           // 호출해야 한다. await/setTimeout 뒤로 밀면 사용자 제스처와의
@@ -948,9 +983,15 @@ try {
           // windowFeatures 에 'noopener' 를 넣지 않는다: 그러면 사양상
           // window.open 이 **항상 null 을 반환**해, 정상적으로 열린 창까지
           // 차단으로 오판하고 폴백을 띄우게 된다. opener 는 아래에서 끊는다.
+          //
+          // windowFeatures 를 주는 이유(NFR-029): 아무 feature 도 주지 않으면
+          // 크롬/엣지/파이어폭스는 새 **탭**을 연다. 무대 화면은 프로젝터로
+          // 내보내야 하므로 오퍼레이터가 탭을 먼저 뜯어내야 하는 것은 이 이슈가
+          // 없애려던 수고 그 자체다. `popup` 은 null 반환을 유발하지 않는다 —
+          // 그렇게 만드는 것은 noopener/noreferrer 뿐이다.
           let opened = null;
           try {
-            opened = window.open(stageUrl, '_blank');
+            opened = window.open(stageUrl, '_blank', 'popup=yes,width=1280,height=720');
           } catch (err) {
             // RL-006: 내부 예외는 콘솔에만. 화면에는 폴백 링크만 보여준다.
             console.warn('[Stage] window.open 실패 — 폴백 링크를 노출합니다.', err);
@@ -1589,25 +1630,10 @@ try {
             <strong data-qr-url></strong>
           </div>
         </div>
-        <!-- ISSUE-47: 무대 화면 열기 — JS 가 BOOT.display_mode === 'stage' 이고
-             stage_url 이 있을 때만 보여준다. 여기서 파이프라인은 건드리지 않는다. -->
-        <div class="stage-launch" data-stage-launch>
-          <button class="stage-launch-button" type="button" data-stage-open>
-            <span aria-hidden="true">🎬</span>무대 화면 열기
-          </button>
-          <div class="stage-launch-hint">
-            새 창으로 열립니다. 프로젝터 화면으로 옮긴 뒤 전체화면하세요.<br>
-            이 탭의 자막 세션은 계속 유지됩니다.
-          </div>
-          <a class="stage-launch-fallback" data-stage-fallback target="_blank" rel="noopener">
-            팝업이 차단되었습니다 — 여기를 눌러 무대 화면을 여세요
-          </a>
-        </div>
       </div>
     `;
     updateWelcomeTranslationRules();
     applyQrCodeToWelcome();
-    applyStageLaunchToWelcome();
     currentUnstableLine = null;
     currentTypingLine = null;
     if (backToLiveBtn) {
