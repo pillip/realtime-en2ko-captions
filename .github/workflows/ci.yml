@@ -82,6 +82,10 @@ jobs:
     name: Guard mutation check
     runs-on: ubuntu-latest
     needs: test
+    # AC 의 "5분 이내" 상한을 실제로 강제한다. 루프는 카탈로그 항목 수만큼만
+    # 돌지만, 서브프로세스마다 180s 타임아웃이라 최악의 경우 시간 단위로
+    # 늘어날 수 있고 GitHub 기본 상한은 360분이다. 실측 ~9s.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 

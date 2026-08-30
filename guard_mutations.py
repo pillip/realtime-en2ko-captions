@@ -38,10 +38,17 @@ docstring 한 줄을 지우면 그 가드는 ``unnamed`` 이 되어 CI 가 깨�
 ------------------------------------------------
 뮤테이션은 시작할 때 한 번 만든 **임시 샌드박스 사본**에만 적용한다. 원본
 바이트는 메모리에 보관해 항목 사이에 샌드박스 안에서 되돌리고, 샌드박스는
-``try/finally`` + ``atexit`` 로 정상/예외/``KeyboardInterrupt``/``SystemExit``
-모든 종료 경로에서 제거한다(제거 실패 시 경로를 출력한다). 원본 트리에는 애초에
-쓰지 않으므로 실행이 중간에 죽어도 ``git diff --quiet`` 는 **구조적으로** 0 이다
+``try/finally`` + ``atexit`` + ``SIGTERM`` 핸들러로 정상/예외/
+``KeyboardInterrupt``/``SystemExit``/``kill`` 종료 경로에서 제거한다(제거 실패 시
+경로를 출력한다). ``atexit`` 는 ``SIGTERM`` 에 돌지 않으므로 핸들러가 따로 필요하다
+— 없으면 **무력화된 보안 가드가 들어 있는 사본**이 ``$TMPDIR`` 에 남는다.
+``SIGKILL`` 은 프로세스가 개입할 수 없어 예외다. 원본 트리에는 애초에 쓰지
+않으므로 실행이 중간에 죽어도 ``git diff --quiet`` 는 **구조적으로** 0 이다
 — 제자리 수정 후 복구보다 강한 성질이며 같은 AC 를 만족한다.
+
+샌드박스 사본은 ``.env`` 와 ``data/`` 를 제외한다. 러너가 비밀값이나 운영 DB 를
+``$TMPDIR`` 로 복제할 이유가 없고, 실행이 비정상 종료해 사본이 남는 경우 그
+복제본이 그대로 디스크에 남기 때문이다.
 
 유한성 — 열린 루프가 없다
 -------------------------
@@ -57,7 +64,16 @@ ERROR 다.
 더 둔다.
 
 1. **baseline**: 뮤테이션 전에 같은 노드를 그대로 돌려 종료 코드 0 을 확인한다.
-2. **종료 코드 해석**: ``1`` 만 kill 이다. ``0`` 은 survived, 그 밖의 값
+2. **깨진 뮤턴트 차단**: 종료 코드만으로는 부족하다. 이 저장소의 킬 테스트는
+   대상 모듈을 **함수 안에서** import 하므로(``def test_...(): import
+   branding_assets``), ``replace`` 오타로 모듈이 깨져도 수집 오류(``2``)가
+   아니라 **테스트 실패(``1``)** 로 나타난다 — 가드를 지운 적이 없는데 kill 로
+   계상되는 RL-004 의 재발이다. 그래서 두 겹으로 막는다: 쓰기 전에
+   ``compile()`` 로 문법을 검증하고, 실행 뒤에는 pytest 출력에
+   ``E   SyntaxError|IndentationError|ImportError|ModuleNotFoundError`` 가
+   있으면 kill 을 ERROR 로 강등한다. 가드 뮤테이션은 **단언**을 실패시켜야지
+   import 를 깨뜨려서는 안 된다.
+3. **종료 코드 해석**: ``1`` 만 kill 후보다. ``0`` 은 survived, 그 밖의 값
    (``2`` 수집 오류 / ``4`` 사용법 오류 / ``5`` 미수집 / 타임아웃)은 ERROR 다.
 
 ``-rf`` 를 붙이는 것은 "killed by <노드 ID>" 출력 계약을 위해서다 (어떤 노드가
@@ -75,6 +91,7 @@ import atexit
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -108,6 +125,8 @@ ALLOWED_FILES: frozenset[str] = frozenset(
 )
 
 # 샌드박스 사본에서 제외할 이름. 실측 ~110 파일 / 3.5 MB, 복사는 ~50 ms 다.
+# `.env` / `data` / `*.db` 는 크기가 아니라 **내용** 때문에 제외한다 — API 키와
+# 운영 SQLite 를 $TMPDIR 로 복제할 이유가 없고, 사본이 남는 순간 그대로 노출된다.
 SANDBOX_IGNORE: tuple[str, ...] = (
     ".git",
     ".venv",
@@ -123,6 +142,10 @@ SANDBOX_IGNORE: tuple[str, ...] = (
     "htmlcov",
     "figma-export",
     "logs",
+    ".env",
+    ".env.*",
+    "data",
+    "*.db",
 )
 
 # pytest 서브프로세스 1회당 하드 상한. 초과는 kill 이 아니라 ERROR 다.
@@ -141,6 +164,13 @@ _TIMEOUT_CODE = 124
 
 _GUARD_LINE = re.compile(r"^[ \t]*Guard:[ \t]*(\S+)[ \t]*$", re.MULTILINE)
 
+# pytest 실패 요약에서 "가드가 아니라 모듈 자체가 깨졌다" 를 알아보는 표식.
+# 이 저장소의 킬 테스트는 함수 안에서 import 하므로 이런 실패도 exit=1 로 온다.
+_IMPORT_BREAKAGE = re.compile(
+    r"^E\s+(SyntaxError|IndentationError|ImportError|ModuleNotFoundError):.*$",
+    re.MULTILINE,
+)
+
 # 정리해야 할 샌드박스 홀더 경로. atexit 가 마지막 방어선이다.
 _SANDBOXES: list[Path] = []
 
@@ -157,7 +187,6 @@ class Mutation:
     file: str
     find: str
     replace: str
-    note: str = ""
 
 
 @dataclass(frozen=True)
@@ -181,6 +210,9 @@ class Report:
     results: list[GuardResult] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     elapsed: float = 0.0
+    # 이번 실행이 검사하려던 항목 수. fail-fast 로 중간에 멈추면 결과 수보다
+    # 크다 — 분모가 없으면 "1 guards" 가 "카탈로그에 1건뿐" 으로 오독된다.
+    total: int = 0
 
     def _count(self, status: str) -> int:
         return sum(1 for r in self.results if r.status == status)
@@ -207,9 +239,9 @@ class Report:
 
     def summary(self) -> str:
         return (
-            f"{len(self.results)} guards, {self.killed} killed, "
-            f"{self.survived} survived, {self.error_count} errors "
-            f"— {self.elapsed:.1f}s"
+            f"{len(self.results)}/{self.total or len(self.results)} guards, "
+            f"{self.killed} killed, {self.survived} survived, "
+            f"{self.error_count} errors — {self.elapsed:.1f}s"
         )
 
 
@@ -257,7 +289,6 @@ def load_catalog(path: str | os.PathLike[str]) -> list[Mutation]:
                 file=entry["file"],
                 find=entry["find"],
                 replace=entry["replace"],
-                note=entry.get("note", ""),
             )
         )
     return catalog
@@ -463,6 +494,7 @@ def run_catalog(
 
     all_guards = {m.guard for m in catalog}
     selected = catalog
+    report.total = len(catalog)
     if guards:
         unknown = sorted(set(guards) - all_guards)
         if unknown:
@@ -474,6 +506,7 @@ def run_catalog(
             emit(report.summary())
             return report
         selected = [m for m in catalog if m.guard in guards]
+        report.total = len(selected)
 
     annotations = collect_guard_annotations(tests_root, repo_root)
     report.results, report.errors = _validate(
@@ -512,10 +545,26 @@ def run_catalog(
 
             target = sandbox / mutation.file
             original = target.read_bytes()
+            mutated = original.decode("utf-8").replace(
+                mutation.find, mutation.replace, 1
+            )
+            # 뮤턴트가 import 조차 되지 않으면 바인딩된 테스트는 가드와 무관하게
+            # 실패하고 pytest 는 exit=1 을 낸다 — 그 오탐을 kill 로 세는 것이야말로
+            # RL-004 의 재발이다. 문법 검증에 실패하면 kill 이 아니라 ERROR 다.
             try:
-                mutated = original.decode("utf-8").replace(
-                    mutation.find, mutation.replace, 1
+                compile(mutated, str(target), "exec")
+            except SyntaxError as e:
+                report.results.append(
+                    GuardResult(
+                        mutation.guard,
+                        ERROR,
+                        f"replace 결과가 문법적으로 유효하지 않습니다 "
+                        f"({mutation.file}:{e.lineno}): {e.msg}",
+                    )
                 )
+                emit(report.results[-1].render())
+                continue
+            try:
                 target.write_text(mutated, encoding="utf-8")
                 code, output = _run_pytest(sandbox, nodes, timeout)
             finally:
@@ -541,8 +590,19 @@ def _verdict(
     timeout: int,
     repo_root: Path,
 ) -> GuardResult:
-    """pytest 종료 코드를 판정으로 옮긴다. **1 만 kill 이다.**"""
+    """pytest 종료 코드를 판정으로 옮긴다. **1 만 kill 후보다.**"""
     if code == 1:
+        # 킬 테스트는 대상 모듈을 함수 안에서 import 한다 — 모듈이 깨졌을 때도
+        # 수집 오류가 아니라 exit=1 로 온다. 가드 뮤테이션은 **단언**을
+        # 실패시켜야지 import 를 깨뜨려서는 안 되므로 이건 kill 이 아니다.
+        broken = _IMPORT_BREAKAGE.search(output)
+        if broken:
+            return GuardResult(
+                mutation.guard,
+                ERROR,
+                f"뮤턴트를 import 하지 못했습니다 — 가드와 무관한 실패라 kill 이 "
+                f"아닙니다: {broken.group(0).strip()}",
+            )
         failing = _failed_nodes(output) or nodes
         return GuardResult(mutation.guard, KILLED, ", ".join(failing))
     if code == 0:
@@ -572,6 +632,12 @@ def _tail(output: str, lines: int = 3) -> str:
 # CLI
 # ---------------------------------------------------------------------------
 def main(argv: list[str] | None = None) -> int:
+    # `atexit` 는 SIGTERM 에 돌지 않는다 — 핸들러가 없으면 무력화된 가드가 든
+    # 사본이 $TMPDIR 에 남는다. 샌드박스가 만들어지기 전에 미리 걸어 둔다.
+    signal.signal(
+        signal.SIGTERM,
+        lambda *_: (_cleanup_sandboxes(), sys.exit(143)),
+    )
     default_root = Path(__file__).resolve().parent
     parser = argparse.ArgumentParser(
         description="보안 가드 뮤테이션 점검 (ISSUE-43, NFR-028 / RL-004)"
@@ -585,12 +651,6 @@ def main(argv: list[str] | None = None) -> int:
         dest="guards",
         default=None,
         help="지정한 가드 ID 만 실행 (반복 가능)",
-    )
-    parser.add_argument(
-        "--timeout",
-        type=int,
-        default=PYTEST_TIMEOUT_SECONDS,
-        help=f"pytest 서브프로세스 1회당 상한 초 (기본 {PYTEST_TIMEOUT_SECONDS})",
     )
     args = parser.parse_args(argv)
 
@@ -609,7 +669,6 @@ def main(argv: list[str] | None = None) -> int:
         catalog=catalog,
         tests_root=args.tests_root,
         guards=args.guards,
-        timeout=args.timeout,
     )
     return 0 if report.ok else 1
 
