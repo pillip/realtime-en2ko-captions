@@ -89,6 +89,42 @@ def find_free_port(start_port=8765, max_port=8800):
         raise Exception("사용 가능한 포트를 찾을 수 없습니다") from e
 
 
+def _persist_session_languages(room_id, language_settings) -> bool:
+    """오퍼레이터 세션 언어를 rooms 행에 기록한다 (ISSUE-52).
+
+    페이지 로드 시점의 구독 언어(``sse_broadcast._handle_stage`` 가 읽는
+    ``rooms.primary_output_lang``)를 실제로 송출 중인 언어와 맞춘다. 이 기록이
+    없으면 무대/뷰어 화면이 **조용히 틀린 채널**을 구독한다 — 오류도 로그도
+    없이, 오퍼레이터가 화면을 볼 때까지 아무도 모른다.
+
+    **동기 직접 호출이다.** 이 경로는 연결당 1회 + 오퍼레이터가 언어를 바꿀 때
+    1회만 돈다 — transcript hot path 가 아니므로 ``_translate_secondary`` 처럼
+    ``asyncio.to_thread`` 로 감쌀 이유가 없다. 감싸면 "왜 어떤 DB 호출은
+    스레드로 가고 어떤 건 안 가나" 라는 혼란스러운 전례만 하나 더 생긴다.
+
+    실패는 서버 로그로만 흐르고 ``False`` 를 돌려준다. 메타데이터 기록보다
+    자막이 중요하다 (RL-006).
+    """
+    if not room_id:
+        return False
+    repo = getattr(_room_manager, "_repo", None)
+    if repo is None:
+        # 메모리 전용 모드(기본 룸 / repo 미주입) — 기록할 DB 행이 없다.
+        return False
+    try:
+        return bool(
+            repo.update_session_languages(
+                room_id,
+                input_lang=language_settings.get("input_lang", "auto"),
+                output_lang=language_settings.get("output_lang", "ko"),
+            )
+        )
+    except Exception as e:
+        # RL-006: 내부 예외는 서버 로그로만. 파이프라인은 계속 돈다.
+        print(f"[Lang] 세션 언어 기록 실패 (room={room_id}): {e!r}")
+        return False
+
+
 async def _authenticate_client(websocket):
     """WebSocket 클라이언트 인증 처리
 
@@ -219,6 +255,14 @@ async def _authenticate_client(websocket):
                 return None
 
             validated_user["room_id"] = resolved_room_id
+
+            # 오퍼레이터가 고른 언어를 룸 행에 기록한다 (ISSUE-52). 이 뒤에
+            # 새로 여는 /stage/{room_id} · /view/{room_id} 가 실제 송출 채널을
+            # 구독하게 만드는 지점이다. room_id 는 클라이언트 payload 가 아니라
+            # 서버가 확정한 resolved_room_id (RL-002). 실패해도 인증은 계속된다.
+            _persist_session_languages(
+                resolved_room_id, validated_user["language_settings"]
+            )
 
             print(
                 f"[Auth] 사용자 인증 성공: {validated_user['username']} "
@@ -852,6 +896,15 @@ async def handle_openai_websocket(websocket):
                                 "output_lang": language_settings["output_lang"],
                             }
                         )
+                    )
+                    # ack 를 **먼저** 보낸 뒤 기록한다 — 오퍼레이터 응답 지연이
+                    # SQLite 쓰기에 묶이지 않게 하고, 기록이 실패하더라도
+                    # language_updated 는 이미 나가 있다 (ISSUE-52 / RL-006).
+                    # 이 기록 덕분에 **이후 새로 여는** 무대/뷰어 페이지가 바뀐
+                    # 언어를 구독한다. 이미 열려 있는 화면의 실시간 추종은
+                    # ISSUE-53 담당.
+                    _persist_session_languages(
+                        user_info.get("room_id"), language_settings
                     )
                     print(
                         f"[Lang] Language updated: "

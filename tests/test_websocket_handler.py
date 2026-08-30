@@ -8,6 +8,7 @@ tests/test_websocket_auth.py에 있음.
 """
 
 import asyncio
+import contextlib
 import json
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1244,3 +1245,162 @@ class TestLanguageUpdateHandling:
         updated = next(m for m in sent if m["type"] == "language_updated")
         assert updated["input_lang"] == "en"
         assert updated["output_lang"] == "ja"
+
+
+# ============================================================
+# language_update → rooms 행 기록 (ISSUE-52, FR-083 / TC-073)
+# ============================================================
+class _RecordingRoomRepo:
+    """database.Room 의 최소 가짜 — 언어 기록 호출을 붙잡는다."""
+
+    def __init__(self, raises=None):
+        self.raises = raises
+        self.calls: list[dict] = []
+        self.row = {
+            "id": "r1",
+            "status": "active",
+            "input_lang": "auto",
+            "output_lang": "vi",
+            "primary_output_lang": "vi",
+        }
+
+    def get_by_id(self, room_id):
+        return dict(self.row) if room_id == self.row["id"] else None
+
+    def update_session_languages(self, room_id, *, input_lang, output_lang):
+        self.calls.append(
+            {"room_id": room_id, "input_lang": input_lang, "output_lang": output_lang}
+        )
+        if self.raises is not None:
+            raise self.raises
+        self.row["input_lang"] = input_lang
+        self.row["output_lang"] = output_lang
+        self.row["primary_output_lang"] = output_lang
+        return True
+
+
+def _ws_yielding(messages):
+    """주어진 메시지들을 차례로 yield 하는 AsyncMock websocket."""
+    ws = AsyncMock()
+    ws.remote_address = ("127.0.0.1", 12345)
+    ws.send = AsyncMock()
+    idx = {"i": 0}
+
+    async def _anext(self_):
+        i = idx["i"]
+        idx["i"] += 1
+        if i < len(messages):
+            return json.dumps(messages[i])
+        raise StopAsyncIteration
+
+    ws.__aiter__ = lambda self_: self_
+    ws.__anext__ = _anext
+    return ws
+
+
+def _run_handler(ws, repo, *, room_id="r1", extra_patches=()):
+    from room_manager import RoomManager
+    from websocket_handler import handle_openai_websocket
+
+    mgr = RoomManager(room_repository=repo) if repo is not None else RoomManager()
+    mock_user = {
+        "id": 1,
+        "username": "alice",
+        "role": "user",
+        "is_active": True,
+        "language_settings": {"input_lang": "ko", "output_lang": "vi"},
+        "room_id": room_id,
+    }
+    # ExitStack — 괄호 with 문법은 *unpacking 을 지원하지 않는다.
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(
+            patch(
+                "websocket_handler._authenticate_client",
+                new=AsyncMock(return_value=mock_user),
+            )
+        )
+        stack.enter_context(
+            patch(
+                "websocket_handler._init_translation_clients",
+                return_value=(MagicMock(), MagicMock(), True),
+            )
+        )
+        stack.enter_context(patch("websocket_handler._room_manager", mgr))
+        for cm in extra_patches:
+            stack.enter_context(cm)
+        asyncio.run(handle_openai_websocket(ws))
+    return _get_sent_messages(ws)
+
+
+class TestLanguageUpdatePersistsToRoomRow:
+    """AC2: 세션 도중 언어 변경이 rooms 행에 반영된다."""
+
+    def test_language_update_records_the_new_output_lang(self):
+        """vi → en 변경이 repo 에 en 으로 기록되고 응답도 그대로 나간다."""
+        repo = _RecordingRoomRepo()
+        ws = _ws_yielding(
+            [{"type": "language_update", "input_lang": "ko", "output_lang": "en"}]
+        )
+
+        sent = _run_handler(ws, repo)
+
+        assert repo.calls == [
+            {"room_id": "r1", "input_lang": "ko", "output_lang": "en"}
+        ]
+        assert repo.get_by_id("r1")["primary_output_lang"] == "en"
+        updated = next(m for m in sent if m["type"] == "language_updated")
+        assert updated["output_lang"] == "en"
+        assert updated["input_lang"] == "ko"
+
+    def test_response_survives_a_failing_write(self, capsys):
+        """AC8/RL-006: 기록 실패해도 language_updated 는 나가고 예외는 안 샌다."""
+        repo = _RecordingRoomRepo(raises=RuntimeError("boom /var/db/app.db"))
+        ws = _ws_yielding(
+            [{"type": "language_update", "input_lang": "ko", "output_lang": "en"}]
+        )
+
+        sent = _run_handler(ws, repo)
+
+        assert len(repo.calls) == 1
+        updated = next(m for m in sent if m["type"] == "language_updated")
+        assert updated["output_lang"] == "en"
+        wire = json.dumps(sent, ensure_ascii=False)
+        assert "boom" not in wire
+        assert "/var/db/app.db" not in wire
+        # 일반 error 프레임으로 승격되어서도 안 된다 — 세션은 멀쩡해야 한다.
+        assert all(m.get("type") != "error" for m in sent)
+        assert "boom" in capsys.readouterr().out
+
+    def test_transcript_messages_never_hit_the_language_write(self):
+        """자막 hot path 는 기록 경로를 타지 않는다 (연결당 1회 + 변경 시 1회).
+
+        transcript 마다 SQLite 쓰기가 붙으면 지연 예산(<2s)이 무너진다.
+        """
+        repo = _RecordingRoomRepo()
+        ws = _ws_yielding(
+            [
+                {"type": "transcript", "text": "hello", "is_final": True},
+                {"type": "transcript", "text": "world", "is_final": True},
+            ]
+        )
+
+        _run_handler(
+            ws,
+            repo,
+            extra_patches=(
+                patch("websocket_handler._handle_transcript", new=AsyncMock()),
+            ),
+        )
+
+        assert repo.calls == []
+
+    def test_memory_only_mode_leaves_the_response_intact(self):
+        """repo 미주입이어도 language_updated 는 정상 응답한다."""
+        ws = _ws_yielding(
+            [{"type": "language_update", "input_lang": "ko", "output_lang": "en"}]
+        )
+
+        sent = _run_handler(ws, None)
+
+        updated = next(m for m in sent if m["type"] == "language_updated")
+        assert updated["output_lang"] == "en"

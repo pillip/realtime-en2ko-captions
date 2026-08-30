@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import socket
 import sys
 import threading
@@ -559,3 +560,153 @@ class TestWsToSsePipeline:
         finally:
             s_a.close()
             s_b.close()
+
+
+# ---------------------------------------------------------------------------
+# ISSUE-52 (FR-083) — publish 채널과 페이지 렌더 채널이 같은 값을 말하는가
+#
+# 프로덕션 사고 재현 그대로: 오퍼레이터가 ko→vi 로 세션을 돌렸고 번역은
+# 정상이었는데 무대 화면에는 한국어가 떴다. publish 는 `target_lang`(오퍼레이터
+# 설정)을, 페이지 렌더는 `rooms.primary_output_lang`(DB 행)을 읽었고 아무도
+# 둘을 맞춰 주지 않았기 때문이다. 이 테스트는 두 값을 **같은 실행 안에서**
+# 비교한다 — 어느 단위 테스트도 이 비교를 하지 않아 사고를 놓쳤다 (RL-005).
+# ---------------------------------------------------------------------------
+_LANG_DB_COUNTER = {"n": 0}
+
+
+@pytest.fixture
+def real_room_repo(tmp_path):
+    """진짜 SQLite + database.Room — 왕복을 스텁으로 대체하지 않는다."""
+    from database import DatabaseManager, Room, User
+
+    _LANG_DB_COUNTER["n"] += 1
+    db = DatabaseManager(str(tmp_path / f"lang{_LANG_DB_COUNTER['n']}.db"))
+    admin_id = User(db).create_user(
+        username="admin52", password="pw", role="admin", usage_limit_seconds=0
+    )
+    room_repo = Room(db)
+    return db, room_repo, admin_id
+
+
+async def _render_stage(room_repo, room_id: str) -> str:
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from sse_broadcast import BroadcastManager, build_sse_app
+
+    app = build_sse_app(broadcast_manager=BroadcastManager(), room_repo=room_repo)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get(f"/stage/{room_id}")
+        assert resp.status == 200
+        return await resp.text()
+
+
+def _bootstrapped_lang(body: str, key: str) -> str:
+    """렌더된 부트스트랩에서 페이지가 실제로 열 ?lang= 값을 뽑는다."""
+    m = re.search(rf'{key}:\s*"([a-z-]+)"', body)
+    assert m is not None, f"{key} 가 부트스트랩에 없다"
+    return m.group(1)
+
+
+class TestPublishChannelMatchesRenderedChannel:
+    """AC2 의 통합판 — 기록 → 새 페이지 렌더 → publish 채널 일치."""
+
+    @pytest.mark.asyncio
+    async def test_stage_subscribes_to_the_channel_the_server_publishes_on(
+        self, real_room_repo
+    ):
+        import websocket_handler
+        from websocket_handler import _publish_to_viewers
+
+        _db, room_repo, admin_id = real_room_repo
+        room_id = f"lang-{uuid.uuid4().hex[:8]}"
+        room_repo.create(room_id=room_id, name="A홀", created_by=admin_id)
+
+        # 사고 시점의 룸 행: 오퍼레이터 선택이 한 번도 기록되지 않은 상태.
+        assert room_repo.get_by_id(room_id)["primary_output_lang"] == "ko"
+
+        # 오퍼레이터가 출력 언어를 vi 로 고르고 세션을 시작한다.
+        target_lang = "vi"
+        assert (
+            room_repo.update_session_languages(
+                room_id, input_lang="ko", output_lang=target_lang
+            )
+            is True
+        )
+
+        # 그 **뒤에** 무대 화면을 새로 연다.
+        body = await _render_stage(room_repo, room_id)
+        rendered_lang = _bootstrapped_lang(body, "caption_lang")
+
+        # 헤드라인 단언: 페이지가 구독할 채널 == 서버가 송출할 채널.
+        assert rendered_lang == target_lang
+
+        # 그리고 그 채널로 실제 페이로드가 도달하는지 값으로 확인한다.
+        from room_manager import RoomManager
+
+        mgr = websocket_handler._broadcast_manager
+        queue = await mgr.register_viewer(room_id, rendered_lang)
+        try:
+            with patch(
+                "websocket_handler._room_manager",
+                RoomManager(room_repository=room_repo),
+            ):
+                await _publish_to_viewers(
+                    room_id,
+                    primary_translated="Xin chào",
+                    source_text="안녕하세요",
+                    source_lang="ko",
+                    target_lang=target_lang,
+                    translate_client=MagicMock(),
+                    bedrock_client=MagicMock(),
+                    bedrock_available=False,
+                )
+            payload = queue.get_nowait()
+        finally:
+            await mgr.unregister_viewer(room_id, rendered_lang, queue)
+
+        assert payload["lang"] == target_lang
+        assert payload["text"] == "Xin chào"
+
+    @pytest.mark.asyncio
+    async def test_unrecorded_language_reproduces_the_production_mismatch(
+        self, real_room_repo
+    ):
+        """대조군 — 기록을 **하지 않으면** 두 채널이 갈라진다.
+
+        위 테스트가 우연히 통과하는 것이 아니라 write-back 때문에 통과한다는
+        것을 보인다. 이 테스트가 깨지면 사고 재현 자체가 성립하지 않는다.
+        """
+        _db, room_repo, admin_id = real_room_repo
+        room_id = f"lang-{uuid.uuid4().hex[:8]}"
+        room_repo.create(room_id=room_id, name="A홀", created_by=admin_id)
+
+        body = await _render_stage(room_repo, room_id)
+        assert _bootstrapped_lang(body, "caption_lang") == "ko"
+        assert _bootstrapped_lang(body, "caption_lang") != "vi"
+
+    @pytest.mark.asyncio
+    async def test_write_back_leaves_output_langs_untouched(self, real_room_repo):
+        """#91/#92 가드의 통합판 — 진짜 DB 행에서 컬럼이 그대로다."""
+        db, room_repo, admin_id = real_room_repo
+        room_id = f"lang-{uuid.uuid4().hex[:8]}"
+        room_repo.create(room_id=room_id, name="A홀", created_by=admin_id)
+
+        with db.get_connection() as conn:
+            before = conn.execute(
+                "SELECT output_langs FROM rooms WHERE id = ?", (room_id,)
+            ).fetchone()["output_langs"]
+
+        room_repo.update_session_languages(room_id, input_lang="ko", output_lang="vi")
+
+        with db.get_connection() as conn:
+            after = conn.execute(
+                "SELECT output_langs FROM rooms WHERE id = ?", (room_id,)
+            ).fetchone()["output_langs"]
+
+        assert after == before == '["ko"]'
+
+        # 그럼에도 뷰어 언어 목록은 전역 지원 언어 전부여야 한다.
+        from sse_broadcast import _supported_output_langs
+        from translation import SUPPORTED_OUTPUT_LANGS
+
+        assert _supported_output_langs("vi") == list(SUPPORTED_OUTPUT_LANGS)
