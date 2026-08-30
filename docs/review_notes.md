@@ -2172,3 +2172,396 @@ R-2 ~ R-7 은 전부 Low 이고 테스트 표현/정책 일관성 영역이다. 
 넓히지 않는 편이 낫다 — 특히 **ISSUE-49 가 이 머지를 기다리고 있고** 같은
 `components/webrtc.html` 을 건드린다. R-3(무대 렌더러 엄격/관대 불일치)은
 후속 이슈로 분리 권고.
+
+# PR #142 — ISSUE-43 보안 가드 뮤테이션 점검 하네스 (code review)
+
+리뷰 대상 커밋 `a51bb2c` (detached). 리뷰어 전용 워크트리에서 수행.
+**프로덕션 코드 변경 0건** — `git diff --name-status main...HEAD` 결과가
+`.github/workflows/ci.yml` (M, +39/-0), `guard_mutations.py` (A),
+`guard_mutations.toml` (A), `tests/` 4건뿐임을 확인했다.
+
+실측 기준값 (전부 리뷰어가 직접 측정. PR 본문·코드 주석의 주장은 재사용하지 않았다):
+
+| 항목 | 측정값 |
+|---|---|
+| `python guard_mutations.py` | **20 guards, 20 killed, 0 survived, 0 errors — 8.9 / 9.2 / 9.7 s**, exit **0** |
+| 전체 스위트 | **1261 passed / 1 skipped / 114 deselected / 94.24%**, 80.57 s |
+| `ruff check . --config pyproject.toml` | All checks passed |
+| `black --check .` | 63 files unchanged |
+| `git diff --quiet` (러너 실행 후) | **0** (정상·SIGINT·SIGTERM·카탈로그 오류 전 경로) |
+
+## 하네스가 실제로 무는가 — 실측 프로브 7종
+
+1. **`Guard:` docstring 1줄 삭제** (`tests/test_branding_assets.py:297`) →
+   `branding_assets.resolve_asset_path#symlink unnamed — no test declares
+   "Guard: …"`, exit **1**, 뮤테이션 미적용(fail fast).
+2. **허용 목록 밖 파일 지목** (`file = 'translation.py'`) →
+   `ERROR — 허용 목록 밖 파일입니다: translation.py`, exit **1**.
+   `shasum translation.py` 가 실행 전후 동일(`22b659dd…`).
+3. **`find` 스니펫 다중 등장** (`'        return None'` = 7회) →
+   `ERROR — find 스니펫이 branding_assets.py 에 7회 등장합니다 — 정확히 1회여야
+   합니다`, exit **1**, 아무것도 뮤테이션되지 않음.
+4. **킬 테스트 약화 — 이 이슈가 사려는 성질 그 자체.**
+   `test_resolve_rejects_symlink_that_points_inside_the_room` 의 본문을 두 가지로
+   약화했다.
+   - (a) 단언을 자명하게 참인 것으로 (`… is not False`) →
+     `SURVIVED — branding_assets.py:218`, exit **1**.
+   - (b) **ISSUE-38 의 원래 결함 재현** (링크 대상을 룸 *바깥*으로 = 404 를 만드는
+     것이 containment 인 그 입력) → `SURVIVED — branding_assets.py:218`,
+     exit **1**. 하네스는 자신이 존재하는 이유가 된 그 실패를 정확히 검출한다.
+   - 참고: 단언 3개 중 1개만 약화했을 때는 여전히 `killed` 이었다 —
+     `delete_asset` 이 `resolve_asset_path` 를 재사용해 *다른* 파일을 지우면서
+     `list_assets` 단언이 대신 깨졌기 때문. 이 테스트는 다중 방어선이다.
+5. **샌드박스가 진짜 import 되는 모듈인가** — `_run_pytest` 를 감싸 실패 출력을
+   캡처했다. pytest traceback 이
+   `<module 'branding_assets' from '/var/folders/…/T/guard-mutations-dyknpoes/repo/branding_assets.py'>`
+   를 보여준다. 원본 트리가 아니라 **샌드박스 사본**이 import 된다. 같은 실행에서
+   원본 `branding_assets.py` 는 무변경, 샌드박스는 종료 시 삭제됐다.
+6. **`--no-cov` 가 하중을 받는가** — 같은 노드를 `--no-cov` 없이 돌리면
+   `1 passed` 인데 exit **1** (`FAIL Required test coverage of 50% not reached.
+   Total coverage: 3.29%`). 이슈가 경고한 오탐이 실재하고 러너는 그걸 막고 있다.
+7. **동시 실행 2개** → 양쪽 모두 `20 killed`, exit 0, 샌드박스 충돌·잔존 0건.
+   (`tempfile.mkdtemp` + `-p no:cacheprovider` + `--no-cov` + `cwd=sandbox`.)
+
+## 변별력 매트릭스 (meta-RL-004)
+
+카탈로그 20건 × 바인딩된 노드 집합 20종 = **400회 pytest** 를 돌려 교차 매트릭스를
+측정했다 (baseline 전건 exit 0).
+
+- **20/20 모두 자기 바인딩 테스트에 의해 죽는다** (own-kill 실패 0건).
+- **19/20 은 오직 자기 바인딩에만 죽는다** — 바인딩이 유일 변별자다.
+- 유일한 중첩: `branding_assets.list_assets#symlink` 가
+  `resolve_asset_path#symlink` 의 테스트에도 죽는다(그 테스트가
+  `list_assets(...) == ["real.png"]` 를 단언하기 때문). 결합을 **강화**하는
+  중첩이므로 결함이 아니다.
+- **`resolve_asset_path#containment` 의 TOCTOU 테스트는 정직하다.**
+  `monkeypatch.setattr(Path, "is_symlink", lambda self: False)` 로 만든 입력은
+  `#containment` 를 죽이고 `#symlink` 는 **죽이지 않는다** — 매트릭스에서
+  `#symlink` 행의 "also killed by" 가 빈 목록이다. 러너를 만족시키려고 만든
+  테스트가 아니라 2단 방어를 단독 검증한다.
+- 경계 고정 확인: `#size_cap` 은 `assert len(data) == MAX_ASSET_BYTES` 로 **정확히
+  상한**을 받는다(`>`→`>=` 를 죽임). `#count_cap` 은 12개를 채운 뒤 13번째를
+  거부한다(`>=`→`>` 를 죽임). `#exclusive_create` 는 반환 이름과 **첫 파일의
+  바이트**를 둘 다 단언한다. `#quiet_reject` 는 `capsys` 로 `out`·`err` 모두
+  빈 문자열을 단언한다 — 모듈이 `print()` 를 쓰므로 `capsys` 가 맞는 캡처다
+  (`capfd` 불필요).
+
+## Code Review
+
+### F-1 (High, 미수정) — 컴파일되지 않는 뮤턴트가 `killed` 로 보고된다 (러너 안의 RL-004)
+
+`guard_mutations.py:513-522` (뮤테이션 적용) / `:544-563` (`_verdict`) /
+모듈 docstring `:59-61` (계약 선언).
+
+**측정한 증거.** 카탈로그의 `_reject_path_signatures#dotdot` 항목 `replace` 를
+괄호가 닫히지 않은 `'    if False and (".." in value'` 로 바꿔 러너를 돌렸다.
+
+```
+branding_assets._reject_path_signatures#dotdot killed by tests/test_branding_assets.py::…::test_dotdot_in_filename_is_rejected_not_stripped
+1 guards, 1 killed, 0 survived, 0 errors — 0.5s
+EXIT=0
+```
+
+같은 뮤테이션을 손으로 재현해 pytest 종료 코드를 직접 쟀다 — **exit 1**, 출력에
+정상적인 `FAILED …` 요약 줄과 `E SyntaxError: expected ':'`.
+`import no_such_module_xyz` 를 앞에 붙인 변형도 **exit 1 / FAILED** 로 동일했다.
+
+**왜 문제인가.** 러너의 선언된 계약은 "`1` 만 kill, `2` 수집 오류 / `4` 사용법
+오류 / `5` 미수집은 ERROR" 다. 그 계약은 **이 저장소에서 성립하지 않는다** —
+킬 테스트가 전부 함수 몸통 안에서 `import branding_assets` 를 하기 때문에, 모듈이
+깨져도 *수집* 오류(exit 2)가 아니라 *테스트 런타임* 실패(exit 1)가 된다.
+따라서 `replace` 오타 하나로 게이트가 초록색이 되면서 "그 테스트가 변별력이
+있다" 는 증명은 하나도 하지 않는다. **RL-004 가, RL-004 를 막으려고 만든 도구
+안에서 재발하는 형태**이며 이슈 본문이 "그 오탐이야말로 RL-004 의 재발이다" 로
+명시적으로 금지한 것이다. 외부 익스플로잇 경로는 없고(잘못된 카탈로그 항목이
+전제이며 그것은 코드 리뷰를 거친다) 그래서 Critical 이 아니지만, 영향은 해당
+항목의 보증이 **조용히 전부 소실**되는 것이다.
+
+**최소 수정 (리뷰어가 적용해 측정 완료, 이후 되돌림).**
+`run_catalog` 에서 뮤테이션을 쓰기 전에 문법 검증 한 겹:
+
+```python
+            target = sandbox / mutation.file
+            original = target.read_bytes()
+            mutated = original.decode("utf-8").replace(
+                mutation.find, mutation.replace, 1
+            )
+            # 뮤턴트가 import 조차 되지 않으면 바인딩된 테스트는 가드와 무관하게
+            # 실패하고 pytest 는 exit=1 을 낸다 — 그 오탐을 kill 로 세는 것이야말로
+            # RL-004 의 재발이다. 문법 검증에 실패하면 kill 이 아니라 ERROR 다.
+            try:
+                compile(mutated, str(target), "exec")
+            except SyntaxError as e:
+                report.results.append(
+                    GuardResult(
+                        mutation.guard,
+                        ERROR,
+                        f"replace 결과가 문법적으로 유효하지 않습니다 "
+                        f"({mutation.file}:{e.lineno}): {e.msg}",
+                    )
+                )
+                emit(report.results[-1].render())
+                continue
+            try:
+                target.write_text(mutated, encoding="utf-8")
+                code, output = _run_pytest(sandbox, nodes, timeout)
+            finally:
+                target.write_bytes(original)
+```
+
+적용 후 실측: 위 오타 카탈로그가
+`ERROR — replace 결과가 문법적으로 유효하지 않습니다 (branding_assets.py:318):
+'(' was never closed`, exit **1** 로 바뀌고, 전체 카탈로그는 여전히
+**20 killed / 9.2 s**, ruff·black clean.
+
+문법은 유효한데 import 가 깨지는 변형(모듈 레벨 이름 오타 등)까지 막으려면
+`_verdict` 에서 `code == 1` 이면서 출력에
+`^E\s+(SyntaxError|IndentationError|ImportError|ModuleNotFoundError):` 가 보이면
+ERROR 로 내리는 2겹을 추가한다. 모듈 docstring `:59-61` 의 계약 문구도 함께
+정정해야 한다 — 현재 문구는 사실이 아니다.
+
+### F-2 (Medium, 미수정) — SIGTERM 은 살아 있는 뮤턴트가 든 샌드박스를 남긴다
+
+`guard_mutations.py:316` (`atexit.register`) / docstring `:39-44` (주장).
+
+**측정한 증거.** 실행 3초 뒤 `kill -TERM` → 프로세스 exit 143,
+`$TMPDIR/guard-mutations-2gnmv01s` **잔존**, 2.6 MB, 그 안의
+`repo/branding_assets.py:218` 이 `if False and candidate.is_symlink():` —
+심볼릭 링크 가드가 꺼진 **살아 있는 뮤턴트**다.
+대조군으로 SIGINT 도 측정했다 — returncode −2, 잔존 **0건**
+(`run_catalog` 의 `finally` 가 돈다).
+
+작업 트리는 어느 경로로도 오염되지 않으므로(측정 확인) 형제 워크트리를 오염시킬
+수는 없고 AC 위반도 아니다. 하지만 docstring 은 "`try/finally` + `atexit` 로 …
+**모든 종료 경로**에서 제거한다" 고 주장하는데 SIGTERM 에서 `atexit` 는 돌지
+않는다. CI job 취소·타임아웃마다 러너 디스크에 스테일 사본이 쌓인다.
+
+**최소 수정** — `main()` 진입 시 3줄 (`import signal` 추가):
+
+```python
+    signal.signal(
+        signal.SIGTERM,
+        lambda *_: (_cleanup_sandboxes(), sys.exit(143)),
+    )
+```
+
+또는 docstring 의 주장을 "SIGTERM 제외" 로 좁힌다. 핸들러 쪽을 권한다.
+
+### F-3 (Low, 미수정) — 검증 실패 시 요약이 "1 guards" 로 나온다
+
+`guard_mutations.py:208-213` / `:482-490`.
+프로브 1(불명 가드 1건)에서 카탈로그에 20건이 있는데 출력은
+`1 guards, 0 killed, 0 survived, 1 errors — 0.1s`. fail-fast 동작 자체는 옳지만
+(뮤테이션 전에 중단) 숫자가 "카탈로그가 1건뿐" 처럼 읽힌다.
+수정: `f"{len(self.results)}/{total} guards…"` 처럼 분모를 함께 낸다.
+
+### F-4 (Low, 미수정) — `Mutation.note` 는 죽은 필드
+
+`guard_mutations.py:160`, `:260`. 어디서도 읽지 않고
+`grep -c "^note" guard_mutations.toml` = **0**. 카탈로그는 `#` 주석을 쓴다.
+
+### F-5 (Low, 미수정) — 게이트된 종단 테스트의 skip 사유가 실측과 7~13배 어긋난다
+
+`tests/test_guard_mutations.py:472-475` — 사유 문자열이
+"전체 카탈로그 실행은 1~2분 걸린다".
+**측정값: `GUARD_MUTATION_FULL=1 pytest …::test_full_catalog_run_kills_every_guard
+-q --no-cov` → 1 passed in 8.95 s** (wall 9.17 s). 전체 스위트가 80.57 s 이므로
+기본 실행에 넣어도 +11% 다. 헤드라인 AC 를 증명하는 유일한 테스트를 기본
+게이트에서 빼는 근거가 **재보지 않은 숫자**인 것은 하필 이 PR 에서 아이러니다.
+AC 자체는 CI `mutation` job 이 같은 커맨드로 게이트하므로 실제 영향은 낮다.
+수정: 사유 문자열을 실측값으로 정정하거나 `skipif` 를 제거한다.
+
+### 정보성 (수정 불필요)
+
+- `tests/test_branding_assets.py:874` 의
+  `monkeypatch.setattr(Path, "is_symlink", …)` 는 stdlib 메서드를 프로세스
+  전역으로 패치한다. `monkeypatch` 가 teardown 에서 되돌리고, 전체 스위트가
+  1261 passed 이며, 매트릭스상 이 테스트는 `#containment` 만 죽인다 — 누출
+  없음. 같은 파일의 기존 `test_save_rejects_when_containment_check_fails` 가
+  이미 쓰는 패턴이라 프로젝트 관례와도 일치한다.
+- `collect_guard_annotations` `:297-298` — `--tests-root` 를 `repo_root` 밖으로
+  주면 노드 ID 가 절대경로가 되어 원본 트리의 테스트를 가리킨다. 그 경우 뮤턴트가
+  적용되지 않아 전건 `SURVIVED` → exit 1 로 **안전하게** 깨진다. 기본 경로·CI
+  에서는 도달 불가.
+- `SANDBOX_IGNORE` 의 `scripts` / `.claude-kit` 제외는 옳다. `scripts` 가 추적되지
+  않는 심볼릭 링크임을 직접 확인했다(`git ls-files scripts` → 0건,
+  `ls -la scripts` → `-> .claude-kit/scripts`, 워크트리에는 부재).
+- `#svg_csp` 처럼 여러 줄 `find` 를 쓰는 항목의 `file:line` 보고를 검증했다 —
+  강제 SURVIVED 로 `branding_assets.py:297` 이 나왔고 실제 소스 행도 297 이다
+  (off-by-one 없음).
+
+## Security Findings
+
+### S-1 (Medium, 미수정) — 샌드박스 사본이 `.env` 와 `data/`(로컬 DB)를 `$TMPDIR` 로 복사한다
+
+`guard_mutations.py:111-126` (`SANDBOX_IGNORE`).
+
+**측정한 증거.** `SANDBOX_IGNORE` 에 `.env` / `data` / `*.db` 가 없다. 실제 개발
+체크아웃에는 `/…/realtime-en2ko-captions/.env` (458 B — CLAUDE.md 기준
+`OPENAI_KEY` / `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` 를 담는다) 와
+`data/` 480 KB (`app.db`, `app.db.bak.20260608`, `data/branding/{jMWPEC_YjOU,
+e2estage1}`) 가 존재한다. 둘 다 `.gitignore:2,5-6` 에 등재된 비공개 자산이다.
+`shutil.copytree` 는 이들을 그대로 복사한다. **F-2 와 결합하면** SIGTERM 으로
+죽은 실행마다 그 사본이 `$TMPDIR` 에 남는다.
+
+완화 요인: `tempfile.mkdtemp` 는 0700 이고 macOS `$TMPDIR` 는 사용자 전용이며
+CI 체크아웃에는 두 경로 모두 없다. 실행 가능한 공격 경로가 없으므로 **Medium**
+(High 아님).
+
+**최소 수정** — 목록에 4개 추가:
+
+```python
+    ".env",
+    ".env.*",
+    "data",
+    "*.db",
+```
+
+리뷰 워크트리에는 `data/` 가 아예 없는 상태에서 **20/20 killed** 가 나오므로,
+제외해도 카탈로그 실행에 영향이 없음을 실측으로 확인했다.
+
+### S-2 (Medium, 미수정) — `mutation` job 에 `timeout-minutes` 가 없다 (AC 의 5분 상한이 강제되지 않음)
+
+`.github/workflows/ci.yml:81-109`.
+
+**측정한 증거.** 러너는 `len(selected)` 회만 돈다 — 뮤턴트 자동 생성도, 재시도도,
+`while` 루프도 없다(코드 확인). 그러나 바인딩된 노드 집합이 20종이므로 최악의
+경우 baseline 20회 + 뮤턴트 20회 = **40 × `PYTEST_TIMEOUT_SECONDS = 180`
+(`guard_mutations.py:129`) = 7200 s ≈ 2시간**이다. 실측은 8.9~9.7 s.
+AC 는 "job 총 소요가 5분 이내" 를 요구하는데 이를 강제하는 장치가 없고
+GitHub 기본 job 타임아웃은 360분이라 사실상 무방비다.
+
+**최소 수정** — `mutation:` 블록에 1줄:
+
+```yaml
+  mutation:
+    name: Guard mutation check
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 10
+```
+
+(기존 `lint`/`test`/`e2e` 도 `timeout-minutes` 가 없다 — 이 PR 범위 밖, 후속으로.)
+
+### 취약점 없음으로 확인한 항목 (blind-spot scan)
+
+- **명령 주입**: `subprocess.run` 은 리스트 인자 + `shell=False`. 노드 ID 는
+  `ast` 가 판독한 파일 경로·식별자에서만 만들어지고 카탈로그 문자열이 관여하지
+  않는다.
+- **역직렬화**: `tomllib`(코드 실행 없음). 카탈로그의 `find`/`replace` 는 샌드박스
+  파일에 문자열로 쓰일 뿐 `eval`/`exec` 되지 않는다.
+- **의존성**: 신규 의존성 0건 — `pyproject.toml`·`uv.lock` 무변경, `tomllib` 은
+  3.11 stdlib.
+- **허용 목록 상향 불가**: `ALLOWED_FILES` 는 러너에 하드코딩(`:101-108`)이고
+  카탈로그는 이를 넓힐 수 없다 — 프로브 2 로 실증.
+- **경로 이식성**: `Path(__file__).resolve().parent` 기준이라 체크아웃 위치와
+  무관하다. `pyproject.toml` 에 `[build-system]` 이 없어 `uv sync` 가 프로젝트를
+  editable 로 설치하지 않고(`.venv/…/site-packages` 에 `_virtualenv.pth` /
+  `a1_coverage.pth` 뿐), `tests/__init__.py` 가 있어 pytest 의 `prepend` 모드가
+  샌드박스 루트를 `sys.path[0]` 에 넣는다 — CI 에서도 샌드박스가 이긴다.
+- **XSS / 인가 / 하드코딩된 비밀**: 해당 없음(개발 도구, 사용자 대면 출력 없음,
+  하드코딩된 비밀 0건).
+
+## 사양 이탈 3건에 대한 판정
+
+1. **배치 (`scripts/` → 저장소 루트) — 정당.** 직접 확인: `scripts` 는
+   `.claude-kit/scripts`(submodule) 를 가리키는 심볼릭 링크이고
+   `git ls-files scripts` 가 0건이며 리뷰 워크트리에 부재하다.
+   `actions/checkout@v4` 는 기본이 `submodules: false` 이므로 CI 체크아웃에도
+   없다. 루트 배치가 유일하게 동작하는 선택이고 docstring `:14-20` 에 근거가
+   적혀 있다. CI 의 `uv run python guard_mutations.py` 는 추적된 루트 파일을
+   가리키므로 클린 체크아웃에서 동작한다.
+2. **카탈로그에 `tests` 키 없음 (docstring 파생) — 정당, 단서 1개.**
+   AC 문구("카탈로그에 적힌 테스트 노드만 실행")의 *글자*는 만족하지 않지만
+   *의도*(전체 스위트가 아니라 지정 노드만)는 만족한다. 파생이 나은 이유는
+   RL-001 이고, `test_every_guard_is_owned_and_no_annotation_is_orphaned` 가
+   양방향 대응을 빠른 스위트에서 정적으로 고정한다. 잃는 것은 "가드↔테스트
+   대응표를 파일 하나로 diff 할 수 있는 성질" 인데, 러너 출력 자체가 그 표이고
+   `Guard:` 를 약한 테스트로 옮기면 `SURVIVED` 로 드러난다(프로브 4 로 실증).
+   순이익이다.
+3. **샌드박스 사본 (제자리 수정 + `try/finally` 복구 대신) — 정당, 더 강함.**
+   AC "실행 전과 바이트 단위로 동일" 을 *구조적으로* 만족한다 — 원본에 애초에
+   쓰지 않는다. 정상·SIGINT·SIGTERM·검증 오류 전 경로에서 `git diff --quiet` = 0
+   을 실측했다. 비용은 1회 copytree(측정 2.6 MB). 단, 이 선택이 F-2·S-1 이라는
+   **새 실패 모드**(임시 디렉터리 잔존, 비밀 사본)를 만들었으므로 두 건을 함께
+   고쳐야 이 이탈이 온전히 우월해진다.
+
+## Over-Engineering
+
+- `guard_mutations.py:160,260`: **delete** `Mutation.note` (읽는 곳 0건, 카탈로그
+  사용 0건) → 필드와 `note=entry.get(...)` 제거. −3줄
+- `guard_mutations.py:589-594`: **yagni** `--timeout` CLI 플래그 (CI·테스트 어디서도
+  쓰지 않음) → `PYTEST_TIMEOUT_SECONDS` 상수만 유지. `run_catalog`/`_run_pytest`
+  의 `timeout` **인자는 유한성 안전 장치이므로 남긴다**. −7줄
+- `--repo-root` / `--tests-root` 는 **정당**하다 — `main()` 의 종료 코드 계약을
+  가짜 미니 저장소로 종단 검증하는 유일한 수단이고 합계 4줄이다. 컷하지 않는다.
+- 618줄이라는 총량은 과하지 않다: 실행 문(coverage `Stmts`) 기준 **249**이고
+  나머지는 이슈가 명시적으로 요구한 설계 기록(이탈 3건의 근거)과 구획 주석이다.
+
+**net removable ≈ 10줄** (618줄 중). 나머지는 lean.
+
+## AC 대조
+
+- 접근 방식 결정 — **충족**. `docs/architecture.md:380` 에 실측 1행
+  (선언형 20 kill / 9.6 s vs `mutmut` 3.4.0 4 s 만에 실패·처리 0건, 탈락 사유
+  포함). 이 파일은 프로젝트 관례상 git 미추적(추적 문서는 5건뿐)이라 PR diff 에
+  없는 것이 정상이다.
+- 러너 계약 4건 — **충족** (프로브 1·3, 출력 형식, `git diff --quiet` = 0).
+- retro-apply 3건 — **충족**. `branding_assets` 항목 15건 전건 kill, 생존 0.
+- 명명 규약 2건 — **충족** (프로브 1).
+- 비용 상한 2건 — **부분 충족**. 기존 job 커맨드 무변경(+39/−0)·카탈로그 노드만
+  실행·실측 9 s 는 충족이나 **5분 상한을 강제하는 장치가 없다**(S-2).
+
+## Follow-ups (이 PR 이 아니라 별도 이슈)
+
+1. **RL-026 이 주인 없이 남는다.** RL-026 의 Recommended action 은 "ISSUE-43 의
+   카탈로그가 작성될 때 **마크업 속성 삭제**를 뮤테이션 클래스로 포함하라" 며
+   ISSUE-43 을 명시적으로 지목하는데, ISSUE-43 의 Scope 는 JS/HTML 을 Out 으로
+   못 박았다(파이썬 소스만). 두 문서가 서로를 가리키며 아무도 소유하지 않는다.
+   → `components/*.html` 대상 마크업 뮤테이션 카탈로그를 별도 이슈로 연다.
+2. `lint` / `test` / `e2e` job 에도 `timeout-minutes` 부재 (S-2 참고).
+3. `guard_mutations.py` 가 `--cov=.` 분모에 들어가 있다
+   (`[tool.coverage.run] omit` 미등재, 249 stmts / 95%). 앱 커버리지에 도구
+   스크립트가 섞인다 — omit 추가 여부를 결정할 것.
+4. 허용 목록 확대 후보 (`sse_broadcast.py` 의 라우트 가드, `stage_config` 검증).
+
+## Confidence
+
+**High.** 코드·PR 본문·리뷰 지시문의 주장을 하나도 그대로 받지 않고 전부 실측했다
+(프로브 7종 + 400회 교차 매트릭스 + 시그널 2종 + 동시 실행 + 전체 스위트/린트).
+유일하게 직접 실행하지 못한 것은 **실제 GitHub 러너에서의 CI job** 이다 —
+editable 설치 부재와 `tests/__init__.py` 로 인한 `sys.path` 우선순위를 근거로
+안전하다고 판단했고 그 근거는 Security Findings 마지막 항목에 남겼다. 이 한
+가지만 Medium 확신이다.
+
+## Verdict
+
+**조건부 승인.** 하네스는 실제로 문다 — ISSUE-38 의 원래 결함을 재현하면
+`SURVIVED` 로 잡아내고(프로브 4b), 20개 가드 중 19개가 자기 바인딩에만 죽는다.
+프로덕션 코드 변경 0건, 기존 `lint`/`test`/`e2e` 커맨드 무변경(+39/−0),
+스위트·린트 전부 초록.
+**머지 전 F-1 은 반드시 고쳐야 한다** — 도구의 선언된 계약이 이 저장소에서
+거짓이고, 그 거짓이 곧 이 이슈가 없애려는 실패 모드 그 자체다.
+S-2 는 1줄, F-2·S-1 은 각각 3~4줄이므로 함께 처리하기를 권한다.
+
+## Resolution — 팀리드 반영 (커밋 `7f71c95`, 반영 후 실측)
+
+리뷰 지적 전량을 이 PR 안에서 처리했다. 프로덕션 코드는 여전히 0건 변경이다.
+
+| ID | 심각도 | 처리 | 반영 후 실측 |
+|---|---|---|---|
+| F-1 | High | `compile()` 사전 검증(레이어 a) + `_verdict` 의 import/문법 트레이스백 차단(레이어 b) + 거짓 계약을 서술하던 docstring 교정(레이어 c). 회귀 테스트 2건 추가 | **팀리드가 독립 재측정**: 괄호 불균형 `replace` → `ERROR — replace 결과가 문법적으로 유효하지 않습니다 (branding_assets.py:318): invalid syntax`, exit **1** (수정 전: `killed`, exit 0). 문법은 유효하나 import 불가한 뮤턴트 → `ERROR — 뮤턴트를 import 하지 못했습니다 … ModuleNotFoundError`, exit **1**. 대조군(정상 뮤테이션) → `killed by …`, exit **0** |
+| F-2 | Medium | `main()` 첫 문장에 SIGTERM 핸들러 설치(샌드박스가 생기기 전에 무장), 격리 docstring 교정 — 커버하는 시그널과 커버 못 하는 SIGKILL 을 명시 | `kill -TERM` 후 `$TMPDIR/guard-mutations-*` 잔존 0건, 고아 pytest 자식 0건 |
+| S-1 | Medium | `SANDBOX_IGNORE` 에 `.env`, `.env.*`, `data`, `*.db` 추가 | 20/20 유지 — 아무것도 이들에 의존하지 않는다 |
+| S-2 | Medium | `mutation` job 에 `timeout-minutes: 10`. `lint`/`test`/`e2e` 는 의도적으로 미변경 | `git diff origin/main -- .github/workflows/ci.yml` 삭제 라인 0 |
+| F-3 | Low | 요약에 분모 출력 (`1/20 guards`) | — |
+| F-4 | Low | 죽은 `Mutation.note` 삭제 | — |
+| F-5 | Low | skip 사유의 미측정 수치("1~2분")를 실측(~9초)과 실제 사유(중첩 pytest 서브프로세스 약 40회, CI `mutation` job 이 권위 게이트)로 교체 | 실측 8.7~9.4초 |
+| 미니멀리티 | — | 미사용 `--timeout` CLI 플래그 삭제. `run_catalog`/`_run_pytest` 의 `timeout` 인자는 **유지**(경계성 안전 속성) | 순 −10줄 |
+
+반영 후 전체: **1265 passed / 1 skipped / 114 deselected / 94.44%**, `ruff --config pyproject.toml` · `black --check` 초록,
+러너 **20/20 killed, 0 survived, 0 errors — 9.4s**, `git diff --quiet` = 0.
+
+리뷰어가 별도 이슈로 넘기라고 한 4건(RL-026 마크업 속성 뮤테이션 클래스 미소유,
+`lint`/`test`/`e2e` 의 `timeout-minutes` 부재, `guard_mutations.py` 의 커버리지 분모 포함 여부,
+허용 목록 확대 후보)은 이 PR 에서 건드리지 않고 `docs/sprint_state.md` 의 Discovered Issues 에 기록했다.
