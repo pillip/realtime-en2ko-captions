@@ -8,7 +8,6 @@
 """
 
 import asyncio
-import json
 import os
 import threading
 
@@ -29,6 +28,7 @@ from operator_ui import (
     build_room_dropdown_options,
     format_display_mode_label,
     has_assigned_rooms,
+    render_component_html,
     select_default_room,
     select_display_mode,
 )
@@ -483,7 +483,9 @@ else:
             stage_url=stage_url,
         )
 
-        html_content = html_template.replace("{{BOOTSTRAP_JSON}}", json.dumps(payload))
+        # ISSUE-48: 부트스트랩은 raw `<script>` 안에 들어가므로 뷰어/무대와
+        # 같은 script-context 이스케이프를 통과해야 한다 (RL-016 / RL-020).
+        html_content = render_component_html(html_template, payload)
         st.components.v1.html(html_content, height=900, scrolling=False)
 
     except Exception:

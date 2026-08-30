@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from script_escape import PLACEHOLDER_RE, json_for_script
+
 # 사용자에게 보여줄 룸 상태 라벨. 백엔드 status 코드는 영어이지만
 # 오퍼레이터 UI는 한국어로 표기한다 (issues.md AC4).
 _ROOM_STATUS_LABELS: dict[str, str] = {
@@ -183,3 +185,29 @@ def build_bootstrap_payload(
         "display_mode": display_mode,
         "stage_url": stage_url,
     }
+
+
+def render_component_html(template: str, payload: dict[str, Any]) -> str:
+    """`components/webrtc.html` 의 `{{BOOTSTRAP_JSON}}` 을 안전하게 채운다 (ISSUE-48).
+
+    payload 가 꽂히는 자리는 **raw `<script>`** 안이다. `json.dumps` 는 `<` 도
+    `/` 도 이스케이프하지 않으므로, admin 자유 입력인 `room_name` 에
+    `</script>` 가 들어가면 인라인 블록이 조기 종료되어 (1) 주입 스크립트가
+    오퍼레이터 오리진에서 실행되고 (2) `BOOT` 이 아예 만들어지지 않아 자막이
+    한 줄도 나오지 않는다. 뷰어/무대가 이미 쓰는 :func:`json_for_script` 를
+    그대로 공유한다 — 두 번째 이스케이퍼는 만들지 않는다 (RL-001 / RL-020).
+
+    payload 는 **한 번에** 통과시킨다. 필드별로 갈라 처리하면 새 BOOT 필드가
+    추가될 때 조용히 빠지고, 반쯤 적용된 헬퍼는 "처리됨" 신호를 주기 때문에
+    없는 것보다 위험하다.
+
+    치환은 단일 패스다. 오늘 이 템플릿의 플레이스홀더는 `{{BOOTSTRAP_JSON}}`
+    하나뿐이라 연쇄 치환 위험이 실재하지 않지만, 두 번째 플레이스홀더가 생기는
+    순간 "값이 다른 플레이스홀더를 팽창시키지 못한다" 가 **구조적 사실**이어야
+    한다 (RL-021). lambda 치환은 `re.sub` 가 값 안의 백슬래시/역참조를 해석하는
+    것도 막고, `.get` 이 아니라 인덱싱이라 오타 난 플레이스홀더는 페이지로
+    새는 대신 `KeyError` 로 죽는다 — 호출부(`app.py`)의 `try/except` 가 그것을
+    일반 문구로 바꿔 준다 (RL-006).
+    """
+    values = {"BOOTSTRAP_JSON": json_for_script(payload)}
+    return PLACEHOLDER_RE.sub(lambda m: values[m.group(1)], template)
