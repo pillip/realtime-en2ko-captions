@@ -484,3 +484,89 @@ class TestBootstrapPayloadDisplayMode:
                 f"{key} differs between caption and stage mode — the display "
                 "mode must not touch the caption pipeline (AC2)"
             )
+
+
+# ---------------------------------------------------------------------------
+# build_bootstrap_payload — 키 집합 상등 (ISSUE-54, TC-089, RL-028)
+# ---------------------------------------------------------------------------
+# ISSUE-47 F-2 가 실측한 사실: 이 payload 가 바뀌면 `render_component_html` 이
+# 만든 문자열이 바뀌고, 그 문자열은 `st.components.v1.html` 의 iframe `srcdoc`
+# 이다. `srcdoc` 이 바뀌면 Streamlit 1.48.1 은 문서를 통째로 새로 로드한다 —
+# `RTCPeerConnection`, 마이크 스트림, 번역 WebSocket, 자막 스크롤백이 전부
+# 사라진다. 즉 **여기에 키를 하나 더하는 것은 세션 중 재조정 가능한 상태를
+# 하나 더 잃는 것**이다 (RL-028).
+#
+# 그래서 이 집합은 화이트리스트다. `"caption_scale" not in payload` 로 쓰지
+# 않는 이유가 정확히 RL-004 다 — 그 형태는 **이번에 금지한 그 키**만 막고,
+# 다음 사람이 `stage_font_scale` 을 넣으면 조용히 통과한다. 상등이어야 새
+# 키가 무엇이든 실패한다.
+#
+# 이 집합을 늘려야 한다고 판단했다면 그것은 테스트 수정이 아니라 **설계
+# 결정**이다: 그 상태가 세션 도중 바뀔 수 있는가? 바뀔 수 있다면 payload 가
+# 아니라 이미 열려 있는 WebSocket 으로 보내라 (ISSUE-54 가 자막 배율에 대해
+# 택한 길). 정말 payload 여야 한다면 세션 중 `disabled` 로 잠가라 (ISSUE-47
+# 이 표시 모드에 대해 택한 길). 그 판단을 PR 에 적는 것이 RL-028 의 요구다.
+_BOOTSTRAP_KEYS_AS_OF_ISSUE_47 = {
+    "action",
+    "openai_session",
+    "service",
+    "websocket_port",
+    "user_info",
+    "room_id",
+    "room_name",
+    "view_url",
+    "qr_data_url",
+    "display_mode",
+    "stage_url",
+}
+
+
+class TestBootstrapPayloadKeySetIsFrozen:
+    def test_key_set_equals_the_post_issue_47_set(self):
+        """TC-089 — 반환 키 집합이 ISSUE-47 이후와 **정확히** 같다."""
+        from operator_ui import build_bootstrap_payload
+
+        payload = build_bootstrap_payload(
+            action="start",
+            openai_session={"client_secret": "ek_x"},
+            websocket_port=8765,
+            user_info={"id": 1, "username": "op1"},
+            room_id="r1",
+            room_name="A홀",
+            view_url="http://h/view/r1",
+            qr_data_url="data:image/png;base64,AAA",
+            display_mode="stage",
+            stage_url="http://h/stage/r1",
+        )
+        added = set(payload) - _BOOTSTRAP_KEYS_AS_OF_ISSUE_47
+        removed = _BOOTSTRAP_KEYS_AS_OF_ISSUE_47 - set(payload)
+        assert not added, (
+            f"new BOOT payload key(s) {sorted(added)} — every payload change "
+            "rewrites the component iframe's srcdoc and Streamlit reloads the "
+            "document, destroying the RTCPeerConnection, the mic stream, the "
+            "translation WebSocket and the caption scrollback mid-session "
+            "(ISSUE-47 F-2 / RL-028). Send session-adjustable state over the "
+            "already-open WebSocket instead."
+        )
+        assert not removed, (
+            f"BOOT payload key(s) {sorted(removed)} disappeared — webrtc.html "
+            "reads them from BOOT and will silently fall back to defaults"
+        )
+
+    def test_the_set_is_identical_for_the_minimal_call(self):
+        """옵셔널 kwarg 를 하나도 주지 않아도 키 집합은 같다.
+
+        `build_bootstrap_payload` 가 값이 `None` 인 키를 빼는 형태로 바뀌면
+        브라우저의 `BOOT.stage_url` 이 `undefined` 가 되고, 그 차이는 위
+        테스트만으로는 보이지 않는다 — 위는 항상 전부 채워서 부르기 때문이다.
+        """
+        from operator_ui import build_bootstrap_payload
+
+        payload = build_bootstrap_payload(
+            action="idle",
+            openai_session=None,
+            websocket_port=None,
+            user_info=None,
+            room_id=None,
+        )
+        assert set(payload) == _BOOTSTRAP_KEYS_AS_OF_ISSUE_47
