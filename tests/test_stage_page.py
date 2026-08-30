@@ -1317,3 +1317,52 @@ class TestStageRouteHandler:
         assert status == 200
         assert 'caption_lang: "ko"' in body
         assert "zz" not in body
+
+
+class TestStageHasNoCaptionPipeline:
+    """TC-067 — `stage.html` 은 ISSUE-47 이후에도 순수 SSE 소비자로 남는다.
+
+    왜 이 가드가 존재하는가: `webrtc.html` 과 `viewer.html` 사이에 캡션 로직을
+    중복시킨 것이 이번 스프린트의 결함 3건(ISSUE-44/45/46)과 RL-001(빈도 4)을
+    낳았다. ISSUE-47 은 "무대에서도 번역을 시작하고 싶다" 는 요구를 받았지만,
+    그 답은 파이프라인을 `stage.html` 로 이식하는 것이 **아니라** `:8501` 탭이
+    파이프라인을 그대로 소유한 채 무대 창을 여는 것이다. 이 테스트는 그 결정이
+    코드로 되돌아오는 것을 막는다.
+
+    `getDisplayMedia` 는 ISSUE-42 가 정당하게 넣은 화면 캡처라 **금지 대상이
+    아니다** — 캡처는 SSE 소비자의 역할에 포함된다.
+    """
+
+    @pytest.fixture
+    def stage_html(self) -> str:
+        assert _STAGE_TEMPLATE.exists(), f"stage.html missing: {_STAGE_TEMPLATE}"
+        return _STAGE_TEMPLATE.read_text(encoding="utf-8")
+
+    def test_no_microphone_capture(self, stage_html):
+        """마이크 획득은 오퍼레이터 탭(`webrtc.html`)만의 책임이다."""
+        assert stage_html.count("getUserMedia") == 0, (
+            "stage.html acquired a microphone — the caption pipeline belongs to "
+            "the operator tab (:8501). See ISSUE-47 § Out."
+        )
+
+    def test_no_webrtc_peer_connection(self, stage_html):
+        assert stage_html.count("RTCPeerConnection") == 0, (
+            "stage.html opened a WebRTC peer connection — pipeline duplication "
+            "(RL-001). The stage screen consumes SSE only."
+        )
+
+    def test_no_openai_realtime_token_exchange(self, stage_html):
+        """OpenAI ephemeral 토큰 발급/교환 경로가 무대 화면에 있으면 안 된다."""
+        assert stage_html.count("/v1/realtime") == 0, (
+            "stage.html reached for an OpenAI realtime endpoint — the ephemeral "
+            "token flow must stay in the operator tab (ISSUE-47 § Out)."
+        )
+
+    def test_stage_remains_an_sse_consumer(self, stage_html):
+        """금지 가드가 통과하는 이유가 '파일이 비어서' 가 아님을 확인한다.
+
+        RL-004: 부재만 단언하는 테스트는 파일이 사라져도 통과한다. 무대 화면이
+        여전히 SSE 를 구독하고 캡처를 갖고 있다는 양성 신호를 함께 센다.
+        """
+        assert "EventSource" in stage_html
+        assert stage_html.count("getDisplayMedia") >= 1

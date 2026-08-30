@@ -24,6 +24,44 @@ _ROOM_STATUS_LABELS: dict[str, str] = {
 }
 
 
+# 오퍼레이터 표시 모드 (ISSUE-47). 룸에 영속화되지 않는 **세션 UI 상태**일
+# 뿐이므로 DB 스키마와 무관하다. 값이 두 개뿐인 것은 의도적이다 — 늘어나면
+# `test_display_modes_are_exactly_two` 가 먼저 깨져 라벨/부트스트랩 갱신을
+# 강제한다.
+DISPLAY_MODES: tuple[str, ...] = ("caption", "stage")
+DEFAULT_DISPLAY_MODE = "caption"
+
+_DISPLAY_MODE_LABELS: dict[str, str] = {
+    "caption": "일반 자막",
+    "stage": "무대 화면",
+}
+
+
+def select_display_mode(last_selected_mode: Any) -> str:
+    """`session_state` 에 남아 있던 표시 모드를 유효한 값으로 정규화한다.
+
+    ISSUE-47 AC1/AC5. 반환값은 항상 ``DISPLAY_MODES`` 중 하나다.
+
+    관대하게 받는 이유(RL-006): 이 값은 ``st.session_state`` 에서 오고,
+    거기에는 예전 버전이 남긴 문자열이나 아예 다른 타입이 들어 있을 수 있다.
+    여기서 예외를 던지면 ``st.radio(index=...)`` 가 ``ValueError`` 로 죽어
+    오퍼레이터 사이드바 전체가 사라진다 — 잘못된 값은 조용히 기본값
+    (``"caption"`` = 일반 자막)으로 떨어뜨리는 편이 안전하다.
+    """
+    if isinstance(last_selected_mode, str) and last_selected_mode in DISPLAY_MODES:
+        return last_selected_mode
+    return DEFAULT_DISPLAY_MODE
+
+
+def format_display_mode_label(mode: str) -> str:
+    """표시 모드 코드 → 사이드바에 보일 한국어 라벨.
+
+    :func:`format_room_status_label` 과 동일한 관용 — 알 수 없는 코드는 원문을
+    그대로 돌려줘 빈칸으로 렌더되지 않게 한다.
+    """
+    return _DISPLAY_MODE_LABELS.get(mode, mode)
+
+
 def format_room_status_label(status: str) -> str:
     """Map a backend room status code to its Korean UI label.
 
@@ -101,6 +139,8 @@ def build_bootstrap_payload(
     room_name: str | None = None,
     view_url: str | None = None,
     qr_data_url: str | None = None,
+    display_mode: str = DEFAULT_DISPLAY_MODE,
+    stage_url: str | None = None,
 ) -> dict[str, Any]:
     """Build the dict that ``app.py`` injects into ``components/webrtc.html``.
 
@@ -111,6 +151,10 @@ def build_bootstrap_payload(
       - ISSUE-32: ``view_url`` (인쇄/공유용) 와 ``qr_data_url`` (인라인
         ``<img src>``) 가 함께 전달되어 오퍼레이터 대기 화면에 QR 코드를
         표시한다.
+      - ISSUE-47: ``display_mode`` (``"caption"`` / ``"stage"``) 와
+        ``stage_url`` 이 전달되어 무대 화면 모드에서 "무대 화면 열기" 버튼을
+        렌더한다. 표시 모드는 **캡션 파이프라인을 바꾸지 않는다** — 마이크,
+        WebRTC, 사용량 집계, 번역은 두 모드에서 완전히 동일하다.
       - all required fields are populated for the existing webrtc.html
       - the result stays JSON-serializable (webrtc.html receives this
         via ``json.dumps``)
@@ -133,4 +177,9 @@ def build_bootstrap_payload(
         "room_name": room_name,
         "view_url": view_url,
         "qr_data_url": qr_data_url,
+        # ISSUE-47: 표시 모드와 무대 화면 URL. webrtc.html 은 이 둘이 모두
+        # 채워졌을 때만 "무대 화면 열기" 버튼을 렌더한다 — `stage_url` 이
+        # 없는데 버튼을 노출하면 죽은 링크가 된다.
+        "display_mode": display_mode,
+        "stage_url": stage_url,
     }

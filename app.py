@@ -24,12 +24,15 @@ from auth import (
 )
 from database import get_room_model
 from operator_ui import (
+    DISPLAY_MODES,
     build_bootstrap_payload,
     build_room_dropdown_options,
+    format_display_mode_label,
     has_assigned_rooms,
     select_default_room,
+    select_display_mode,
 )
-from qr_generator import build_view_url, make_qr_data_url
+from qr_generator import build_stage_url, build_view_url, make_qr_data_url
 from services import (
     create_openai_session,
     get_aws_access_key_id,
@@ -176,6 +179,30 @@ with st.sidebar:
             st.session_state["selected_room_name"] = (
                 selected_room.get("name") if selected_room else None
             )
+
+            # ISSUE-47: 표시 모드 — 룸 선택 바로 아래, 같은 자리에서 고른다.
+            # 룸 선택과 동일한 패턴(정규화 함수로 index 계산 → 선택값을
+            # session_state 에 보관)이라 rerun 을 건너 유지된다 (AC5).
+            # 모드는 오퍼레이터 세션 UI 상태일 뿐 rooms 테이블에 저장하지
+            # 않는다 (AC6) — 여기서 DB 를 건드리지 않는 것이 그 계약이다.
+            display_mode_default = select_display_mode(
+                st.session_state.get("operator_display_mode")
+            )
+            mode_options = list(DISPLAY_MODES)
+            chosen_display_mode = st.radio(
+                "표시 모드",
+                options=mode_options,
+                index=mode_options.index(display_mode_default),
+                format_func=format_display_mode_label,
+                key="operator_display_mode_selector",
+                help=(
+                    "무대 화면을 선택하면 프로젝터용 무대 화면을 새 창으로 "
+                    "열 수 있습니다. 자막 시작/정지와 번역 동작은 두 모드가 "
+                    "같습니다."
+                ),
+                horizontal=True,
+            )
+            st.session_state["operator_display_mode"] = chosen_display_mode
         else:
             st.info("배정된 룸이 없습니다. 관리자에게 문의하세요.")
             st.session_state.pop("selected_room_name", None)
@@ -380,6 +407,29 @@ def _build_view_url_and_qr(room_id: str | None) -> tuple[str | None, str | None]
         return None, None
 
 
+def _build_stage_url(room_id: str | None) -> str | None:
+    """selected room 의 무대 화면 URL (ISSUE-47).
+
+    :func:`_build_view_url_and_qr` 의 자매 함수 — 동일한 base URL
+    (:func:`_resolve_viewer_base_url`) 을 재사용한다. 세 번째 base-URL
+    resolver 를 만들지 않는 것이 이 함수의 존재 이유다.
+
+    ``room_id`` 가 None 이면 ``None`` — 그러면 webrtc.html 이 "무대 화면 열기"
+    버튼을 숨겨 죽은 링크가 생기지 않는다.
+
+    실패 시 내부 예외를 삼키고 ``None`` 을 돌려주는 것도 같은 RL-006 패턴이다:
+    무대 URL 생성 실패가 캡션 UI 전체를 깨뜨려서는 안 된다.
+    """
+    if not room_id:
+        return None
+    try:
+        return build_stage_url(room_id, _resolve_viewer_base_url())
+    except Exception as e:
+        # RL-006: 내부 예외 문자열을 오퍼레이터 화면에 노출하지 않는다.
+        print(f"[Stage] 무대 URL 생성 실패 (room={room_id}): {e!r}")
+        return None
+
+
 # === 메인 캡션 뷰어 ===
 # admin 은 관리 전용 (#101) — 캡션/마이크 컴포넌트 대신 안내만 표시한다.
 # admin 은 룸 배정이 없어 세션을 시작할 수 없고, default 룸으로 붙으면
@@ -400,6 +450,13 @@ else:
         bootstrap_room_id = st.session_state.get("selected_room_id")
         view_url, qr_data_url = _build_view_url_and_qr(bootstrap_room_id)
 
+        # ISSUE-47: 표시 모드는 사이드바가 노출되지 않는 경로(admin, 룸 미배정)
+        # 에서도 항상 유효한 값이어야 하므로 여기서 한 번 더 정규화한다.
+        bootstrap_display_mode = select_display_mode(
+            st.session_state.get("operator_display_mode")
+        )
+        stage_url = _build_stage_url(bootstrap_room_id)
+
         payload = build_bootstrap_payload(
             action=st.session_state["action"],
             openai_session=st.session_state.get("openai_session"),
@@ -411,6 +468,10 @@ else:
             # ISSUE-32: 웰컴 화면에 QR 코드를 표시하기 위한 BOOT 필드.
             view_url=view_url,
             qr_data_url=qr_data_url,
+            # ISSUE-47: 무대 화면 모드일 때만 "무대 화면 열기" 버튼을 띄우기
+            # 위한 BOOT 필드. 파이프라인 관련 필드는 위와 동일하다 (AC2).
+            display_mode=bootstrap_display_mode,
+            stage_url=stage_url,
         )
 
         html_content = html_template.replace("{{BOOTSTRAP_JSON}}", json.dumps(payload))
