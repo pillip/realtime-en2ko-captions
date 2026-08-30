@@ -1496,6 +1496,30 @@ class TestViewerControlChannel:
             "attendee's choice"
         )
 
+    def test_the_lock_is_recorded_before_the_no_op_early_return(self, viewer_html):
+        """룸 기본값을 **일부러 다시 고른** 청중도 잠긴다.
+
+        `langLocked = true;` 가 `next === currentLang` 조기 반환 **뒤로** 밀리면
+        "이미 그 언어였던 사람의 명시적 선택" 만 조용히 기록되지 않는다. 그
+        뮤턴트는 리뷰 시점의 전체 스위트(정적 + e2e)를 통과했다 — 규칙이 주석
+        으로만 존재했다는 뜻이다 (RL-004). 순서를 오프셋으로 못 박는다.
+        """
+        change = re.search(
+            r'langSelect\.addEventListener\("change", \(ev\) => \{(.*?)\n    \}\);',
+            viewer_html,
+            re.S,
+        )
+        assert change is not None, "langSelect change 핸들러를 찾지 못했다"
+        body = change.group(1)
+        lock_at = body.find("langLocked = true;")
+        return_at = body.find("next === currentLang) return;")
+        assert lock_at != -1, body
+        assert return_at != -1, body
+        assert lock_at < return_at, (
+            "langLocked must be set BEFORE the same-value early return, got "
+            f"offsets {lock_at}/{return_at}: {body!r}"
+        )
+
     def test_the_lock_is_not_persisted_across_sessions(self, viewer_html):
         """`localStorage` 로 잠금을 남기면 다음 세션의 다른 언어까지 따라온다."""
         assert "localStorage" not in viewer_html

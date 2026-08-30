@@ -1490,6 +1490,34 @@ class TestStageControlMessage:
         refusals = [m for m in sent if m.get("type") == "stage_control_error"]
         assert len(refusals) == 1, sent
 
+    def test_a_client_supplied_room_id_is_ignored(self):
+        """RL-002 — 룸은 인증이 확정한 값이고 payload 가 고를 수 없다.
+
+        핸들러의 주석이 이 성질을 주장하지만 그것을 깨뜨리는 뮤턴트
+        (`data.get("room_id") or user_info.get("room_id")`)가 리뷰의 전체 스위트를
+        통과했다 — 주장만 있고 가드가 없었다 (RL-004). WS 인증에는 아직 룸
+        소유권 검사가 없으므로(ISSUE-56) 이 한 줄이 다른 룸의 무대 화면을
+        건드리지 못하게 막는 유일한 장치다.
+        """
+        from tests.broadcast_spy import SpyBroadcastManager
+
+        spy = SpyBroadcastManager()
+        ws = _ws_yielding(
+            [
+                {
+                    "type": "stage_control",
+                    "caption_scale": 1.4,
+                    "room_id": "victim-room",
+                }
+            ]
+        )
+
+        _run_with_spy(ws, _RecordingRoomRepo(), spy)
+
+        assert spy.get_control("victim-room") is None
+        assert spy.get_control("r1") == {"caption_scale": 1.4}
+        assert [room for room, _payload in spy.control_calls] == ["r1"]
+
     def test_a_missing_scale_key_is_refused(self):
         from tests.broadcast_spy import SpyBroadcastManager
 

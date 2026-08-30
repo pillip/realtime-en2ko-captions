@@ -1596,6 +1596,35 @@ class TestStageCaptionScale:
         assert 'typeof value !== "number"' in body, body
         assert "isFinite(value)" in body, body
 
+    def test_the_range_is_one_rule_across_the_server_and_both_templates(self):
+        """RL-025 — 같은 상한/하한이 세 곳에 손으로 적혀 있다.
+
+        서버(`websocket_handler.CAPTION_SCALE_MIN/MAX`)와 두 템플릿의 상수가
+        갈라지면 클라이언트가 서버는 거절하는 값을 클램프하거나(무해) 서버가
+        허용하는 값을 잘라 낸다(무대 자막이 오퍼레이터 슬라이더를 따라오지
+        않는다 — 원인이 어디에도 로그로 남지 않는 종류의 결함이다). 번들러가
+        없어 상수를 공유할 수 없으므로 **일치를 값으로 단언**한다. ISSUE-54 가
+        `<input min/max>` 로 네 번째 사본을 만들 예정이라 지금 못 박아 둔다.
+        """
+        import websocket_handler
+
+        expected = {
+            "MIN": websocket_handler.CAPTION_SCALE_MIN,
+            "MAX": websocket_handler.CAPTION_SCALE_MAX,
+        }
+        viewer_template = _STAGE_TEMPLATE.parent / "viewer.html"
+        for path in (_STAGE_TEMPLATE, viewer_template):
+            source = path.read_text(encoding="utf-8")
+            for name, want in expected.items():
+                found = re.findall(
+                    rf"const CAPTION_SCALE_{name}\s*=\s*([0-9.]+);", source
+                )
+                assert found == [f"{want}"], (
+                    f"{path.name} declares CAPTION_SCALE_{name}={found}, but the "
+                    f"server enforces {want} — the client and the server must "
+                    "agree on one range"
+                )
+
     def test_the_caption_line_stays_aa_at_the_lower_bound(self, stage_html):
         """AC — 배율 0.8 에서도 4.5:1 이상.
 
