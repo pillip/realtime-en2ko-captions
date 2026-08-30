@@ -18,6 +18,34 @@ Note: 대부분의 테스트는 `tmp_path` 안에 만든 **가짜 저장소**를
 (실제 스위트를 재실행하지 않으므로 빠르다). 전체 카탈로그 종단 실행은
 `GUARD_MUTATION_FULL=1` 일 때만 도는 별도 테스트이며 CI 의 `mutation` job 이
 그 역할을 맡는다. 외부 네트워크 호출 없음.
+
+AC 대응표 (ISSUE-43)
+--------------------
+가드 ↔ 킬 테스트 대응을 강제하는 이슈이므로, 이 파일 자신도 AC ↔ 테스트 대응을
+명시한다. 대응이 암묵적이면 그것이 곧 RL-004 다.
+
+- 러너 계약 / 전체 카탈로그가 종료 코드 0 · `survived` 0
+  → `test_full_catalog_run_kills_every_guard` (`GUARD_MUTATION_FULL=1`),
+    CI `mutation` job
+- 아무 테스트도 깨지 못하는 무해한 뮤테이션 → `survived` + 비정상 종료
+  → `test_harmless_mutation_is_reported_as_survived_and_run_fails`
+- `find` 스니펫이 정확히 1회가 아닌 항목 → 비정상 종료 + 대상 파일 불변
+  → `test_find_snippet_appearing_twice_aborts_and_leaves_file_untouched`
+- **뮤테이션 적용 직후 예외를 발생시키도록 패치한 러너 → 프로세스가 끝난 뒤
+  대상 파일이 원본과 바이트 단위로 동일**
+  → `test_crash_after_mutation_leaves_source_intact_and_removes_sandbox`
+    (샌드박스 사본만 변형하므로 작업 트리는 애초에 쓰이지 않는다)
+- 허용 목록 밖 파일(예: `translation.py`)을 가리키는 항목 → 거부 + 그 파일 불변
+  → `test_entry_outside_the_allowlist_is_rejected_and_file_unmodified`
+- 카탈로그 가드 ↔ `Guard:` 표기 대응 (고아 0, 양방향)
+  → `test_every_guard_is_owned_and_no_annotation_is_orphaned`
+- `#quiet_reject` 킬 테스트 (널바이트 파일명 → `None` + stdout 비어 있음)
+  → `tests/test_branding_assets.py::TestTraversalContainment::
+     test_nul_byte_filename_is_rejected_without_writing_any_log`
+- **접근 방식 결정 AC (오프더셸프 `mutmut` / `cosmic-ray` 대 선언형 자체
+  스크립트의 실측 비교)는 테스트가 아니라 문서 산출물이다** — 실측 실행 시간과
+  탈락 사유는 `docs/architecture.md` 의 Tradeoffs 표에 기록한다. 여기에
+  대응 테스트가 없는 것은 누락이 아니라 성질상 검증 대상이 코드가 아니기 때문이다.
 """
 
 from __future__ import annotations
