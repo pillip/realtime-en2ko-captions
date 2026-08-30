@@ -208,10 +208,67 @@ class TestTraversalContainment:
         assert branding_assets.resolve_asset_path("room1", "../../app.db") is None
         assert secret_file.exists()
 
+    def test_separator_in_name_is_rejected_not_collapsed(self, branding_root):
+        """구분자는 제거가 아니라 거부다 — `..` 없이도 성립해야 한다.
+
+        Guard: branding_assets._reject_path_signatures#separator
+
+        조용히 제거하면 `a/b.png` 가 `ab.png` 로 통과해 방어가 우연에 기댄다.
+        `..` 시그니처가 없는 입력이라 이 분기만이 유일한 방어선이다.
+        """
+        import branding_assets
+
+        for name in ("a/b.png", "a\\b.png"):
+            with pytest.raises(ValueError) as exc:
+                branding_assets.save_asset("room1", name, PNG_BYTES)
+            assert "구분자" in str(exc.value)
+        assert not branding_root.exists()
+
+    def test_control_characters_are_rejected_not_stripped(self, branding_root):
+        """제어문자도 제거가 아니라 거부다.
+
+        Guard: branding_assets._reject_path_signatures#control
+
+        제거하면 `lo\\x00go.png` 가 `logo.png` 로 통과한다 — 구분자도 `..` 도
+        없는 입력이므로 다른 시그니처 검사에 업혀 갈 수 없다. `\\x7f`(DEL)은
+        `ord(ch) == 127` 절반을 단독으로 겨냥한다.
+        """
+        import branding_assets
+
+        for name in ("lo\x00go.png", "lo\ngo\t.png", "logo\x7f.png"):
+            with pytest.raises(ValueError) as exc:
+                branding_assets.save_asset("room1", name, PNG_BYTES)
+            assert "제어 문자" in str(exc.value)
+        assert not branding_root.exists()
+
+    def test_room_id_outside_character_class_is_rejected(self, branding_root):
+        """룸 식별자의 허용 문자 클래스 밖은 제거가 아니라 거부다.
+
+        Guard: branding_assets._sanitize_room_id#charclass
+
+        구분자도 제어문자도 아닌 문자(공백·한글·`@`)만 담은 입력이라, 이
+        검사가 없으면 그대로 디렉터리 이름이 된다 — 제거하는 구현이라면
+        서로 다른 룸 id 두 개가 같은 디렉터리를 공유하게 된다.
+        """
+        import branding_assets
+
+        for room_id in ("room 1", "룸", "room@1"):
+            with pytest.raises(ValueError):
+                branding_assets.save_asset(room_id, "logo.png", PNG_BYTES)
+            assert branding_assets.resolve_asset_path(room_id, "logo.png") is None
+        assert not branding_root.exists()
+
     def test_resolve_rejects_non_whitelisted_extension_already_on_disk(
         self, branding_root
     ):
-        """룸 디렉터리 안에 있어도 화이트리스트 밖 확장자는 서빙되지 않는다."""
+        """룸 디렉터리 안에 있어도 화이트리스트 밖 확장자는 서빙되지 않는다.
+
+        Guard: branding_assets._sanitize_filename#extension
+
+        쓰기 경로에서는 매직바이트 검사가 확장자 검사를 가려 준다(`.gif` 는
+        내용 불일치로도 거부된다). 확장자 화이트리스트가 **단독으로** 성립하는
+        것은 이미 디스크에 있는 파일을 서빙할지 결정하는 읽기 경로다.
+        """
         import branding_assets
 
         room = _room_dir(branding_root)
@@ -236,6 +293,8 @@ class TestTraversalContainment:
 
     def test_resolve_rejects_symlink_that_points_inside_the_room(self, branding_root):
         """심볼릭 링크 거부가 containment 검사에 업혀 가지 않는지 확인한다 (RL-004).
+
+        Guard: branding_assets.resolve_asset_path#symlink
 
         위의 `test_resolve_rejects_symlink` 은 링크 대상이 룸 **바깥**이라
         `is_symlink()` 를 지워도 `is_relative_to()` 가 대신 막아 준다 — 즉 심볼릭
@@ -272,6 +331,8 @@ class TestTraversalContainment:
     def test_dotdot_in_filename_is_rejected_not_stripped(self, branding_root):
         """`..` 는 제거가 아니라 거부다 — 구분자가 없어도 마찬가지 (NFR-028).
 
+        Guard: branding_assets._reject_path_signatures#dotdot
+
         구분자 제거만으로는 `..` 이 살아남는 입력이 있으므로, 시그니처 자체를
         거부하는 규칙이 독립적으로 성립하는지 확인한다.
         """
@@ -301,6 +362,28 @@ class TestTraversalContainment:
             assert branding_assets.list_assets("../..") == []
 
         assert capsys.readouterr().out == ""
+
+    def test_nul_byte_filename_is_rejected_without_writing_any_log(
+        self, branding_root, capsys
+    ):
+        """널바이트 파일명 하나로 서버 로그를 부풀릴 수 없어야 한다.
+
+        Guard: branding_assets.resolve_asset_path#quiet_reject
+
+        `/branding/{room}/{name}` 은 미인증 공개 라우트다. `except ValueError`
+        분기가 로그를 남기는 `except Exception` 으로 흡수되면 요청 한 건이 곧
+        로그 한 줄이 되어 로그 플러딩이 된다. 널바이트는 sanitize 단계에서
+        `ValueError` 를 내는 대표 입력이라 이 분기를 단독으로 겨냥한다.
+        """
+        import branding_assets
+
+        capsys.readouterr()  # 이전 출력 비우기
+
+        assert branding_assets.resolve_asset_path("room1", "lo\x00go.png") is None
+
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err == ""
 
     def test_resolve_rejects_directory(self, branding_root):
         """디렉터리는 파일이 아니므로 None."""
@@ -437,6 +520,13 @@ class TestHostileInputNeverExplodes:
 # ---------------------------------------------------------------------------
 class TestSizeCap:
     def test_exactly_max_bytes_is_accepted(self, branding_root):
+        """상한과 **정확히 같은** 크기는 통과해야 한다 (경계 off-by-one).
+
+        Guard: branding_assets.save_asset#size_cap
+
+        `>` 가 `>=` 로 바뀌면 정상 업로드가 조용히 거부된다. 초과 케이스만
+        검증하면 그 변화를 아무도 눈치채지 못한다.
+        """
         import branding_assets
         from branding_assets import MAX_ASSET_BYTES
 
@@ -499,7 +589,10 @@ class TestExtensionAndContentMatch:
         assert branding_assets.list_assets("room1") == ["a.png", "b.jpg", "c.svg"]
 
     def test_png_extension_with_non_png_signature_rejected(self, branding_root):
-        """AC 원문: 확장자는 .png 인데 시그니처가 아니면 거부."""
+        """AC 원문: 확장자는 .png 인데 시그니처가 아니면 거부.
+
+        Guard: branding_assets.save_asset#magic_bytes
+        """
         import branding_assets
 
         with pytest.raises(ValueError):
@@ -556,7 +649,13 @@ class TestExtensionAndContentMatch:
 # ---------------------------------------------------------------------------
 class TestAssetCountCap:
     def test_thirteenth_upload_rejected_and_list_stays_twelve(self, branding_root):
-        """TC 원문 + AC: 13번째 저장 거부, 사유에 개수 제한 언급, 목록 길이 12."""
+        """TC 원문 + AC: 13번째 저장 거부, 사유에 개수 제한 언급, 목록 길이 12.
+
+        Guard: branding_assets.save_asset#count_cap
+
+        정확히 상한만큼 채운 상태에서 한 건 더 시도한다 — `>=` 가 `>` 로
+        바뀌는 off-by-one 은 이 경계에서만 드러난다.
+        """
         import branding_assets
         from branding_assets import MAX_ASSETS_PER_ROOM
 
@@ -592,7 +691,13 @@ class TestAssetCountCap:
 # ---------------------------------------------------------------------------
 class TestCollisionAvoidance:
     def test_same_name_twice_does_not_overwrite(self, branding_root):
-        """AC: 두 번째 저장은 logo-2.png 를 반환하고 첫 파일을 보존한다."""
+        """AC: 두 번째 저장은 logo-2.png 를 반환하고 첫 파일을 보존한다.
+
+        Guard: branding_assets._write_without_overwriting#exclusive_create
+
+        반환된 이름만 보면 배타 생성(`"xb"`)이 평범한 `"wb"` 로 바뀌어도
+        눈치채지 못한다 — 첫 파일의 **바이트가 그대로인지**까지 단언한다.
+        """
         import branding_assets
 
         first_bytes = PNG_SIG + b"\x01" * 16
@@ -648,6 +753,25 @@ class TestListAndDelete:
         (room / "sub.png").mkdir()
 
         assert branding_assets.list_assets("room1") == ["a.svg", "z.png"]
+
+    def test_list_excludes_symlink_pointing_inside_the_room(self, branding_root):
+        """룸 **안**을 가리키는 링크도 목록에서 빠진다.
+
+        Guard: branding_assets.list_assets#symlink
+
+        대상이 룸 바깥이면 `is_file()` / containment 가 대신 걸러 주므로
+        심볼릭 링크 스킵 자체는 검증되지 않는다. 링크 대상이 룸 안의 정상
+        파일일 때만 이 조건이 유일한 방어선이다 — `resolve_asset_path` 가
+        거부하는 항목이 관리자 화면에만 보이는 불일치를 막는다.
+        """
+        import branding_assets
+
+        branding_assets.save_asset("room1", "real.png", PNG_BYTES)
+        room = _room_dir(branding_root)
+        (room / "link.png").symlink_to(room / "real.png")
+
+        assert (room / "link.png").is_file()  # 링크는 살아 있다 (vacuous pass 방지)
+        assert branding_assets.list_assets("room1") == ["real.png"]
 
     def test_rooms_are_isolated_from_each_other(self, branding_root):
         import branding_assets
@@ -717,6 +841,59 @@ class TestContainmentStageIndependently:
         assert branding_assets.resolve_asset_path("../..", "logo.png") is None
         assert branding_assets.list_assets("../..") == []
         assert secret_file.exists()
+
+    def test_room_directory_symlinked_outside_the_root_is_not_served(
+        self, branding_root, tmp_path
+    ):
+        """룸 디렉터리 **자체**가 루트 밖을 가리키는 링크여도 봉인된다.
+
+        Guard: branding_assets._contained_room_dir#containment
+
+        `room1` 은 sanitize(1단)를 정상 통과하는 이름이다. `resolve()` 가
+        링크를 실제 위치로 펼친 뒤 `is_relative_to(root)` 로 다시 확인하는
+        것만이 이 입력을 막는다 — 파일명 쪽 방어는 전혀 관여하지 않는다.
+        """
+        import branding_assets
+
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "logo.png").write_bytes(PNG_BYTES)
+        branding_root.mkdir(parents=True)
+        (branding_root / "room1").symlink_to(outside, target_is_directory=True)
+
+        # 링크는 실제로 살아 있다 (경로가 깨져서 통과하는 게 아니다).
+        assert (branding_root / "room1" / "logo.png").is_file()
+
+        assert branding_assets.resolve_asset_path("room1", "logo.png") is None
+        assert branding_assets.list_assets("room1") == []
+        assert branding_assets.delete_asset("room1", "logo.png") is False
+        assert (outside / "logo.png").exists()
+
+    def test_containment_holds_when_symlink_guard_is_bypassed(
+        self, branding_root, secret_file, monkeypatch
+    ):
+        """심볼릭 링크 가드가 뚫려도 containment 가 단독으로 막아야 한다.
+
+        Guard: branding_assets.resolve_asset_path#containment
+
+        `is_symlink()` 가 살아 있는 한 이 검사는 도달 불가능하다 — 링크가
+        아닌 후보는 이미 resolve 된 룸 디렉터리 밖으로 나갈 수 없다. 그래서
+        TOCTOU(검사와 사용 사이에 링크가 생기는 경합)를 흉내 내 `is_symlink`
+        가 `False` 를 돌려주게 만든 뒤, 2단 방어가 여전히 성립하는지 본다.
+        이 입력은 `#containment` 뮤턴트만 잡고 `#symlink` 뮤턴트는 잡지 않는다.
+        """
+        import branding_assets
+
+        branding_assets.save_asset("room1", "real.png", PNG_BYTES)
+        room = _room_dir(branding_root)
+        (room / "escape.png").symlink_to(secret_file)
+
+        monkeypatch.setattr(Path, "is_symlink", lambda self: False)
+
+        assert branding_assets.resolve_asset_path("room1", "escape.png") is None
+        assert secret_file.read_bytes().startswith(b"SQLite format 3")
+        # 정상 파일은 여전히 서빙된다 (과잉 차단이 아님).
+        assert branding_assets.resolve_asset_path("room1", "real.png") is not None
 
     def test_save_rejects_when_containment_check_fails(
         self, branding_root, secret_file, monkeypatch
@@ -794,7 +971,10 @@ class TestAssetHeaders:
         assert build_asset_headers("logo.png")["Cache-Control"] == "public, max-age=300"
 
     def test_svg_carries_restrictive_csp(self):
-        """AC: SVG 내부 스크립트가 실행되지 않도록 CSP 를 붙인다."""
+        """AC: SVG 내부 스크립트가 실행되지 않도록 CSP 를 붙인다.
+
+        Guard: branding_assets.build_asset_headers#svg_csp
+        """
         from branding_assets import build_asset_headers
 
         headers = build_asset_headers("sponsor.svg")

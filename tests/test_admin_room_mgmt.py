@@ -371,6 +371,52 @@ class TestAuthRoleHelpers:
         self._set_session(monkeypatch, authenticated=False)
         assert auth.is_admin_or_operator() is False
 
+    # -- 역할 판정 네거티브 매트릭스 (ISSUE-43) ------------------------------
+    # 역할 비교가 무조건 통과하도록 바뀌면(가드 소실) 아래 세 테스트가 깨진다.
+    # 긍정 케이스만으로는 "항상 True" 를 구분할 수 없다 (RL-004).
+
+    def test_is_admin_is_false_for_every_non_admin_principal(self, monkeypatch):
+        """operator / user / 미인증 어느 쪽도 관리자가 아니다.
+
+        Guard: auth.is_admin#role
+        """
+        import auth
+
+        for role in ("operator", "user", "viewer", ""):
+            self._set_session(monkeypatch, role=role)
+            assert auth.is_admin() is False, role
+
+        self._set_session(monkeypatch, authenticated=False)
+        assert auth.is_admin() is False
+
+    def test_is_operator_is_false_for_every_non_operator_principal(self, monkeypatch):
+        """admin / user / 미인증 어느 쪽도 오퍼레이터가 아니다.
+
+        Guard: auth.is_operator#role
+        """
+        import auth
+
+        for role in ("admin", "user", "viewer", ""):
+            self._set_session(monkeypatch, role=role)
+            assert auth.is_operator() is False, role
+
+        self._set_session(monkeypatch, authenticated=False)
+        assert auth.is_operator() is False
+
+    def test_is_admin_or_operator_is_false_for_every_other_role(self, monkeypatch):
+        """두 역할 밖(user/미인증)은 관리자 대시보드에 들어올 수 없다.
+
+        Guard: auth.is_admin_or_operator#role
+        """
+        import auth
+
+        for role in ("user", "viewer", ""):
+            self._set_session(monkeypatch, role=role)
+            assert auth.is_admin_or_operator() is False, role
+
+        self._set_session(monkeypatch, authenticated=False)
+        assert auth.is_admin_or_operator() is False
+
 
 class _SessionStateDict(dict):
     """dict + attribute access — Streamlit session_state surrogate.
@@ -592,6 +638,10 @@ class TestFilterRoomsForRole:
         assert ids == {"r-A", "r-B", "r-C", "r-D"}
 
     def test_operator_sees_only_assigned(self):
+        """오퍼레이터는 **다른 오퍼레이터의 룸을 보지 못한다**.
+
+        Guard: admin_logic.filter_rooms_for_role#scope
+        """
         from admin_logic import filter_rooms_for_role
 
         result = filter_rooms_for_role(
@@ -613,7 +663,10 @@ class TestFilterRoomsForRole:
         assert result == []
 
     def test_unknown_role_returns_empty(self):
-        """비인가 역할은 어떤 룸도 보지 못한다 (defensive default)."""
+        """비인가 역할은 어떤 룸도 보지 못한다 (defensive default).
+
+        Guard: admin_logic.filter_rooms_for_role#scope
+        """
         from admin_logic import filter_rooms_for_role
 
         result = filter_rooms_for_role(
