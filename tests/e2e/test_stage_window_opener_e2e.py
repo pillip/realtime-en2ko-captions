@@ -276,9 +276,7 @@ class TestTwoOriginFixture:
 class TestStagePopupOpenerIsSevered:
     """AC1 / AC2 / AC3 — 진짜 크로스 오리진 팝업에서 opener 가 끊겨 있다."""
 
-    def test_popup_from_the_button_has_no_opener(
-        self, operator_page, stage_origin, request
-    ):
+    def test_popup_from_the_button_has_no_opener(self, operator_page, stage_origin):
         with operator_page.expect_popup() as popup_info:
             operator_page.locator("[data-stage-open]").click()
         popup = popup_info.value
@@ -406,8 +404,17 @@ class TestThisHarnessDoesNotStubTheBrowser:
     def test_no_network_interception_fakes_the_stage_document(self, tree):
         """`page.route(...)` 로 무대 문서를 가짜로 채우지 않는다.
 
-        오리진 B 의 응답이 가짜면 "다른 오리진으로 내비게이트했다" 는 게이트가
-        네트워크 레벨에서 무력해진다 — 두 오리진은 진짜 소켓이어야 한다.
+        **주의 — 이건 공허성 게이트가 아니라 fixture 계약 가드다** (리뷰 정정).
+        `route(...).fulfill(...)` 로 채운 응답도 **요청 URL 의 오리진**으로
+        커밋되므로 `_assert_navigated_to_stage` 의 `location.origin` 단언은
+        그대로 통과한다 — 오리진은 소켓이 아니라 URL 이 정한다. 즉 가로채기가
+        opener 단언을 공허하게 만들지는 **못한다**.
+
+        그럼에도 고정하는 이유는 두 가지다: (1) ISSUE-50 Scope 가 "서로 다른
+        free port 두 개에 서빙" 을 요구하므로 응답을 테스트 프로세스가
+        합성하기 시작하면 이 파일이 광고하는 fixture 계약이 조용히 거짓이 된다,
+        (2) `route(...).abort()` 는 실패해야 할 내비게이션을 삼켜 게이트를
+        타임아웃 쪽으로 돌릴 수 있다.
         """
         calls = [
             node
