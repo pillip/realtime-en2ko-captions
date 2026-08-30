@@ -2825,3 +2825,280 @@ M8(오라클 `4.5` → `3.0`)을 위해 `tests/test_webrtc_stage_launch.py` 를 
 AC 7/7, 프로덕션 변경은 색 리터럴뿐, 회귀 4건(ISSUE-47 / ISSUE-48 / RL-010 / viewer·stage) 전부 무접촉, 게이트 전부 초록, 그리고 이 이슈가 존재하는 이유였던 두 변이(`3.80:1`, `4.43:1`)가 실제로 그 숫자를 말하며 죽는다. Scope 규율도 지켜졌다 — 눈앞의 `.qr-code-caption` 3.95:1 을 참고 남겨 두었다.
 
 **차단 없음.** F-1·F-2 는 Medium 이지만 **테스트 강도**에 대한 것이고, 출하된 코드는 규격을 만족하며, F-1 은 CI e2e 가 그물을 유지한다. 다만 F-2 는 RL-018 의 재발 벡터 그 자체이고 직전 이슈(ISSUE-45)가 이미 정답 형태를 출하해 두었으므로, **후속 이슈 2번을 다음 스프린트에 반드시 잡을 것**을 권고한다.
+
+---
+
+# Review Notes — ISSUE-50 (PR #149)
+
+**Reviewer**: Claude Opus 5 (automated, independent REVIEW phase)
+**Date**: 2026-08-31
+**Branch**: `issue/ISSUE-50-two-origin-opener-e2e` (reviewed at `b8111d4`)
+**Reviewer worktree**: `.worktrees/review-ISSUE-50-code` (detached HEAD, **separate from the
+implementer worktree** — `git rev-parse --show-toplevel` confirmed before any command ran)
+**PR Size**: +422 −0, one new file: `tests/e2e/test_stage_window_opener_e2e.py` (7 tests)
+
+**Verdict**: **APPROVE-WITH-NITS. Merge-blocking findings: 0.**
+The test is real. Its discriminating power was re-measured independently rather than taken
+from the PR body, and the anti-vacuity gate was **falsified on purpose** — it fires when it
+should, and removing it turns the suite green on a popup that never left `about:blank`.
+
+---
+
+## Scope discipline — production diff is genuinely zero
+
+`git diff origin/main b8111d4 -- components/ operator_ui.py guard_mutations.py guard_mutations.toml`
+→ **empty**. `git diff --stat origin/main b8111d4` → exactly one file, `+422`.
+`issues.md` / `STATUS.md` not committed to the branch. Confirmed independently.
+
+## Code Review
+
+### The two-origin claim is real — verified three ways, one of them by the browser
+
+1. **Ports do make them cross-origin.** Origin is the (scheme, host, port) tuple, so
+   `127.0.0.1:A` vs `127.0.0.1:B` is cross-origin by definition. But this review did not
+   stop at the spec: under mutation M1/M2 the popup reports
+   `{'isNull': False, 'type': 'object', 'str': 'threw:SecurityError'}`. A `SecurityError`
+   raised by `String(window.opener)` is the browser itself certifying that the retained
+   handle is a **cross-origin `WindowProxy`**. Same-origin would have returned
+   `[object Window]`. That is direct empirical proof, not an argument from the spec.
+2. **The operator page is built by the production render path.** The fixture calls
+   `operator_ui.build_bootstrap_payload(...)` then `operator_ui.render_component_html(...)`
+   — the exact two functions `app.py:469` and `app.py:488` call. No fixture-local
+   reassembly, so the ISSUE-48 / RL-024 trap ("the fixture keeps testing the old path after
+   production is fixed") is structurally avoided.
+3. **Nothing fakes the stage document.** `add_init_script` count = 0, `page.route` count = 0
+   (AST-verified by the file's own guards and re-grepped by hand). The only non-read
+   `evaluate` in the file sets `style.display='block'` on the fallback anchor — which is
+   character-for-character what the production popup-blocked branch does at
+   `webrtc.html:1017`. The reveal is legitimate; the browser still does the window
+   creation, `rel` interpretation and navigation.
+
+### The vacuity gate is load-bearing — falsified, not assumed
+
+`_assert_navigated_to_stage` was attacked directly in the reviewer worktree by pointing
+`stage_url` at `about:blank`, so no cross-origin navigation ever happens:
+
+| Experiment | Gate | Result |
+|---|---|---|
+| **V1** — no cross-origin navigation, **gate present** | present | **exit 1 — gate FIRED.** `popup = <Page url='about:blank'>`, assertion `observed_origin == stage_origin` fails with the crafted message |
+| **V2** — same, **gate removed** | removed | **exit 0 — VACUOUS GREEN.** Observed `{'href': 'about:blank', 'isNull': True, 'str': 'null'}` — 1 passed |
+
+V2 is the finding that matters: with the gate deleted the suite is **perfectly green while
+proving nothing**, because `opened.opener = null` on an origin-inheriting `about:blank` is a
+same-origin write that always succeeds. The gate is the only thing standing between this
+file and RL-004. It is not decoration. Both experiments reverted; `git diff --quiet` verified.
+
+### Independent mutation proof — three pre-declared mutations, one batch
+
+Re-derived from scratch in the reviewer worktree; the PR body's table was **not** taken on
+faith. Each mutation reverted with `git checkout --` + `git diff --quiet` verified after.
+
+| # | Mutation of `components/webrtc.html:1002` | New e2e (`test_stage_window_opener_e2e.py`) | Old string guard (`test_webrtc_stage_launch.py`) |
+|---|---|---|---|
+| **M1** | `setTimeout(() => { opened.opener = null; }, 0);` | **5/5 KILL** (1 failed, 6 passed each run) | **23 passed — SURVIVED** |
+| **M2** | `setTimeout(() => { opened.opener = null; }, 300);` | **5/5 KILL** | **23 passed — SURVIVED** |
+| **M3** | assignment deleted | **1/1 KILL** | 1 failed, 22 passed — KILL |
+
+Every kill landed on exactly one node —
+`TestStagePopupOpenerIsSevered::test_popup_from_the_button_has_no_opener` — 11 times out of
+11. No collateral damage, which is what distinguishes a discriminating guard from a brittle
+one. The fallback-anchor test stayed green under all three (its protection is the markup's
+`rel="noopener"`, which these mutations do not touch) — correct, precise attribution.
+
+**This contrast is the whole issue.** M1/M2 completely defeat the mitigation and the
+pre-existing string guard is 23/23 green, because `"opened.opener = null"` is still in the
+file. The substring guard can only see **deletion** (M3). Relocation is structurally
+invisible to it.
+
+### On M1's non-determinism — the PR reports it honestly, and the test is right
+
+The PR body states plainly that M1 survived 1 run in 11 and explains why
+(`setTimeout(…, 0)` can fire before the popup's cross-origin document commits, making the
+assignment a same-origin write that succeeds). It also says no tuning was done to push the
+result toward kill. That disclosure is accurate and more forthcoming than the norm.
+This review got **5/5 kills** on M1 — entirely consistent with a ~9% survival rate
+(P(no survivor in 5) ≈ 0.63), so the two measurements do not conflict.
+
+**The deeper point, and the reason no change is requested:** when M1 survives, the mitigation
+*genuinely worked in that run* — `window.opener` really was `null` and the operator tab
+really was protected. The test asserts the **security outcome**, not the code shape, so a
+green there is correct rather than vacuous. Making the test kill M1 deterministically would
+require asserting the shape of the source — which is precisely the defect
+(`"opened.opener = null" in html`) this issue exists to eliminate. **Do not "fix" this.**
+M2 discharges AC6 deterministically (5/5 here, 3/3 in the PR), and AC6 does not pin a delay.
+
+A corollary worth recording for ISSUE-58: deferrals *shorter* than a macrotask (an `await`
+on an already-resolved promise, i.e. a microtask hop) would survive more often than M1, for
+the same reason — but in those runs opener is genuinely severed, so the suite is not lying.
+Inference from the M1 data, deliberately **not** measured here (the batch was bounded to
+three pre-declared mutations, no adaptive generation).
+
+## Security Findings
+
+**None.** Test-only diff; zero production change. No secrets, no user input, no injection
+surface — `_STAGE_STUB_HTML` is a module constant and the operator payload is
+developer-controlled. Both `web.TCPSite` instances bind `127.0.0.1` (not `0.0.0.0`), so the
+ephemeral servers are not reachable off-host during a run.
+
+The PR **strengthens** a security control: `opened.opener = null` (tabnabbing / opener
+severance, NFR-029) had *zero* discriminating coverage before this file — the sibling e2e
+replaces `window.open` with a same-realm plain object whose `opener` property accepts any
+write regardless of browser rules, and the only other guard was a substring match. A
+cross-realm security property was unobservable by construction. It is now observed in the
+popup's own realm.
+
+Bonus, unclaimed by the PR: `test_popup_from_the_fallback_anchor_has_no_opener` is the first
+**behavioural** kill test for `rel="noopener"` on the fallback anchor. ISSUE-58's seed
+catalogue lists `webrtc.stage_launch_fallback#rel_noopener` with verification lane
+"정적(태그 범위)"; that row can now be upgraded to an e2e DOM-behaviour lane.
+
+## Over-Engineering
+
+422 lines for 7 tests. Net removable: **~19 lines confidently, ~36 if nits are taken** —
+under 9% of the file. The core design (two real origins, no `window.open` stub, assertion
+executed in the popup's own realm, vacuity gate before the opener read) is the right shape
+and was not touched.
+
+| ID | Tag | Finding | Sev | Lines | Resolution |
+|---|---|---|---|---|---|
+| O-1 | `delete` | `test_no_network_interception_fakes_the_stage_document` — its **stated premise is factually wrong** (see below). Only test in the file mapping to no AC | Low | 17 | **Docstring corrected in-PR**, test kept (author intent preserved) |
+| O-2 | `shrink` | unused `request` fixture param on `test_popup_from_the_button_has_no_opener` | Low | 2 | **Fixed in-PR** |
+| O-3 | `delete` | `sys.modules["streamlit"] = MagicMock()` shim is dead — this file's only production import is `operator_ui` → `script_escape` → stdlib. Cargo-culted from siblings that *do* pull `sse_broadcast` | Nit | 6 | Accepted (cheap house pattern, guards a future import) |
+| O-4 | `native` | `assert marker.count() == 1` after `wait_for(state="attached")`, and `assert popup.is_closed()` after a sync `close()` — neither can fail | Nit | 6 | Accepted |
+| O-5 | `shrink` | `rsplit(":",1)[1]` port comparison subsumed by `!=` plus both `startswith("http://127.0.0.1:")` | Nit | 3 | Accepted (reads as intent) |
+| O-6 | `shrink` | `_DESCRIBE_OPENER` wraps `isNull` and `typeof` in try/catch; neither can throw (own-global read; `typeof` on a cross-origin `WindowProxy` returns `"object"` without a trap). Only `String(...)` can raise | Nit | 2 | Accepted — symmetry keeps the diagnostic readable |
+
+**O-1 in detail (the one real error in the file).** The docstring claimed that a faked
+origin-B response would defeat the "it navigated to another origin" gate at the network
+level. That is **wrong**: `route(...).fulfill(...)` still commits the document at the
+**requested URL's** origin — origin is decided by the URL, not by whether a real socket
+answered. Interception therefore *cannot* make the opener assertion vacuous; `abort()` would
+only trip the gate, never silence it. Since a wrong rationale in a file whose entire subject
+is origin semantics will mislead the next reader (this repo does a lot of origin-sensitive
+work — opaque `srcdoc` origins, cross-origin iframes, SSE), the **rationale was corrected
+rather than the test deleted**: it is a fixture-contract guard (ISSUE-50 Scope requires two
+real servers), not a vacuity gate, and it is now labelled as such.
+
+**`TestThisHarnessDoesNotStubTheBrowser` — keep all three.** AC4 asks for one of them, but
+the other two earn their keep. The single most likely future edit to this file is "the popup
+test is flaky, stub `window.open` like the file next to it does" — and
+`tests/e2e/test_operator_stage_mode_e2e.py:85` does exactly that, in the same directory, via
+`page.add_init_script`. `test_no_init_script_is_injected_at_all` blocks that vector;
+`test_no_string_in_this_file_reassigns_the_popup_api` blocks the *other* vector
+(`page.evaluate("window.open = …")`), which this file is already one line away from since it
+calls `operator_page.evaluate(...)` at line 314. The AST-based docstring exclusion is not
+ceremony either: a naive grep would false-positive the moment someone documents the mutation
+table inline, and a guard that cries wolf gets deleted rather than fixed — RL-004's exact
+failure mode.
+
+## Correctness notes (non-blocking, no change requested)
+
+- **C-1 (Low, accepted).** `_assert_navigated_to_stage` reads `location.origin` one-shot
+  after `wait_for_load_state("load")`. In principle the popup could still be on the
+  inherited `about:blank` when that read happens, making the gate over-strict. Rated Low and
+  **deliberately not changed**: the failure direction is a false RED, never a false GREEN
+  (a race makes the gate stricter, never vacuous), it did not occur once in ~18 executions
+  of this path here (3 flakiness runs + 11 mutation runs + full-suite + V1/V2), and the
+  obvious "fix" (marker-wait first) trades away the crafted origin-mismatch message that
+  made the V1 falsification legible — replacing it with a bare 5s Playwright timeout.
+- **C-2 (not a finding).** Fixture scoping is sound. Module-scoped servers under a
+  function-scoped `page` is the legal dependency direction; both handlers are stateless
+  closures returning constants. `len(page.context.pages) == 1` is robust (fresh
+  function-scoped context per test) and has real power beyond AC7 — it fails if a click ever
+  opens two windows, which is the `dataset.stageBound` double-bind hazard at
+  `webrtc.html:976`.
+- **C-3 (Nit, pre-existing, not this PR).** `_free_port()` is TOCTOU and is now duplicated in
+  six e2e files; `_serve`'s shutdown swallows exceptions with a bare `except Exception: pass`.
+  This PR is the first to factor `_serve` into a reusable `(base_url, shutdown)` pair — that
+  shape should be promoted into `tests/e2e/conftest.py`. Follow-up, not a blocker.
+- **AC7 partial.** Popup closure is asserted; *server* teardown is performed
+  (`shutdown()`) but never asserted. A `ConnectionRefusedError` probe in the module
+  finalizer would close it (~4 lines). Low — a daemon thread on an ephemeral port dies with
+  the pytest process. Follow-up.
+
+## Measurements (reviewer worktree, `.worktrees/review-ISSUE-50-code`)
+
+| Check | Result |
+|---|---|
+| `uv run ruff check .` | clean |
+| `uv run black --check .` | clean, 67 files |
+| `uv run pytest -q` (unit) | **1319 passed, 1 skipped, 140 deselected** (105s) |
+| new file × 3 (flakiness) | **7 passed / 7 passed / 7 passed** — 0 flakes (2.59s / 0.80s / 0.80s) |
+| new file × 3 again, after review edits | **7 passed** × 3 (0.88 / 0.78 / 0.75s) |
+| `pytest tests/e2e -m e2e --no-cov -q` | **140 passed, 0 errors** (209s), exit 0 |
+| `pytest tests/e2e/test_fullscreen_e2e.py` isolated | **14 passed, 0 errors** (92s), exit 0 |
+
+### e2e baseline reconciliation — the branch introduces no regression, and the "pre-existing breakage" does not reproduce
+
+The PR reported the full e2e as **138 passed / 2 errors** and separately claimed
+`test_fullscreen_e2e.py` yields **6 passed / 8 errors on untouched main in isolation**. Both
+were re-measured here:
+
+- Full e2e on the branch: **140 passed, 0 errors.** The *collection* count reconciles exactly
+  (133 baseline + 7 new = 140; 138 + 2 = 140), so only the pass/error split differs.
+- `test_fullscreen_e2e.py` in isolation: **14 passed, 0 errors** — not 6/8. Note this file is
+  byte-identical to `origin/main` on this branch (the PR adds one unrelated file and touches
+  no conftest), so running it here *is* running it at main's state.
+
+**Conclusion: this branch introduces zero e2e regression, and there is no pre-existing
+`test_fullscreen_e2e.py` breakage to file.** The most probable explanation for the
+implementer's numbers is machine load — this sprint runs up to 3 issues in parallel, and
+every one of those errors was a 20s `Locator.wait_for` timeout in the Streamlit-subprocess
+`streamlit_server` / `logged_in_page` fixture. That makes the file **load-sensitive and
+flaky**, not broken. The existing `docs/sprint_state.md` note asserting it is "선재적으로
+깨져 있다" on main overstates the evidence and is corrected there.
+
+## Guard-catalogue decision — verified against the code, decision holds
+
+The PR declines to add `webrtc.stage_launch#opener_sever` to `guard_mutations.toml`,
+assigning it to ISSUE-58. All four grounds check out against the actual source:
+
+| Claim | Verified |
+|---|---|
+| `ALLOWED_FILES` is four `.py` modules, hardcoded by design | `guard_mutations.py:118-125` — exactly `branding_assets.py`, `branding_routes.py`, `auth.py`, `admin_logic.py`, with the comment "카탈로그(데이터)가 자신의 허용 범위를 스스로 넓힐 수 있으면 허용 목록이 아니다". `:440` rejects anything else as `ERROR — 허용 목록 밖 파일입니다` |
+| `run_catalog`'s `compile()` pre-check is Python-only | `guard_mutations.py:555` `compile(mutated, str(target), "exec")`, added specifically to stop RL-004-style false kills. No HTML analogue exists |
+| `_run_pytest` inherits `-m 'not e2e'` → deselect → exit 5 → mis-reported ERROR | `:380-390` passes only `--no-cov -p no:cacheprovider -q -rf`, so `pyproject.toml:90` `addopts = "-ra -m 'not e2e' …"` applies. `:594-620`: only exit 1 is a kill candidate; exit 5 falls through to `ERROR` |
+| `mutation` CI job has no Playwright install, dimensioned ~9s / `timeout-minutes: 10` | `.github/workflows/ci.yml:81-113` — checkout, setup-uv, python, `uv sync`, cache, run. No Playwright step (the separate `e2e` job at `:141-149` has it). `timeout-minutes: 10`, comment "실측 ~9s" |
+
+Stronger than "plausible": **ISSUE-58's own spec already enumerates these same three
+structural blockers verbatim** and lists `ALLOWED_FILES` widening as an In-scope item, and
+its seed catalogue already contains a row for this very file
+(`webrtc.stage_launch_fallback#rel_noopener`). The natural home is ISSUE-58, exactly as the
+PR argues. **Decision upheld.** Recommend ISSUE-58 add `webrtc.stage_launch#opener_sever`
+with the M1/M2/M3 rows above as its evidence.
+
+## Checkpoints
+
+| phase | exit | note |
+|---|---|---|
+| checkout | 0 | PASS |
+| review | 0 | PASS — but see caveat below |
+| figma-compliance | 0 | PASS (no Figma data → skip) |
+| computed-styles | 0 | PASS (skip) |
+| visual-diff | 0 | SKIP (no implementation HTML/URL) |
+| structural-match | 0 | PASS (skip) |
+| layout | 0 | PASS (skip) |
+| ui-review | 0 | PASS — `UI: false`, correctly skipped |
+| test-quality | 0 | PASS — 45 test files have real assertions |
+| test | 0 | PASS — 88.1s unit gate. **The documented 60s/exit-124 trap did not fire** |
+| push | 0 | PASS |
+
+Two checkpoint defects observed and worth an issue against the kit:
+
+1. **`_find_worktree_path` returns the first matching worktree**, which for ISSUE-50 is the
+   *implementer's* worktree, not the reviewer's. Every review checkpoint therefore inspected
+   `.worktrees/issue-ISSUE-50-two-origin-opener-e2e` — a reviewer's artifacts in a dedicated
+   worktree are invisible to the gate that is supposed to verify them. (The implementer
+   worktree's tracked state was snapshotted before and after and is unchanged at `b8111d4`.)
+2. **`review/review` is not issue-scoped.** It regex-searches the whole 228 KB append-only
+   `review_notes.md` for the three headers, so it passes on headers written for *any* past
+   issue. It cannot detect a missing review for the issue under test.
+
+## Verdict
+
+**APPROVE-WITH-NITS — 0 merge-blocking findings.** Ship it.
+
+This is a test-only PR whose entire value is discriminating power, and it has it: 10/10 kills
+across two relocation mutations that the pre-existing guard survives 2/2, precise
+single-node attribution, an anti-vacuity gate proven load-bearing by direct falsification,
+and zero flakes in six consecutive green runs. The production diff is genuinely zero.
