@@ -1295,3 +1295,234 @@ hex 라 `#000` 쪽에서 대비가 **올라가므로**(힌트 8.92:1, 폴백 11.
 표시 모드 `st.radio` 자체는 Streamlit 이 스타일링하고 라이브 서버가 없어
 렌더 상태를 확인하지 못했다 — 사이드바 좁은 폭에서의 `horizontal=True` 레이아웃,
 대비, 포커스 링은 미검증. `:8501` 에서 육안 확인 필요.
+
+---
+
+# PR #147 — ISSUE-49 오퍼레이터 웰컴 화면 WCAG AA 보정 (UI review)
+
+`components/webrtc.html` 웰컴/대기 화면 저대비 보조 텍스트 및
+`#viewer:fullscreen .welcome-state` backdrop 분기 제거. Closes #145. Reviewed at
+commit `247860c`. 위 `# PR #137` 항목의 "이 PR 밖의 인접 결함" 이 이 PR 의
+출발점이다 — RL-018 Frequency 3.
+
+**Worktree**: `/Users/pillip/project/practice/realtime-en2ko-captions/.worktrees/review-ISSUE-49-ui`,
+detached HEAD, pinned at `247860c` for the entire session (`git status` clean
+before and after every measurement pass, re-checked immediately before writing
+this note). Did not read from or write to `.worktrees/issue-ISSUE-49-welcome-contrast-aa`,
+`.worktrees/review-ISSUE-49-code`, or any ISSUE-50/53 tree. No sign of
+concurrent mutation — every value below reproduced identically across two
+independent measurement passes (the repo's own e2e suite, and a standalone
+Playwright script I wrote separately). This review does not repeat ISSUE-42's
+mistake: nothing here is trusted from the stylesheet alone, every ratio is
+measured from `getComputedStyle` in a **real, user-gesture-triggered**
+`#viewer:fullscreen`, not a class toggle.
+
+## Scope
+In: rendered state coverage (normal / real fullscreen), copy usage at the call
+site, token usage in the touched CSS block, interaction fidelity (none claimed
+by this PR — colour-only), in-code accessibility (aria-describedby survival,
+contrast), component existence (n/a — no new components). Out: the design
+system itself — this project ships no `docs/design_system.md`; token
+consistency across the whole file is a `Notes for design-auditor` item, not
+mine. `.welcome-state .icon` (1.4.11), `.qr-code-caption`, `st.radio`,
+`viewer.html`/`stage.html` are explicitly out of this issue's scope and I did
+not audit them beyond confirming the diff didn't touch them.
+
+## Independent verification performed
+1. Ran the PR's own suites unmodified: `pytest tests/test_webrtc_stage_launch.py`
+   (**44 passed**, includes the new `TestWelcomeStateContrast` class) and
+   `env -u NODE_OPTIONS pytest tests/e2e/test_operator_welcome_contrast_e2e.py -m e2e`
+   (**10 passed**, includes a real `document.getElementById('viewer').matches(':fullscreen')`
+   assertion with a positive-control check per RL-004).
+2. Wrote a **separate** standalone Playwright script (not committed, not in
+   `tests/`) that re-renders `webrtc.html` via `operator_ui.render_component_html`,
+   reads `getComputedStyle(...).color` on every welcome text node, clicks the
+   real fullscreen FAB, re-reads after confirming `:fullscreen` matches, then
+   calls `clearViewer()` in-page and re-reads a third time. This is deliberately
+   independent of the PR's e2e test so a shared bug in both wouldn't hide.
+3. Ran `ruff check` on both touched Python test files (clean) and confirmed
+   `git status` was clean throughout (worktree isolation, see above).
+
+## Measured — normal (`body`, `#0b0b0c`) vs. real fullscreen (`#viewer`, `#000`)
+All from my standalone script; `getComputedStyle(...).color`, not the source
+CSS. Both match the PR's claimed table and both test suites exactly.
+
+| selector | colour (both states) | ratio `#0b0b0c` | ratio `#000` (real, entered via click) |
+|---|---|---|---|
+| `.welcome-title` | `rgb(255,255,255)` | 19.67 | 21.00 |
+| `.welcome-state` / `.welcome-desc` | `rgb(200,200,210)` | 11.85 | 12.65 |
+| `.welcome-room` | `rgb(168,168,179)` | 8.35 | 8.92 |
+| `.welcome-state .hint` | `rgb(168,168,179)` | 8.35 | 8.92 |
+| `.welcome-state .hint span` | `rgb(168,168,179)` (inherited, no own rule) | 8.35 | 8.92 |
+| `.welcome-rules` | `rgb(168,168,179)` | 8.35 | 8.92 |
+
+Backdrops observed via `getComputedStyle`, not assumed: `body` background
+painted `rgb(11,11,12) α1.0`; `#viewer` background painted `rgb(0,0,0) α1.0`
+**after** a real fullscreen entry (`page.locator('#fullscreenFab').click()`
+then re-checked `matches(':fullscreen') === true` before sampling — the RL-018
+ISSUE-42 positive-control lesson applied). All seven measured values, both
+states, clear 4.5:1. Every computed colour was **byte-identical** between the
+normal and fullscreen states (`before[selector] == after[selector]` for all
+seven) — the backdrop-branch removal is confirmed as an in-browser fact, not
+just an absent-rule inference.
+
+## Item-by-item against the task's ask
+1. **`getComputedStyle` both states, all nodes** — done, table above. No
+   divergence anywhere.
+2. **Deleted fullscreen branch, `.hint span` inheritance** — confirmed. The
+   bare `<span>` inside `.hint` has no own `color` rule; `getComputedStyle`
+   shows it inherits `#a8a8b3` from `.welcome-state .hint` correctly in both
+   states. `#viewer:fullscreen .welcome-state { color: ... }` is gone from the
+   stylesheet (static test) **and** produces no observable colour change (my
+   in-browser probe) — both halves of the claim hold.
+3. **Both markup copies** — static markup (line 768) and `clearViewer()`
+   (line 1633) are textually identical for the welcome block; I additionally
+   called `clearViewer()` in-page and re-read all seven nodes: every colour
+   matched the static markup exactly. `grep` for inline `style="...color"` on
+   any welcome node: 0 hits, confirmed by both source inspection and
+   `element.getAttribute('style')` in-browser (also 0).
+4. **Visual hierarchy (AC5)** — `test_welcome_brightness_hierarchy_is_strictly_descending`
+   passes, and I recomputed the luminance ordering by hand from the measured
+   RGB: title (255) > desc (200) > hint/rules/room (168). Strictly descending,
+   AC5 holds. On `.welcome-desc` jumping to 11.85 "competing" with the title's
+   19.67: it doesn't invert the ordering and the two are visually distinct
+   colours (`#ffffff` vs `#c8c8d2`), but the jump does compress the headroom
+   between title and body from what a 0.5-alpha/0.7-alpha pair implied before.
+   I judge this Low, not a defect — see Low-1 below.
+5. **`.hint` legibility** — 8.35:1 / 8.92:1, both comfortably above 4.5:1, and
+   it is now the *same* value as `.stage-launch-hint` (ISSUE-47) and
+   `.welcome-rules`, so the one truly actionable sentence on this screen reads
+   at the same weight as the rest of the supporting tier rather than being the
+   dimmest text on the page as it was pre-fix (3.80:1, dimmer than
+   `.welcome-room`'s old 4.52:1).
+6. **No large-text relaxation used** — confirmed both structurally
+   (`test_welcome_text_meets_aa_against_every_backdrop` asserts `>= 4.5`
+   unconditionally, no branch on size) and empirically: I swept
+   `.welcome-title` computed `font-size` at 320/375/414/768/1024/1280/1440/1920px
+   — minimum observed **26px** (at 320–414px; 768px resolves to 26.112px),
+   never below the 24px large-text floor, and irrelevant anyway since
+   `font-weight: 500` isn't bold and the colour already clears 4.5:1 as normal
+   text (19.67:1 minimum). No value in this diff relies on the relaxation.
+7. **Responsive `@media` backdrop check** — swept `body` background at
+   375×600, 375×500, and 1280×400 (the padding-changing breakpoints at
+   ~lines 599/614 only touch `padding`, not `background`): backdrop stayed
+   `rgb(11,11,12)` at every size. No viewport moves a welcome text node to a
+   different backdrop.
+
+## Regressions checked — none found
+- **ISSUE-47 `aria-describedby="stage-launch-hint"`**: present on
+  `[data-stage-open]` in both my probe and the existing
+  `TestPopupOpenContract`-adjacent static tests; `#stage-launch-hint` element
+  still exists. `.stage-launch-hint`'s `#a8a8b3` is untouched by this diff
+  (confirmed via `git diff`, only the three welcome rules + `.welcome-room` +
+  `.welcome-state`/`.welcome-desc` changed).
+- **RL-010** (accessible names / focus indicators): out of this diff's touched
+  surface; `.stage-launch-button:focus-visible` box-shadow and button labels
+  unchanged by `git diff`.
+- **Large-text relaxation creep**: none — see item 6.
+
+## Out-of-scope creep check — clean
+`git diff ee409e7...247860c --stat` touches exactly the three files the task
+named. Confirmed by reading the full diff: status chips, FAB, caption area,
+`.welcome-state .icon` (still `rgba(255,255,255,0.5)`, correctly untouched —
+non-text, 1.4.11, out of scope), `st.radio`, `viewer.html`, `stage.html` are
+untouched.
+
+**`.qr-code-caption` follow-up, re-measured in-browser (not fixed here, as
+required)**: rendered with a real QR payload injected via
+`render_component_html`, `getComputedStyle` gives `color: rgba(0,0,0,0.5)` on
+a `getComputedStyle(.qr-code-container).backgroundColor === rgb(255,255,255)`
+card → **3.9494:1**, i.e. the claimed 3.95:1 is confirmed to the fourth digit.
+This diff correctly leaves it alone; recorded here only as a live pointer for
+the next PR (already known per the issue text, not a new finding).
+
+## State Coverage
+Only one state exists for this screen pre-microphone-activation (idle/welcome),
+and it renders correctly in both the normal and real-fullscreen sub-states,
+via both code paths that produce it (initial paint, `clearViewer()`). No
+loading/empty/error variant applies to this static informational screen — N/A,
+not a gap.
+
+## Copy Usage
+No copy changed by this diff (Scope explicitly excludes copy/layout changes,
+confirmed — only `color:` declarations differ in `git diff`). No placeholder
+text found in either markup copy.
+
+## Token Usage
+Every changed declaration is a bare `#rrggbb` opaque hex literal, matching the
+existing house style for this file (this file has no `--color-*` custom
+properties at all — only two unrelated `--translation-font-size` /
+`--original-font-size` tokens exist in `:root`, both pre-existing and
+untouched). `test_no_alpha_white_text_colour_remains_in_the_welcome_block`
+structurally guards against `rgba(255,255,255,α)` reappearing. This is
+consistent with every prior PR reviewed in this file (see `# PR #137` above
+using the same convention) — not a new deviation introduced by ISSUE-49, so no
+finding. Whether the codebase *should* have a colour-token layer is a
+system-level question — recorded under Notes for design-auditor.
+
+## Interaction Fidelity
+None claimed by this PR (colour-only change, no layout/animation/timing
+change per Scope). N/A.
+
+## Accessibility (implementation)
+- Contrast: all seven welcome text rules clear 4.5:1 against both real
+  backdrops, verified in-browser (table above) — RL-018 requirement met, not
+  just claimed.
+- `aria-describedby` wiring from ISSUE-47 survives (checked above).
+- No new interactive elements introduced; no new focus/keyboard surface to
+  check.
+- `.welcome-state .icon` (non-text, 1.4.11) correctly left alone — out of
+  scope per the issue text, and I did not flag it.
+
+## Component Existence
+N/A — no new components in wireframes to check against; this PR only edits
+existing CSS rules.
+
+## Notes for design-auditor
+- This file (and apparently the whole `components/` directory) has no
+  colour-token system — every colour in `webrtc.html`/`viewer.html`/`stage.html`
+  is a literal hex or `rgba()`. `#c8c8d2` and `#a8a8b3` introduced here join a
+  small informally-converging palette (`.stage-launch-hint` already used
+  `#a8a8b3`) with no `:root` custom property backing it. If a design-system
+  audit doc is ever started for this project, recommend promoting
+  `#ffffff`/`#c8c8d2`/`#a8a8b3`/`#0b0b0c`/`#000000` to named tokens — that
+  would also make the "reuse the same value across three rules" pattern this
+  PR relies on into something a linter can enforce structurally instead of by
+  convention + comment.
+- `.qr-code-caption` (3.95:1 on its white card) remains a real, unfixed AA gap
+  — tracked here for whoever owns the next system-level pass, not a finding
+  against this PR.
+
+## Findings by severity
+No Critical, High, or Medium findings — the PR's claimed table, its two test
+suites, and my independent re-measurement all agree to the ratio, byte-for-byte
+colour, and font-size.
+
+- **Low-1 (not fixed, informational)**: `.welcome-desc` moved from a
+  0.5-alpha dim tone (5.34:1 pre-fix, per the issue's own table context) to
+  `#c8c8d2` (11.85:1/12.65:1) — a bigger jump in perceived brightness than the
+  supporting tier's move (0.4-alpha → `#a8a8b3`, 3.80:1 → 8.35:1). The
+  strict-descending ordering (title > desc > hint/rules/room) still holds
+  numerically and the test guards it, but the *gap* between title and desc
+  narrowed while the gap between desc and the supporting tier widened, which
+  is a legitimate aesthetic/hierarchy observation, not an AA violation. No
+  action required by this issue's Scope (colour-values-only, no "keep the same
+  gap size" AC was written). Flagging for awareness only.
+
+## Verdict
+**Approve.** Every claimed ratio in the task's table reproduced exactly via
+independent in-browser measurement, in real fullscreen (not a class toggle),
+across both markup copies, with the `.hint span` inheritance path explicitly
+checked. The deleted fullscreen colour branch is confirmed absent both
+structurally and by observed-colour equality across states. No large-text
+relaxation is relied upon anywhere, confirmed at real computed font sizes down
+to 320px viewports. ISSUE-47's `aria-describedby` wiring is untouched and
+still present. No scope creep into the excluded surfaces. The one known
+adjacent gap (`.qr-code-caption`, 3.95:1) is correctly left unfixed per Scope
+and is not new.
+
+## Confidence
+High. Two independent measurement paths (the PR's own e2e suite, and a
+separately-authored Playwright script) produced identical numbers; worktree
+stayed pinned and clean at `247860c` for the whole session with no observed
+interference.

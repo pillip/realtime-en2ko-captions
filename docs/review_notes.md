@@ -2565,3 +2565,263 @@ S-2 는 1줄, F-2·S-1 은 각각 3~4줄이므로 함께 처리하기를 권한�
 리뷰어가 별도 이슈로 넘기라고 한 4건(RL-026 마크업 속성 뮤테이션 클래스 미소유,
 `lint`/`test`/`e2e` 의 `timeout-minutes` 부재, `guard_mutations.py` 의 커버리지 분모 포함 여부,
 허용 목록 확대 후보)은 이 PR 에서 건드리지 않고 `docs/sprint_state.md` 의 Discovered Issues 에 기록했다.
+
+---
+
+# PR #147 — ISSUE-49 오퍼레이터 웰컴 화면 WCAG AA 보정 (code review)
+
+**Reviewer**: Claude Opus 5 (automated, independent REVIEW phase — code half)
+**Date**: 2026-08-31
+**Worktree**: `/Users/pillip/project/practice/realtime-en2ko-captions/.worktrees/review-ISSUE-49-code` (detached HEAD `247860c`)
+**Base**: `origin/main` = `ee409e7` · **Diff**: 3 files, +422 −8
+**동시 실행 간섭**: 없음. 리뷰 시작·종료 시점 `git status --porcelain` 빈 출력, 3개 대상 파일 mtime 모두 워크트리 생성 시각(`02:22:30`)에서 이동 없음. 다른 워크트리는 읽지도 쓰지도 않았다.
+
+**Verdict**: **APPROVE-WITH-NITS.** Critical/High **0건**. AC 7개 전부 충족을 독립 실측으로 확인했고, 프로덕션 변경은 색 리터럴 4개 + 규칙 1개 삭제뿐이다. 이 PR 안에서 고친 것은 **없다**(고칠 Critical/High 가 없었다). Medium 2 / Low 3 은 전부 **테스트 강도**와 문서에 대한 것이며 후속 이슈로 넘긴다.
+
+## 게이트 실측 (이 워크트리에서 직접 실행)
+
+| 게이트 | 결과 |
+|---|---|
+| `uv run pytest -q` | **1340 passed, 1 skipped, 143 deselected, 94.53%** — 107.08s. 구현자 보고와 **정확히 일치** |
+| `uv run ruff check .` | `All checks passed!` |
+| `uv run black --check .` | `67 files would be left unchanged` |
+| `env -u NODE_OPTIONS uv run pytest -q -m e2e tests/e2e/test_operator_welcome_contrast_e2e.py` | **10 passed** (8.91s). 전체화면 진입 양성 대조군 포함 통과 |
+| `env -u NODE_OPTIONS uv run pytest tests/e2e -m e2e --no-cov -q` (전체) | 2 failed, 141 passed |
+
+- `1 skipped` 는 ISSUE-43 이 남긴 `test_guard_mutations.py:609` 기존 skip 이다. 이 PR 과 무관.
+- 스위트 실행 시간이 **107s** 이므로 `verify_checkpoint.py` 의 60s 타임아웃은 exit 124(타임아웃)를 낼 수밖에 없다 — 실패가 아니다. 위 수치가 실제 조건이다.
+- **전체 e2e 의 2건 실패는 이 PR 의 회귀가 아니다.** 같은 워크트리에서 base `ee409e7` 를 체크아웃해 전체 e2e 를 다시 돌린 결과 **5 failed / 111 passed / 17 errors** 로 오히려 더 나빴고, 실패 파일은 양쪽 모두 `tests/e2e/test_admin_stage_config_e2e.py`(ISSUE-39 계열, Streamlit 관리 UI 타임아웃) 하나였다. 이 파일만 단독 실행하면 **6 failed** 가 되어 실행 순서·서버 준비 상태에 따라 결과가 흔들리는 플레이키다. 측정 후 워크트리는 `247860c` 로 복귀시켰고 `git status` 는 비어 있다.
+
+## 대비 수치 독립 재계산
+
+PR 본문/지시문의 표를 그대로 받지 않고 `tests/wcag.py::_contrast_ratio` 로 전부 다시 계산했다. **7/7 전부 주장과 일치**한다.
+
+| 규칙 | 값 | `#0b0b0c` | `#000` |
+|---|---|---|---|
+| `.welcome-state h1, .welcome-title` | `#ffffff` | **19.67** | **21.00** |
+| `.welcome-state` (컨테이너) | `#c8c8d2` | **11.85** | **12.65** |
+| `.welcome-state p, .welcome-desc` | `#c8c8d2` | **11.85** | **12.65** |
+| `.welcome-room` | `#a8a8b3` | **8.35** | **8.92** |
+| `.welcome-state .hint` | `#a8a8b3` | **8.35** | **8.92** |
+| `.welcome-rules` | `#a8a8b3` | **8.35** | **8.92** |
+| `.stage-launch-hint` (ISSUE-47, 재사용·미편집) | `#a8a8b3` | 8.35 | 8.92 |
+
+Before 값도 재현했다: 알파 `0.4` → 3.80 / 3.66, 알파 `0.45` → **4.52 / 4.43**(전체화면에서만 미달), 알파 `0.5` → 5.34 / 5.32, 알파 `0.7` → 9.70 / 9.90. 즉 이슈가 기술한 "알파는 backdrop 이 어두워질수록 대비가 내려간다" 는 성질과 `.welcome-room` 이 전체화면에서만 떨어졌다는 진단이 모두 사실이다.
+
+## AC 대조 (7/7)
+
+| AC | 판정 | 근거 |
+|---|---|---|
+| 1. 모든 규칙 × 두 backdrop ≥ 4.5, large-text 완화 금지 | ✅ | 위 표(최솟값 8.35) + 정적 12 케이스 + **M7 실측**: `.welcome-title` 을 `#6a6a70`(3.66 / 3.91 — 둘 다 large-text 3:1 은 통과)로 바꾸면 **KILLED**. 완화 경로가 실제로 닫혀 있다 |
+| 2. `.hint` / `.welcome-rules` 가 불투명 hex 이고 양쪽 통과 | ✅ | `#a8a8b3` 8.35 / 8.92 |
+| 3. `.welcome-room` 이 `#000` 에서 ≥ 4.5 | ✅ | 8.92 (이전 4.43) |
+| 4. 웰컴 블록 텍스트 `color` 에 `rgba(255,255,255,α)` 0건, 전부 `#rrggbb` | ✅ | 6개 텍스트 규칙 전부 `#rrggbb`. 남은 `rgba(255,255,255,0.5)` 는 `.welcome-state .icon`(비텍스트, SC 1.4.11, 명시적 Scope Out)뿐이며 그 값도 5.34 / 5.32 로 3:1 을 넘긴다 |
+| 5. 밝기 서열 제목 > 본문 > 보조 유지 | ✅ | 상대휘도 1.0000 > 0.5824 > 0.3958, 강한 내림차순. 테스트가 수치로 고정 |
+| 6. `.hint` 되돌린 변이가 **`3.80:1` 을 보고하며** 실패 | ✅ | **직접 실측**: `AssertionError: .welcome-state .hint contrast is 3.80:1 against #0b0b0c (declared colour (255, 255, 255, 0.4)) — WCAG AA 1.4.3 needs 4.5:1` (그리고 `#000000` 에서 `3.66:1`) |
+| 7. backdrop 상수 ↔ 파일의 실제 `background` 선언 일치 | ✅ | 상수를 새로 만들지 않고 ISSUE-47 의 `test_body_backdrop_is_the_expected_opaque_colour` / `test_fullscreen_backdrop_is_the_expected_opaque_colour` 를 재사용. e2e 는 한 걸음 더 나아가 브라우저가 **칠한** 배경을 읽어 상수와 대조하고 불투명 여부까지 단언 |
+
+`.welcome-room` 되돌린 변이도 AC 대로 동작한다 — **`4.43:1 against #000000`** 만 실패하고 `#0b0b0c` 케이스는 통과한다. 두 backdrop parametrize 가 장식이 아니라 이 한 줄을 위해 존재한다는 것이 실측으로 증명된다.
+
+## 지시받은 6개 판단 항목
+
+### 1. 구조 가드 (c) 는 정말 "구조적" 인가 — **부분적으로만 그렇다**
+
+`test_fullscreen_rules_do_not_re_declare_welcome_text_colour` 는 `:fullscreen` / `:-webkit-full-screen` 뒤의 선택자 문자열에 **리터럴 `"welcome"` 이 들어있는 규칙만** 검사한다(`tests/test_webrtc_stage_launch.py:278`). 세 가드를 각각 깨뜨려 본 결과:
+
+- **(a) backdrop 상수** — 기존 두 테스트가 파일의 실제 `background` 선언과 대조하므로 유효. 게다가 e2e 가 브라우저 실측으로 이중 확인한다.
+- **(b) 알파-화이트 0건** — 유효하며, 예상과 달리 **중복되지 않는다**. `.welcome-rules { color: #a8a8b3; color: rgba(255,255,255,0.4); }`(CSS 는 뒤가 이김)를 넣으면 **이 가드만** 죽는다 — 대비 테스트도 hex 테스트도 `re.search` 로 **첫 번째** 선언만 읽기 때문이다. 처음엔 hex 가드에 흡수된 중복 테스트로 판단했으나, 뮤턴트로 반증했다.
+- **(c) fullscreen 재선언 금지** — **오늘의 선택자만 열거한다.** 아래 M4 참조.
+
+정면으로 깨보면:
+
+| 뮤턴트 | 정적 | e2e |
+|---|---|---|
+| M3 `#viewer:fullscreen .welcome-state { color: rgba(...,0.8) }` 복원 | **KILLED** (규칙을 인용해 보고) | KILLED |
+| **M4 `#viewer:fullscreen .hint { color: rgba(...,0.4) }` (새 선택자)** | **SURVIVED** | KILLED (2건) |
+| **M5 `.welcome-note { color: rgba(...,0.4) }` (새 웰컴 규칙)** | **SURVIVED** | **SURVIVED** |
+| **M6 `#viewer:fullscreen .welcome-state { opacity: 0.35 }`** | **SURVIVED** | **SURVIVED** |
+| **M14 중복 후행 `color: #55555c` (2.66:1)** | **SURVIVED** | KILLED (`2.66:1` 보고) |
+
+`.hint` 는 웰컴 화면의 노드인데 선택자에 `welcome` 이 없다. 그래서 **웰컴 텍스트에 대한 fullscreen 색 분기가 재도입되어도 정적 가드는 조용하다.** 다만 e2e 가 잡고, CI 의 `e2e` job 이 `pytest tests/e2e -m e2e` 를 정식 게이트로 돌리므로(`.github/workflows/ci.yml:158`) 그물은 남아 있다. → **F-1 (Medium)**
+
+### 2. `tests/wcag.py` 재사용 여부 — **깨끗하다 (RL-001 준수)**
+
+- 정적: `from tests.wcag import _contrast_ratio, _hex_rgb, _relative_luminance, _rule_block, _rule_hex, _rule_rgba` — 계산기 신규 작성 0건.
+- e2e: `from tests.wcag import _contrast_ratio, _hex_rgb` + `from tests.test_webrtc_stage_launch import _FULLSCREEN_BACKDROP, _PAGE_BACKDROP`. 상수는 **재정의가 아니라 import** 다. `_PAGE_BACKDROP` / `_FULLSCREEN_BACKDROP` / `_ALL_BACKDROPS` 는 `git show ee409e7:tests/test_webrtc_stage_launch.py` 기준 이미 존재하던 상수(36/42/43행)이고 이 diff 는 손대지 않았다.
+- **`tests/wcag.py` 는 이 diff 에서 0바이트 변경**(`git diff ee409e7...247860c -- tests/wcag.py` 빈 출력). ISSUE-53 과 충돌 없음.
+- e2e 의 `_parse_css_colour` 는 **세 번째 계산기가 아니다** — 브라우저가 돌려주는 *computed* `rgb()/rgba()` 문자열 파서이고, `tests/wcag.py` 에는 대응 함수가 없다(`_rule_rgba` 는 CSS 소스 + 선택자를 받는다). 산술은 전부 `tests/wcag.py` 에서 온다.
+
+### 3. M8(오라클 완화) 생존 판정 — **수용 가능. 단, 구현자가 댄 이유는 틀렸다**
+
+내 실측으로도 재현된다: 정적 AA 단언의 `>= 4.5` 를 `>= 3.0` 으로 바꾸면 **SURVIVED**.
+
+- 구현자 논거 ① "현재 값이 전부 8.35 이상이라 무해하다" — **값 의존적이라 유통기한이 있다.** 누군가 보조 텍스트를 어둡게 하는 순간 이 논거는 소멸한다.
+- 구현자 논거 ② "M8+M1 복합은 두 번 죽는다" — 사실이다(내 실측에서도 KILLED). 그러나 죽인 것은 **불투명 hex 가드·알파-화이트 가드·서열 가드**이지 **AA 오라클 자신이 아니다.** 즉 대비 오라클은 여전히 침묵한다.
+- **올바른 이유는 구조적이다**: *테스트 자신의 임계값을 바꾸는 뮤턴트는 어떤 테스트로도 죽일 수 없다.* 테스트는 다른 테스트의 오라클을 관측하지 않는다. M8 은 운이 좋아 무해한 것이 아니라 **정의상 equivalent mutant** 다. 남는 위험은 "누가 4.5 를 낮춘다" 이고 그건 테스트 커버리지 문제가 아니라 **코드 리뷰가 잡을 문제**다.
+- 실질적 완충도 이미 있다: e2e 파일이 **독립적으로** `>= 4.5` 를 갖고 있어 한쪽만 낮춰서는 그물이 다 뚫리지 않는다.
+- 그래도 잡고 싶다면 값싼 장치가 있다 — 같은 파일에 메타 가드(AA 단언 라인에 리터럴 `4.5` 가 존재하는지)를 두면 된다. 이 저장소는 이미 `guard_mutations.py`(ISSUE-43)로 그 관용구를 소유하고 있다. **차단 사유는 아니다.**
+
+### 4. large-text 3:1 완화 — **어디에도 적용되지 않는다 (실측 확인)**
+
+`.welcome-title` 을 `#6a6a70` 으로 바꾸면 `#0b0b0c` 3.66:1 / `#000` 3.91:1 로 **large-text 기준(3:1)은 통과**하지만 정적 3건 + e2e 2건이 죽는다. 전부 4.5 로 재고 있음이 값으로 증명된다.
+
+다만 **근거 문구는 부정확하다** → **F-5 (Low)**. `clamp(26px, 3.4vw, 34px)` 의 하한은 26px 이고 WCAG large text 는 24px(bold 18.66px)이므로 이 규칙은 **어떤 뷰포트에서도 large text 로 분류된다**. "하한이 임계 아래로 내려갈 수 있다" 는 이 값에 대해서는 성립하지 않는다. 결론(4.5 로 잰다)은 더 엄격해서 옳고, 틀린 것은 이유뿐이다. 다음 사람이 복사하는 것은 이유다.
+
+### 5. `#viewer:fullscreen .welcome-state` 삭제 — **안전하다**
+
+- 웰컴 마크업 두 벌(정적 768–787행, `clearViewer()` 1632–1653행)을 모두 훑었다. `.welcome-state` 의 직계 텍스트 노드는 없고 자식은 전부 자기 `color` 를 갖는다: `.icon`, `h1.welcome-title`, `.welcome-room`, `p.welcome-desc`, `.hint`, `.welcome-rules`, `.qr-code-caption`.
+- `.hint` 안의 **맨 `<span>`** 은 `.welcome-state` 가 아니라 `.hint`(`#a8a8b3`)에서 상속받는다. e2e 가 `.welcome-state .hint span` 을 목록에 넣어 **브라우저 실측**으로 8.35 / 8.92 를 확인한다. 이 노드가 오퍼레이터의 유일한 행동 지시문이므로 목록에 있는 것이 정확히 옳다.
+- 동적 재작성 경로(`updateWelcomeTranslationRules()`, 1043–1088행)도 `.welcome-title` / `.welcome-room` / `.welcome-desc` / `.welcome-rules` 만 건드린다 — 전부 자기 색을 가진 노드다. 컨테이너 색에 기대는 텍스트는 없다.
+- 참고로 `#viewer:-webkit-full-screen .welcome-state` 색 분기는 **원래부터 없었다**(비대칭이 이 PR 이전부터 존재). 삭제로 인해 Safari 쪽 동작이 달라지는 것은 없다.
+
+### 6. Scope 규율 — **지켜졌다**
+
+- 변경 파일 3개, `components/viewer.html` / `components/stage.html` **0바이트 변경**.
+- `components/webrtc.html` 의 변경은 색 리터럴 4개(`.welcome-state`, `.welcome-room`, `.welcome-state p/.welcome-desc`, `.welcome-state .hint`, `.welcome-rules`) + fullscreen 규칙 1개 삭제 + 주석. 레이아웃·문구·타이포 변경 0건.
+- **`.qr-code-caption` 은 손대지 않았다.** 내 실측으로 `rgba(0,0,0,0.5)` on `#ffffff` = **3.95:1** — 실제 AA 미달이 맞고, 이슈가 Scope Out 으로 못 박았으며 PR 본문이 "확인된 별건 결함" 으로 명시했다. 여기서 고치지 않은 것이 **옳다**. → **F-6** 으로 후속 이슈 제안.
+
+## 회귀 확인 (지시된 4건)
+
+| 항목 | 결과 |
+|---|---|
+| **ISSUE-47** `aria-describedby="stage-launch-hint"` | **온전**. `components/webrtc.html:738` 에 그대로 있고 `:741` 의 `id="stage-launch-hint"` 와 짝이 맞는다. `.stage-launch-hint` 의 `#a8a8b3` 은 diff 에 나타나지 않는다 — **재사용이지 편집이 아니다** |
+| **ISSUE-48** `{{BOOTSTRAP_JSON}}` 이스케이프 | **무접촉**. `git diff ee409e7...247860c -- components/webrtc.html` 안에 `BOOTSTRAP_JSON` / `script_escape` / `PLACEHOLDER_RE` / `.replace(` 매치 **0건**. `operator_ui.py:212-213` 의 `json_for_script` + 단일 패스 strict `PLACEHOLDER_RE.sub` 경로 그대로. 오히려 새 e2e fixture 가 `operator_ui.render_component_html` 을 **프로덕션 함수 그대로 호출**해 그 경로를 한 번 더 지난다(RL-024 준수) |
+| **RL-010** 접근 가능한 이름 / 포커스 표시 | **무영향**. 이 diff 는 마크업·인터랙티브 요소를 전혀 바꾸지 않는다 |
+| `viewer.html` / `stage.html` | **무접촉** (0바이트) |
+
+## Code Review
+
+### F-1 (Medium) — fullscreen 구조 가드가 오늘의 선택자만 열거한다
+`tests/test_webrtc_stage_launch.py:277-283`
+
+**무엇이 문제인가.** `if "welcome" not in selector: continue` 이므로 선택자 문자열에 `welcome` 이 없는 웰컴 화면 노드(`.hint`, `.icon`, `h1`, `p`)에 대한 fullscreen `color` 재선언은 검사 대상에서 **빠진다**.
+
+**왜 중요한가.** 이 가드의 docstring 은 RL-018 Prevention 을 인용하며 "주석이 아니라 검사된 사실로 둔다" 고 선언한다. 그런데 backdrop 분기 재도입의 절반은 검사되지 않는다. 실측: `#viewer:fullscreen .hint { color: rgba(255,255,255,0.4) }` → **정적 SURVIVED**.
+
+**완화 요인.** e2e 가 죽인다(2건). e2e 는 CI 정식 job 이다. 그래서 Medium 이지 High 가 아니다.
+
+**구체적 수정안(후속).** 리터럴 `"welcome"` 대신 `_WELCOME_TEXT_RULES` 에서 클래스 토큰 집합을 파생시켜 매칭한다:
+```python
+_WELCOME_TOKENS = frozenset(
+    t for rule in _WELCOME_TEXT_RULES for t in re.findall(r"[.#][\w-]+|\bh1\b|\bp\b", rule)
+)
+...
+if not any(tok in selector for tok in _WELCOME_TOKENS):
+    continue
+```
+목록이 하나 늘면 가드도 같이 자란다.
+
+### F-2 (Medium) — 새 웰컴 규칙은 정적·e2e **어느 쪽도** 감사하지 않는다
+`tests/test_webrtc_stage_launch.py:154-161`, `tests/e2e/test_operator_welcome_contrast_e2e.py:56-64`
+
+**무엇이 문제인가.** `_WELCOME_TEXT_RULES` 와 `_WELCOME_TEXT_NODES` 는 손으로 유지하는 목록이고, "파일이 새 웰컴 규칙을 갖게 되었는가" 를 묻는 검사가 없다. 실측: `.welcome-note { color: rgba(255,255,255,0.4) }` 를 추가하면 **정적 SURVIVED, e2e 도 SURVIVED**.
+
+**왜 중요한가.** AC4 의 문구는 "웰컴 블록 CSS 의 텍스트 `color` 선언을 훑으면" 이라는 **전수 조사**로 읽힌다. 구현은 고정 목록이다. 그리고 RL-018 의 재발 형태가 정확히 "새로 추가된 저대비 텍스트" 다 — 가드가 막으려던 바로 그 사건이 가드의 사각이다.
+
+**이건 저장소 기존 패턴에서의 이탈이다.** 같은 RL-018 계보의 직전 이슈(ISSUE-45)가 `tests/test_viewer_page.py:1145` `test_opaque_background_surfaces_are_the_enumerated_set` 에서 이미 **파생형**을 출하했다 — 스타일시트를 순회해 발견 집합을 만들고 `assert painted == _KNOWN_BACKGROUNDS` 로 목록과 대조해, **새 표면이 생기면 가드가 실패하며 재감사를 강제한다.** ISSUE-49 는 그 형태를 따르지 않았다.
+
+**구체적 수정안(후속).** 선택자가 `\.welcome[\w-]*` 또는 `.welcome-state <자손>` 에 매치되는 모든 규칙을 스타일시트에서 수집해 (a) 발견 집합 == `_WELCOME_TEXT_RULES` 를 단언하고 (b) 그 집합으로 AA parametrize 를 구동한다. 순회 헬퍼(`_rules` / `_declarations` / `_style_sheet`)는 `tests/test_viewer_page.py` 에 이미 있다 — 이상적으로는 `tests/wcag.py` 로 **추가만 하는(additive)** 승격이 맞지만, ISSUE-53 이 같은 파일에서 동시 진행 중이므로 **이 PR 이 아니라 후속에서** 하는 편이 안전하다.
+
+### F-3 (Low) — 정적·e2e 둘 다 `color` 만 본다: `opacity` 로 되살린 분기는 보이지 않는다
+`tests/test_webrtc_stage_launch.py:280`, `tests/e2e/test_operator_welcome_contrast_e2e.py:96`
+
+실측: `#viewer:fullscreen .welcome-state { opacity: 0.35 }` → **양쪽 SURVIVED**. 정적 가드의 정규식은 `color:` 만 찾고, e2e 의 `getComputedStyle(...).color` 는 조상 `opacity` 를 합성하지 않는다. `opacity` / `filter` 는 `color` 보다 가능성 낮은 벡터이고 이 diff 가 도입하지도 않았으므로 Low. 후속에서 fullscreen 스캐너에 `opacity|filter` 를 함께 금지하면 1줄이다.
+
+### F-4 (Low) — 정적 파서는 규칙의 **첫** `color` 를 읽고 CSS 는 **마지막** 을 적용한다
+`tests/test_webrtc_stage_launch.py:187-190`, `:231`
+
+실측: `.welcome-rules { color: #a8a8b3; color: #55555c; }`(**2.66:1**) → **정적 SURVIVED**, e2e 는 KILLED 하며 `2.66:1` 을 정확히 보고한다. 알파 버전(`color: rgba(255,255,255,0.4)` 후행)은 알파-화이트 가드가 잡지만 **hex 후행은 아무도 못 잡는다**. 이 한 뮤턴트가 e2e 파일의 존재 가치를 단독으로 증명한다 — 소스 파싱은 캐스케이드를 흉내 낼 뿐이고 브라우저만 사실을 안다. 수정은 `re.search` → `re.findall(...)[-1]`.
+
+### F-5 (Low) — `clamp()` 근거 문구가 이 값에 대해 사실이 아니다
+`tests/test_webrtc_stage_launch.py:208-214`, PR 본문 동일 문장
+
+`clamp(26px, 3.4vw, 34px)` 의 하한은 26px 로 large-text 임계(24px)보다 항상 크다. "하한이 임계 아래로 내려갈 수 있다" 는 ISSUE-45 의 관찰을 이 값에 잘못 전용한 것이다. 결정(전부 4.5 로 측정)은 더 엄격해 옳으므로 **행동 변경 없음**, 문구만 정정 권고: "완화가 성립하더라도 쓰지 않는다 — 19.67:1 이라 완화가 필요 없다".
+
+### F-6 (Medium, 이 PR 밖) — `.qr-code-caption` 3.95:1 실제 AA 미달
+`components/webrtc.html:.qr-code-caption`
+
+`rgba(0,0,0,0.5)` on `.qr-code-container { background: #ffffff }` = **3.95:1** (직접 실측). `.welcome-state` 안에서 `BOOT.qr_data_url` 이 있을 때 실제로 렌더된다. **이 PR 에서 고치지 않은 것이 옳다** — 이슈가 Scope Out 으로 명시했고 backdrop 이 완전히 달라 같은 표에 넣으면 계산 자체가 틀린다. PR 본문도 명시했다. **후속 이슈 필수** (아래 참조). 심각도는 이 PR 에 대한 것이 아니라 제품에 대한 것이다.
+
+### 잘한 점 (실측으로 확인한 것)
+
+- **양성 대조군이 두 곳에 있다.** 정적 fullscreen 스캐너는 `.caption-container` 규칙을 먼저 찾아 "정규식이 깨져 0건이 된" 공허한 통과를 막고, e2e 는 `#viewer` 가 실제로 `:fullscreen` 에 매치되는지를 먼저 단언해 "일반 화면을 두 번 잰" 공허한 통과를 막는다. 후자는 헤드리스 Chromium 에서 실제로 통과한다(10 passed).
+- **주석을 걷어낸 뒤 선언만 스캔한다.** 삭제한 규칙을 설명하려면 인용할 수밖에 없는데, 인용문에 가드가 걸리면 다음 사람은 가드가 아니라 설명을 지운다. 그 함정을 알고 피했다.
+- **알파-화이트 가드는 중복이 아니다** (M13 로 반증). 중복 선언 케이스를 단독으로 잡는 유일한 정적 가드다.
+- **실패 메시지가 전부 계산값을 말한다** (RL-004). `3.80:1` / `4.43:1` / `3.66:1` / `2.66:1` 을 전부 실제 실패 출력에서 확인했다.
+- **e2e 가 프로덕션 렌더 함수(`operator_ui.render_component_html`)를 호출한다** — fixture 가 치환을 재구현하지 않는다 (RL-024).
+
+## Security Findings
+
+**Critical 0 / High 0 / Medium 0 / Low 0.**
+
+diff 는 CSS 색 리터럴 4개, CSS 규칙 1개 삭제, 테스트 2개 파일이다. 각 카테고리를 명시적으로 재확인했다:
+
+- **Injection / 템플릿 주입**: 프로덕션 치환 경로 무접촉(위 회귀 표). 새 e2e 는 오히려 프로덕션 `render_component_html` 을 그대로 지난다.
+- **XSS**: `innerHTML` 사용처 변경 0건. `clearViewer()` 템플릿 리터럴은 이 diff 에서 바뀌지 않았다(색은 CSS 로만 바뀌어 두 벌 마크업을 한 번에 덮는다 — 인라인 `style` 색 주입 0건).
+- **AuthN/AuthZ**: 접근 제어 코드 무접촉.
+- **비밀정보**: 새 파일의 `_boot_payload()` 는 더미(`op1`, `room-42`)이고 자격 증명·토큰·URL 시크릿 없음. `openai_session: None`.
+- **입력 검증 / 역직렬화**: 새 입력 경로 없음. `_parse_css_colour` 는 **브라우저가 생성한** computed style 문자열만 파싱하며 매치 실패 시 값을 담아 assert 한다(신뢰 경계 아님).
+- **의존성**: 추가 0건. `uv.lock` / `pyproject.toml` 무변경.
+- **설정 오류**: CI 워크플로 무변경. e2e 는 `tmp_path` 에 `file://` 로 쓰고 네트워크를 열지 않는다.
+
+접근성은 보안이 아니라 품질로 분류했지만, 이 PR 의 본질이 **텍스트 가독성 확보**이므로 값은 위 표에 전부 남겼다.
+
+## Over-Engineering (minimality axis)
+
+- `tests/test_webrtc_stage_launch.py:238-252`: **처음에 `shrink`(알파-화이트 가드가 hex 가드에 흡수된 중복) 로 판정했다가 뮤턴트 M13 으로 반증했다** — 중복 후행 `color: rgba(...)` 를 잡는 유일한 정적 가드다. **철회한다.**
+- `components/webrtc.html:435-451`: 17줄 주석 블록. 길지만 RL-018 이 "눈대중 금지" 를 요구하고 이슈가 실측값 기록을 명시적으로 요구했다. **유지.**
+- `tests/e2e/.../test_operator_welcome_contrast_e2e.py:_parse_css_colour`: `tests/wcag.py` 로 승격하면 다음 브라우저 대비 테스트가 재사용할 수 있으나, ISSUE-53 이 그 파일에서 동시 진행 중이므로 **지금 옮기지 않는 것이 옳다**. 후속.
+
+**Net removable lines: 0.** 이 diff 는 이 축에서 군살이 없다. 오히려 F-1/F-2 는 **줄을 더 써야** 하는 방향이다.
+
+## 뮤테이션 실측 (10종, 전량 내가 직접 실행)
+
+| # | 뮤턴트 | 정적 | e2e | 비고 |
+|---|---|---|---|---|
+| M1 | `.hint` → `rgba(255,255,255,0.4)` | KILLED (5) | KILLED (3) | `3.80:1` / `3.66:1` 보고 |
+| M2 | `.welcome-room` → `rgba(255,255,255,0.45)` | KILLED (3) | KILLED (1) | `#000` 에서만 `4.43:1` 실패 |
+| M3 | fullscreen 색 분기 복원(알파) | KILLED (1) | KILLED (1) | 구조 가드가 규칙을 인용 |
+| M4 | `#viewer:fullscreen .hint{color:rgba .4}` | **SURVIVED** | KILLED (2) | → F-1 |
+| M5 | `.welcome-note{color:rgba .4}` 신규 | **SURVIVED** | **SURVIVED** | → F-2 |
+| M6 | `#viewer:fullscreen .welcome-state{opacity:.35}` | **SURVIVED** | **SURVIVED** | → F-3 |
+| M7 | `.welcome-title` → `#6a6a70` (3.66/3.91) | KILLED (3) | KILLED (2) | large-text 완화 미적용 증명 |
+| M8 | 오라클 `>= 4.5` → `>= 3.0` | **SURVIVED** | n/a | equivalent by construction |
+| M13 | 중복 후행 `color: rgba(...,.4)` | KILLED (알파 가드 단독) | — | 알파 가드가 중복 아님을 증명 |
+| M14 | 중복 후행 `color: #55555c` (2.66:1) | **SURVIVED** | KILLED | → F-4 |
+
+구현자의 12종 배치는 전부 **오늘의 선택자**를 겨냥한다. 살아남은 4종(M4·M5·M6·M14)은 전부 **"새 것" 또는 "두 번째 선언"** 형태다 — 배치 설계가 자기 사각을 재생산했다.
+
+## 리뷰 프로세스 사고 (기록)
+
+첫 뮤테이션 배치의 뒤쪽 실행이 **오염되었고, 그것을 알아채고 전량 재측정했다.**
+
+M8(오라클 `4.5` → `3.0`)을 위해 `tests/test_webrtc_stage_launch.py` 를 수정했다가 되돌렸는데, `4.5` 와 `3.0` 은 **바이트 수가 같아** 파일 크기가 변하지 않았고, 복원이 같은 초 안에 일어나 mtime 도 pyc 헤더의 초 단위 값과 일치했다. Python 의 pyc 무효화는 **(mtime 초, size)** 이므로 pytest 가 재작성한 `__pycache__/*.pyc` 가 **유효하다고 판정되어 계속 로드**되었다 — 이후 모든 실행이 `>= 3.0` 바이트코드로 돌았다.
+
+증상은 "산술은 3.80 인데 테스트는 통과" 라는 불가능한 결과였다. `struct.unpack` 으로 pyc 헤더를 직접 읽어(`pyc_mtime 1788110989 == src_mtime`, `size 25964 == 25964`) 원인을 확정하고, `__pycache__` / `.pytest_cache` 전량 삭제 + `PYTHONDONTWRITEBYTECODE=1` + `-p no:cacheprovider` 로 **10종 전부 재실행**했다. 위 표는 재실행 결과다. 이 노트의 중간 수치가 아니라 최종 표를 신뢰하면 된다.
+
+이 저장소는 뮤테이션 기반 검증을 문화로 삼고 있으므로(ISSUE-43 의 `guard_mutations.py`) 기록해 둔다. `guard_mutations.py` 는 뮤턴트를 샌드박스 사본에서 실행하므로 이 함정에 걸리지 않지만, **손으로 돌리는 뮤테이션은 걸린다.**
+
+## Follow-ups (별도 이슈 제안)
+
+1. **`.qr-code-caption` AA 보정** (P1, fix) — `rgba(0,0,0,0.5)` on `#ffffff` = 3.95:1. 흰 카드 backdrop 이므로 이 이슈의 두 backdrop 표와 계산이 다르다. `#595959`(4.54:1) 부근이 최소 불투명 후보. 같은 카드의 `strong` 은 12.63:1 로 통과.
+2. **웰컴 대비 가드를 파생형으로 전환** (P2, test) — F-1 + F-2 + F-3 + F-4 를 한 이슈로. `tests/test_viewer_page.py:1145` 의 `test_opaque_background_surfaces_are_the_enumerated_set` 형태를 따라 (a) 스타일시트에서 웰컴 규칙을 **발견**해 목록과 대조, (b) fullscreen 스캐너를 클래스 토큰 기반으로 + `opacity|filter` 포함, (c) `color` 파싱을 last-wins 로. 순회 헬퍼의 `tests/wcag.py` 승격(additive)을 함께 검토 — **ISSUE-53 머지 이후**.
+3. **`components/webrtc.html` 잔여 표면 대비 감사** (P2, fix) — 상태 칩 / FAB / `.caption-line` 변형 / `st.radio` 표시 모드. PR 본문이 미감사로 명시한 목록 그대로.
+4. **`tests/e2e/test_admin_stage_config_e2e.py` 플레이키 안정화** (P2, test) — base `ee409e7` 에서도 5 failed / 17 errors, 단독 실행 시 6 failed. 이 PR 과 무관하나 e2e 게이트의 신호를 갉아먹는다.
+
+## Confidence
+
+**High.**
+
+- 대비 수치 13개를 지시문·PR 본문과 독립적으로 `tests/wcag.py` 로 재계산했고 전부 일치했다.
+- 가드 3종을 각각 정면으로 깨뜨려 보았고(10 뮤턴트 × 정적·e2e), 살아남은 4종을 값과 함께 보고했다.
+- 오염된 첫 측정을 pyc 헤더로 진단하고 전량 재측정했다 — 이 노트의 수치는 캐시를 비우고 `PYTHONDONTWRITEBYTECODE=1` 로 다시 얻은 것이다.
+- e2e 실패 2건은 base 를 실제로 체크아웃해 대조했다(base 가 더 나쁨) — 추론이 아니라 실측이다.
+- 유일한 미확인 영역: **실제 브라우저 픽셀 샘플링(occlusion)**. 하지 않았고, 필요도 없다고 판단했다 — 웰컴 화면 위에 재생 중인 `<video>`/`<canvas>` 가 없어 RL-018 두 번째 사례의 조건이 성립하지 않고, e2e 가 이미 `getComputedStyle` 로 실제 backdrop 을 관측한다. 이 판단만 Medium 확신이다.
+
+## Verdict
+
+**APPROVE-WITH-NITS.** 머지 가능하다.
+
+AC 7/7, 프로덕션 변경은 색 리터럴뿐, 회귀 4건(ISSUE-47 / ISSUE-48 / RL-010 / viewer·stage) 전부 무접촉, 게이트 전부 초록, 그리고 이 이슈가 존재하는 이유였던 두 변이(`3.80:1`, `4.43:1`)가 실제로 그 숫자를 말하며 죽는다. Scope 규율도 지켜졌다 — 눈앞의 `.qr-code-caption` 3.95:1 을 참고 남겨 두었다.
+
+**차단 없음.** F-1·F-2 는 Medium 이지만 **테스트 강도**에 대한 것이고, 출하된 코드는 규격을 만족하며, F-1 은 CI e2e 가 그물을 유지한다. 다만 F-2 는 RL-018 의 재발 벡터 그 자체이고 직전 이슈(ISSUE-45)가 이미 정답 형태를 출하해 두었으므로, **후속 이슈 2번을 다음 스프린트에 반드시 잡을 것**을 권고한다.
