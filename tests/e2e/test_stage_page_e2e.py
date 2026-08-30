@@ -1231,3 +1231,369 @@ class TestStageRuntimeStates:
         assert page.evaluate("CONFIG.room_id") == 'q"b\\'
         # 부트스트랩이 살아 있으면 자막 컬럼 폭이 CSS 폴백이 아니라 설정값이다.
         assert _box(page, "#caption-column")["width"] == pytest.approx(480, abs=2)
+
+
+# ---------------------------------------------------------------------------
+# control 이벤트 (ISSUE-53, FR-085 / NFR-030 — TC-080 · TC-082 · TC-084 · TC-085)
+# ---------------------------------------------------------------------------
+def _emit_control(page, **fields: Any) -> None:
+    """**named** control 이벤트를 흘려보낸다.
+
+    일반 `message` 로 보내면 리스너를 아예 등록하지 않은 클라이언트에서도
+    테스트가 통과한다 — named event 로 보내는 것이 이 하네스의 요점이다.
+    """
+    page.evaluate(
+        "(payload) => window.__emit('control', JSON.stringify(payload))", fields
+    )
+
+
+def _sse_urls(page) -> list[str]:
+    return page.evaluate("() => window.__sse.urls.slice()")
+
+
+class TestStageControlLanguage:
+    """TC-080 — pin 규칙을 두 케이스로 나란히 못 박는다."""
+
+    def test_an_unpinned_page_follows_the_control_language(self, page, stage_server):
+        _fake_eventsource(page)
+        page.set_viewport_size({"width": 1920, "height": 1080})
+        page.goto(f"{stage_server}/stage/quarter-room", wait_until="load")
+
+        before = _sse_urls(page)
+        assert len(before) == 1, before
+        assert before[0].endswith("?lang=ko"), before
+
+        _emit_control(page, primary_lang="vi")
+        _settle(page, "() => window.__sse.urls.length === 2")
+
+        after = _sse_urls(page)
+        assert len(after) == 2, after
+        assert after[1].endswith("?lang=vi"), after
+        assert page.evaluate("() => window.__sse.last.url").endswith("?lang=vi")
+
+    def test_a_pinned_page_keeps_its_language_and_only_takes_the_scale(
+        self, page, stage_server
+    ):
+        """`?lang=ko` 로 연 화면은 control 로 끌려가지 않는다 — 배율만 받는다."""
+        _fake_eventsource(page)
+        page.set_viewport_size({"width": 1920, "height": 1080})
+        page.goto(f"{stage_server}/stage/quarter-room?lang=ko", wait_until="load")
+
+        before = _sse_urls(page)
+        assert before == ["/stream/quarter-room?lang=ko"], before
+
+        _emit_control(page, primary_lang="vi", caption_scale=1.4)
+        page.wait_for_timeout(300)
+
+        after = _sse_urls(page)
+        assert after == before, (
+            f"a pinned stage page re-subscribed: {after} — an attendee-chosen "
+            "language must never be overridden by a room-level announcement"
+        )
+        scale = page.evaluate(
+            "() => getComputedStyle(document.documentElement)"
+            ".getPropertyValue('--caption-scale').trim()"
+        )
+        assert (
+            scale == "1.4"
+        ), f"the pinned page must still take the scale, got {scale!r}"
+
+    def test_a_repeated_control_does_not_recreate_the_stream(self, page, stage_server):
+        """같은 언어를 다시 알려도 EventSource 를 다시 만들지 않는다."""
+        _fake_eventsource(page)
+        page.set_viewport_size({"width": 1920, "height": 1080})
+        page.goto(f"{stage_server}/stage/quarter-room", wait_until="load")
+
+        _emit_control(page, primary_lang="vi")
+        _settle(page, "() => window.__sse.urls.length === 2")
+        _emit_control(page, primary_lang="vi")
+        _emit_control(page, primary_lang="vi")
+        page.wait_for_timeout(300)
+
+        urls = _sse_urls(page)
+        assert len(urls) == 2, (
+            f"three control frames produced {len(urls) - 1} re-subscriptions; a "
+            f"redundant announcement must be a no-op: {urls}"
+        )
+
+    def test_an_unsupported_language_is_ignored(self, page, stage_server):
+        _fake_eventsource(page)
+        page.set_viewport_size({"width": 1920, "height": 1080})
+        page.goto(f"{stage_server}/stage/quarter-room", wait_until="load")
+
+        _emit_control(page, primary_lang="xx")
+        page.wait_for_timeout(300)
+
+        assert _sse_urls(page) == ["/stream/quarter-room?lang=ko"]
+
+    def test_an_ended_session_does_not_resubscribe(self, page, stage_server):
+        _fake_eventsource(page)
+        page.set_viewport_size({"width": 1920, "height": 1080})
+        page.goto(f"{stage_server}/stage/quarter-room", wait_until="load")
+
+        page.evaluate("() => window.__emit('session_end', '{}')")
+        _settle(page, "() => !document.getElementById('caption-ended').hidden")
+
+        _emit_control(page, primary_lang="vi")
+        page.wait_for_timeout(300)
+
+        assert _sse_urls(page) == ["/stream/quarter-room?lang=ko"]
+        ended = page.evaluate(
+            "() => document.getElementById('caption-ended').hidden === false"
+        )
+        assert ended, "the ended state must survive a late control frame"
+
+
+class TestStageResubscribeKeepsThePipelineIntact:
+    """TC-082 — 재구독이 자막 파이프라인 불변식을 깨지 않는다."""
+
+    def test_a_mid_typewriter_switch_settles_clean(self, page, stage_server):
+        _fake_eventsource(page)
+        page.add_init_script(_RAF_COUNTER)
+        page.set_viewport_size({"width": 1920, "height": 1080})
+        page.goto(f"{stage_server}/stage/quarter-room", wait_until="load")
+
+        for i in range(1, 4):
+            _emit_message(page, f"확정된 자막 {i}")
+        _settle(page, "() => document.querySelectorAll('.caption-line').length === 3")
+        # 아주 긴 final 을 넣어 타자기가 **진행 중**인 순간에 전환한다.
+        _emit_message(page, "가" * 4000)
+        page.wait_for_timeout(60)
+        assert 0 < _line_length(page) < 4000, "타자기가 진행 중인 상태를 만들지 못했다"
+
+        _emit_control(page, primary_lang="vi")
+        page.wait_for_timeout(600)
+
+        state = page.evaluate(
+            """() => {
+              const empties = document.querySelectorAll('#caption-empty');
+              return {
+                lines: document.querySelectorAll('.caption-line').length,
+                empties: empties.length,
+                emptyText: empties.length ? empties[0].textContent : null,
+                rafMax: window.__raf.max,
+                rafLive: window.__raf.live,
+                announcer: document.getElementById('caption-announcer').textContent,
+              };
+            }"""
+        )
+        assert state["lines"] == 0, f"the stack must be cleared, got {state}"
+        assert state["empties"] == 1, f"exactly one waiting node, got {state}"
+        assert state["emptyText"] == "Sắp bắt đầu", (
+            f"the waiting text must be re-rendered in the NEW language, got "
+            f"{state['emptyText']!r}"
+        )
+        assert state["rafLive"] <= 1, f"a stray animation loop survived: {state}"
+        assert state["announcer"] == "Sắp bắt đầu", (
+            f"the live region must hold the new-language waiting copy, got "
+            f"{state['announcer']!r}"
+        )
+
+    def test_captions_flow_again_on_the_new_channel(self, page, stage_server):
+        """재구독 뒤에도 상한(60)과 확정 규칙이 그대로다."""
+        _fake_eventsource(page)
+        page.set_viewport_size({"width": 1920, "height": 1080})
+        page.goto(f"{stage_server}/stage/quarter-room", wait_until="load")
+
+        _emit_message(page, "옛 채널")
+        _settle(page, "() => document.querySelectorAll('.caption-line').length === 1")
+        _emit_control(page, primary_lang="vi")
+        _settle(page, "() => window.__sse.urls.length === 2")
+
+        page.evaluate(
+            """() => {
+              for (let i = 1; i <= 61; i++) {
+                window.__emit("message", JSON.stringify({text: "phụ đề " + i}));
+              }
+            }"""
+        )
+        _settle(
+            page,
+            """() => {
+              const els = document.querySelectorAll(".caption-line");
+              return els.length === 60 &&
+                     els[els.length - 1].textContent === "phụ đề 61";
+            }""",
+        )
+
+        lines = _lines(page)
+        assert len(lines) == 60, f"MAX_LINES drifted after a re-subscribe: {len(lines)}"
+        assert lines[0] == "phụ đề 2", lines[0]
+        assert lines[-1] == "phụ đề 61", lines[-1]
+        assert "옛 채널" not in lines, "the old channel's line survived the switch"
+
+    def test_exactly_one_live_region_after_the_switch(self, page, stage_server):
+        _fake_eventsource(page)
+        page.set_viewport_size({"width": 1920, "height": 1080})
+        page.goto(f"{stage_server}/stage/quarter-room", wait_until="load")
+
+        _emit_message(page, "옛 채널")
+        _emit_control(page, primary_lang="vi")
+        page.wait_for_timeout(300)
+
+        owners = page.evaluate(
+            """() => Array.from(document.querySelectorAll('[aria-live]'))
+                       .map(el => el.id).sort()"""
+        )
+        assert owners == ["caption-announcer"], (
+            f"aria-live owners after a re-subscribe are {owners}; the stage page "
+            "must keep exactly one caption live region (RL-019)"
+        )
+
+
+class TestStageStaysZeroInteractionAfterControl:
+    """TC-084 — 정적 개수 가드는 런타임에 만들어진 노드를 보지 못한다."""
+
+    def test_no_clickable_surface_appears_after_a_control_frame(
+        self, page, stage_server
+    ):
+        _fake_eventsource(page)
+        page.set_viewport_size({"width": 1920, "height": 1080})
+        page.goto(f"{stage_server}/stage/quarter-room", wait_until="load")
+
+        # 캡처 연결 버튼을 렌더 트리에서 빼 "연결 후" 상태를 만든다 —
+        # NFR-025 가 요구하는 것은 연결된 무대의 클릭 표면 0개다.
+        page.evaluate(
+            """() => {
+              document.getElementById('capture-controls').hidden = true;
+              document.getElementById('stage-root').classList.add('capture-live');
+            }"""
+        )
+        _emit_control(page, primary_lang="vi", caption_scale=1.4)
+        _settle(page, "() => window.__sse.urls.length === 2")
+        _emit_control(page, caption_scale=0.8)
+        page.wait_for_timeout(300)
+
+        probe = page.evaluate(
+            """() => {
+              const sel = 'button, a, input, select, textarea, [tabindex]';
+              const visible = Array.from(document.querySelectorAll(sel)).filter(
+                el => el.offsetParent !== null ||
+                      el.getClientRects().length > 0
+              );
+              return {
+                clickable: visible.map(el => el.tagName + '#' + el.id),
+                active: document.activeElement === document.body,
+                activeTag: document.activeElement.tagName,
+                fullscreen: document.fullscreenElement === null,
+                cursor: getComputedStyle(
+                  document.getElementById('stage-root')
+                ).cursor,
+              };
+            }"""
+        )
+        assert probe["clickable"] == [], (
+            f"a control frame produced visible clickable elements: "
+            f"{probe['clickable']} — the caption scale must be applied "
+            "programmatically, never through a stage-side control (NFR-030)"
+        )
+        assert probe["active"], (
+            f"focus moved to {probe['activeTag']}; the stage window must not "
+            "hold OS focus after a control event (NFR-025)"
+        )
+        assert probe["fullscreen"], "the page entered fullscreen on its own"
+        assert (
+            probe["cursor"] == "none"
+        ), f"the cursor came back as {probe['cursor']!r} after a control frame"
+
+
+class TestStageCaptionScaleRendersLarger:
+    """TC-085 — 변수 존재가 아니라 **렌더된 크기 변화**를 값으로 본다 (RL-004)."""
+
+    @staticmethod
+    def _font_px(page) -> float:
+        return page.evaluate(
+            """() => {
+              const el = document.querySelector('.caption-line');
+              return el === null ? 0 : parseFloat(getComputedStyle(el).fontSize);
+            }"""
+        )
+
+    def test_a_larger_scale_renders_a_larger_caption(self, page, stage_server):
+        _fake_eventsource(page)
+        page.set_viewport_size({"width": 1920, "height": 1080})
+        page.goto(f"{stage_server}/stage/quarter-room", wait_until="load")
+
+        _emit_message(page, "크기 확인용 자막")
+        _settle(page, "() => document.querySelectorAll('.caption-line').length === 1")
+        before = self._font_px(page)
+        assert before > 0, "no caption line rendered"
+
+        _emit_control(page, caption_scale=1.4)
+        page.wait_for_timeout(200)
+        after = self._font_px(page)
+
+        assert after > before, (
+            f"caption font-size stayed at {before}px after caption_scale=1.4 "
+            f"(now {after}px) — the scale must reach the rendered size, not just "
+            "a CSS custom property"
+        )
+        assert (
+            abs(after - before * 1.4) < 0.6
+        ), f"expected ~{before * 1.4:.2f}px, got {after:.2f}px"
+
+    def test_a_smaller_scale_renders_a_smaller_caption(self, page, stage_server):
+        _fake_eventsource(page)
+        page.set_viewport_size({"width": 1920, "height": 1080})
+        page.goto(f"{stage_server}/stage/quarter-room", wait_until="load")
+
+        _emit_message(page, "크기 확인용 자막")
+        _settle(page, "() => document.querySelectorAll('.caption-line').length === 1")
+        before = self._font_px(page)
+
+        _emit_control(page, caption_scale=0.8)
+        page.wait_for_timeout(200)
+        after = self._font_px(page)
+
+        assert after < before, f"0.8 must shrink the caption: {before} -> {after}"
+
+    def test_an_out_of_range_scale_is_clamped_and_the_layout_holds(
+        self, page, stage_server
+    ):
+        _fake_eventsource(page)
+        page.set_viewport_size({"width": 1920, "height": 1080})
+        page.goto(f"{stage_server}/stage/quarter-room", wait_until="load")
+
+        _emit_message(page, "크기 확인용 자막")
+        _settle(page, "() => document.querySelectorAll('.caption-line').length === 1")
+        base = self._font_px(page)
+
+        _emit_control(page, caption_scale=9)
+        page.wait_for_timeout(200)
+        clamped = self._font_px(page)
+
+        assert abs(clamped - base * 1.6) < 0.7, (
+            f"caption_scale=9 must clamp to 1.6 ({base * 1.6:.2f}px), got "
+            f"{clamped:.2f}px"
+        )
+        column = page.evaluate(
+            """() => {
+              const col = document.getElementById('caption-column');
+              const frame = document.getElementById('stage-frame');
+              return {
+                colLeft: col.getBoundingClientRect().left,
+                frameRight: frame.getBoundingClientRect().right,
+                overflowX: document.documentElement.scrollWidth <= window.innerWidth,
+              };
+            }"""
+        )
+        assert (
+            column["frameRight"] <= column["colLeft"] + 1
+        ), f"the clamped scale pushed the caption column into the deck: {column}"
+        assert column["overflowX"], f"the page scrolls horizontally now: {column}"
+
+    def test_a_non_numeric_scale_is_ignored(self, page, stage_server):
+        _fake_eventsource(page)
+        page.set_viewport_size({"width": 1920, "height": 1080})
+        page.goto(f"{stage_server}/stage/quarter-room", wait_until="load")
+
+        _emit_message(page, "크기 확인용 자막")
+        _settle(page, "() => document.querySelectorAll('.caption-line').length === 1")
+        base = self._font_px(page)
+
+        page.evaluate(
+            "() => window.__emit('control', JSON.stringify({caption_scale: '크게'}))"
+        )
+        page.wait_for_timeout(200)
+
+        assert self._font_px(page) == base, "a non-numeric scale must be ignored"

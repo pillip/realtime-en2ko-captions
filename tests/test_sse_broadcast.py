@@ -1417,3 +1417,448 @@ class TestRenderedLanguageFollowsTheRoomRow:
         langs = json.loads(m.group(1))
         assert langs == list(SUPPORTED_OUTPUT_LANGS)
         assert set(langs) == {"ko", "en", "zh", "vi"}
+
+
+# ---------------------------------------------------------------------------
+# control 이벤트 채널 (ISSUE-53, FR-084 / TC-075 ~ TC-078)
+# ---------------------------------------------------------------------------
+class TestControlState:
+    """`set_control` / `get_control` — 룸 단위 인메모리 프레젠테이션 상태.
+
+    `has_viewers`(`:202`) / `get_metrics`(`:181`) 와 같은 동기·lock-free 스타일.
+    """
+
+    def test_partial_update_keeps_the_earlier_field(self):
+        """TC-078 — 부분 갱신이 앞 필드를 지우지 않는다.
+
+        `dict.update` 가 아니라 대입으로 구현하면 두 번째 호출이 첫 필드를
+        날린다. 두 키를 **함께** 단언해야 그 구현이 걸린다 (RL-004).
+        """
+        from sse_broadcast import BroadcastManager
+
+        mgr = BroadcastManager()
+        first = mgr.set_control("r1", primary_lang="vi")
+        assert first == {"primary_lang": "vi"}
+
+        second = mgr.set_control("r1", caption_scale=1.2)
+        assert second == {"primary_lang": "vi", "caption_scale": 1.2}
+        assert mgr.get_control("r1") == {"primary_lang": "vi", "caption_scale": 1.2}
+
+    def test_get_control_returns_a_copy(self):
+        """TC-078 — 반환 dict 를 변형해도 내부 상태가 오염되지 않는다.
+
+        `get_metrics` 와 같은 copy-on-read 계약. 같은 객체를 돌려주면
+        오퍼레이터 UI 코드 한 줄이 방송 상태를 조용히 바꿀 수 있다.
+        """
+        from sse_broadcast import BroadcastManager
+
+        mgr = BroadcastManager()
+        mgr.set_control("r1", primary_lang="vi")
+
+        snapshot = mgr.get_control("r1")
+        assert snapshot == {"primary_lang": "vi"}
+        snapshot["primary_lang"] = "ko"
+        snapshot["injected"] = True
+
+        assert mgr.get_control("r1") == {"primary_lang": "vi"}
+
+    def test_set_control_return_value_is_a_copy_too(self):
+        """머지 결과를 그대로 넘겨주면 발행 payload 조립이 상태를 오염시킨다."""
+        from sse_broadcast import BroadcastManager
+
+        mgr = BroadcastManager()
+        returned = mgr.set_control("r1", caption_scale=1.2)
+        returned["caption_scale"] = 9
+
+        assert mgr.get_control("r1") == {"caption_scale": 1.2}
+
+    def test_unknown_room_has_no_control_state(self):
+        """AC — 없는 상태를 기본값으로 지어내지 않는다."""
+        from sse_broadcast import BroadcastManager
+
+        mgr = BroadcastManager()
+        assert mgr.get_control("ghost") is None
+
+    def test_control_state_is_per_room(self):
+        """룸 A 의 배율이 룸 B 로 새지 않는다."""
+        from sse_broadcast import BroadcastManager
+
+        mgr = BroadcastManager()
+        mgr.set_control("r1", caption_scale=1.4)
+        assert mgr.get_control("r2") is None
+        assert mgr.get_control("r1") == {"caption_scale": 1.4}
+
+
+class TestPublishControlFanOut:
+    """TC-075 — fan-out 은 **룸 단위**다 (언어별이 아니다)."""
+
+    @pytest.mark.asyncio
+    async def test_every_language_channel_of_the_room_receives_it(self):
+        """ko/vi 두 채널이 각각 정확히 1건씩 받고, 다른 룸은 0건이다.
+
+        개수 단언이 핵심이다 — 언어별 publish 였다면 수신 채널이 1 이므로
+        `>= 1` 이나 "누군가 받았다" 로는 결함이 통과한다 (RL-004).
+        """
+        from sse_broadcast import BroadcastManager
+
+        mgr = BroadcastManager()
+        q_ko = await mgr.register_viewer("r1", "ko")
+        q_vi = await mgr.register_viewer("r1", "vi")
+        q_other = await mgr.register_viewer("r2", "ko")
+
+        payload = {"event": "control", "room_id": "r1", "primary_lang": "vi"}
+        await mgr.publish_control("r1", payload)
+
+        assert q_ko.qsize() == 1
+        assert q_vi.qsize() == 1
+        assert q_other.qsize() == 0
+        assert q_ko.get_nowait() == payload
+        assert q_vi.get_nowait() == payload
+
+    @pytest.mark.asyncio
+    async def test_two_viewers_on_one_channel_both_receive(self):
+        """같은 언어 채널의 모든 큐가 받는다 (채널 하나당 1건이 아니다)."""
+        from sse_broadcast import BroadcastManager
+
+        mgr = BroadcastManager()
+        q1 = await mgr.register_viewer("r1", "ko")
+        q2 = await mgr.register_viewer("r1", "ko")
+
+        await mgr.publish_control("r1", {"event": "control", "caption_scale": 1.2})
+
+        assert q1.qsize() == 1
+        assert q2.qsize() == 1
+
+    @pytest.mark.asyncio
+    async def test_publish_control_without_viewers_is_a_noop(self):
+        from sse_broadcast import BroadcastManager
+
+        mgr = BroadcastManager()
+        await mgr.publish_control("r1", {"event": "control"})
+
+    @pytest.mark.asyncio
+    async def test_saturated_queue_drops_the_oldest_and_keeps_control(self):
+        """포화 정책은 `publish` 와 **같다** — control 만 조용히 유실되지 않는다.
+
+        큐 주입부를 복사하면 두 정책이 갈라진다 (RL-001). 가장 오래된 1건을
+        버리고 새 프레임을 넣는 동작을 값으로 확인한다.
+        """
+        from sse_broadcast import BroadcastManager
+
+        mgr = BroadcastManager(queue_maxsize=2)
+        q = await mgr.register_viewer("r1", "ko")
+        await mgr.publish("r1", "ko", {"text": "1"})
+        await mgr.publish("r1", "ko", {"text": "2"})
+        assert q.qsize() == 2
+
+        control = {"event": "control", "caption_scale": 1.4}
+        await mgr.publish_control("r1", control)
+
+        assert q.qsize() == 2
+        assert q.get_nowait() == {"text": "2"}
+        assert q.get_nowait() == control
+
+
+class TestControlWireFormat:
+    """TC-076 — 와이어에서의 이벤트 이름은 허용 목록이 정한다."""
+
+    @staticmethod
+    def _repo():
+        return _StubRoomRepo(
+            {
+                "r1": {
+                    "id": "r1",
+                    "name": "A홀",
+                    "status": "active",
+                    "primary_output_lang": "ko",
+                    "output_langs": '["ko"]',
+                }
+            }
+        )
+
+    @staticmethod
+    async def _read_until(resp, needle: bytes, timeout: float = 1.5) -> str:
+        buf = b""
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + timeout
+        while needle not in buf and loop.time() < deadline:
+            try:
+                chunk = await asyncio.wait_for(resp.content.read(256), timeout=0.5)
+            except TimeoutError:
+                continue
+            if not chunk:
+                break
+            buf += chunk
+        return buf.decode("utf-8")
+
+    @pytest.mark.asyncio
+    async def test_control_payload_is_written_as_event_control(self):
+        """첫 줄이 `event: control`, 둘째 줄이 `data: {...}` 다."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from sse_broadcast import BroadcastManager, build_sse_app
+
+        mgr = BroadcastManager()
+        app = build_sse_app(broadcast_manager=mgr, room_repo=self._repo())
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/stream/r1?lang=ko")
+            assert resp.status == 200
+            await asyncio.sleep(0.05)
+
+            await mgr.publish_control(
+                "r1", {"event": "control", "room_id": "r1", "primary_lang": "vi"}
+            )
+            text = await self._read_until(resp, b"data: ")
+            resp.close()
+
+        assert "event: control\ndata: " in text, text
+        assert "event: message" not in text, text
+        data_line = text.split("event: control\ndata: ", 1)[1].split("\n\n", 1)[0]
+        assert json.loads(data_line)["primary_lang"] == "vi"
+
+    @pytest.mark.asyncio
+    async def test_a_caption_payload_cannot_name_its_own_event(self):
+        """허용 목록 가드 — 자막 payload 에 심은 `event` 는 승격되지 않는다.
+
+        이 단언이 없으면 화이트리스트를 지우고 `payload.get("event")` 를 그대로
+        써도 통과한다 (RL-004).
+        """
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from sse_broadcast import BroadcastManager, build_sse_app
+
+        mgr = BroadcastManager()
+        app = build_sse_app(broadcast_manager=mgr, room_repo=self._repo())
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/stream/r1?lang=ko")
+            assert resp.status == 200
+            await asyncio.sleep(0.05)
+
+            await mgr.publish(
+                "r1", "ko", {"event": "control", "text": "위조", "lang": "ko"}
+            )
+            text = await self._read_until(resp, b"data: ")
+            resp.close()
+
+        assert "event: message\ndata: " in text, text
+        assert "event: control" not in text, text
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_event_name_still_writes_as_message(self):
+        """허용 목록 밖 이름(`session_end` 위조 포함)도 message 로 나간다."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from sse_broadcast import BroadcastManager, build_sse_app
+
+        mgr = BroadcastManager()
+        app = build_sse_app(broadcast_manager=mgr, room_repo=self._repo())
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/stream/r1?lang=ko")
+            assert resp.status == 200
+            await asyncio.sleep(0.05)
+
+            await mgr.publish("r1", "ko", {"event": "session_end", "text": "끝"})
+            text = await self._read_until(resp, b"data: ")
+            resp.close()
+
+        assert "event: message\ndata: " in text, text
+        assert "event: session_end" not in text, text
+
+    @pytest.mark.asyncio
+    async def test_the_allow_list_bounds_even_the_control_path(self):
+        """허용 목록 자체의 가드 — control 경로로도 임의 이름을 낼 수 없다.
+
+        이 단언이 없으면 `_CONTROL_EVENT_NAMES` 검사를 지우고 선언된 이름을
+        그대로 써도 나머지 테스트가 전부 통과한다 (RL-004).
+        """
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from sse_broadcast import BroadcastManager, build_sse_app
+
+        mgr = BroadcastManager()
+        app = build_sse_app(broadcast_manager=mgr, room_repo=self._repo())
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/stream/r1?lang=ko")
+            assert resp.status == 200
+            await asyncio.sleep(0.05)
+
+            await mgr.publish_control("r1", {"event": "session_end", "x": 1})
+            text = await self._read_until(resp, b"data: ")
+            resp.close()
+
+        assert "event: message\ndata: " in text, text
+        assert "event: session_end" not in text, text
+
+
+class TestConnectTimeControlSnapshot:
+    """TC-077 — 접속 직후 스냅샷 1건 (상태가 있을 때만)."""
+
+    @staticmethod
+    def _app(mgr):
+        from sse_broadcast import build_sse_app
+
+        repo = _StubRoomRepo(
+            {
+                "r1": {
+                    "id": "r1",
+                    "name": "A홀",
+                    "status": "active",
+                    "primary_output_lang": "ko",
+                    "output_langs": '["ko"]',
+                }
+            }
+        )
+        return build_sse_app(broadcast_manager=mgr, room_repo=repo)
+
+    @pytest.mark.asyncio
+    async def test_snapshot_follows_the_connected_comment_and_matches_state(self):
+        """`: connected` 다음 프레임이 control 이고 값이 상태와 정확히 일치한다."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from sse_broadcast import BroadcastManager
+
+        mgr = BroadcastManager()
+        mgr.set_control("r1", primary_lang="vi", caption_scale=1.2)
+
+        async with TestClient(TestServer(self._app(mgr))) as client:
+            resp = await client.get("/stream/r1?lang=ko")
+            assert resp.status == 200
+            text = await TestControlWireFormat._read_until(resp, b"data: ")
+            resp.close()
+
+        assert text.startswith(": connected\n\n"), text
+        rest = text[len(": connected\n\n") :]
+        assert rest.startswith("event: control\ndata: "), rest
+        data_line = rest.split("data: ", 1)[1].split("\n\n", 1)[0]
+        frame = json.loads(data_line)
+        state = {
+            k: v for k, v in frame.items() if k not in ("event", "room_id", "timestamp")
+        }
+        assert state == {"primary_lang": "vi", "caption_scale": 1.2}
+
+    @pytest.mark.asyncio
+    async def test_a_room_without_control_state_gets_no_snapshot(self):
+        """상태가 없으면 control 프레임이 0건이다 — 기본값을 지어내지 않는다."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from sse_broadcast import BroadcastManager
+
+        mgr = BroadcastManager()
+        async with TestClient(TestServer(self._app(mgr))) as client:
+            resp = await client.get("/stream/r1?lang=ko")
+            assert resp.status == 200
+            await asyncio.sleep(0.05)
+            await mgr.publish("r1", "ko", {"text": "첫 자막", "lang": "ko"})
+            text = await TestControlWireFormat._read_until(resp, b"data: ")
+            resp.close()
+
+        assert "event: control" not in text, text
+        assert "event: message\ndata: " in text, text
+
+    @pytest.mark.asyncio
+    async def test_the_snapshot_precedes_caption_frames(self):
+        """스냅샷이 큐 루프 **전**이라 자막 프레임과 순서가 섞이지 않는다."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from sse_broadcast import BroadcastManager
+
+        mgr = BroadcastManager()
+        mgr.set_control("r1", primary_lang="ko")
+
+        async with TestClient(TestServer(self._app(mgr))) as client:
+            resp = await client.get("/stream/r1?lang=ko")
+            assert resp.status == 200
+            await asyncio.sleep(0.05)
+            await mgr.publish("r1", "ko", {"text": "첫 자막", "lang": "ko"})
+            text = await TestControlWireFormat._read_until(resp, "첫 자막".encode())
+            resp.close()
+
+        control_at = text.find("event: control")
+        message_at = text.find("event: message")
+        assert control_at != -1, text
+        assert message_at != -1, text
+        assert control_at < message_at, text
+
+
+class TestStageLangPinnedFlag:
+    """ISSUE-53 — `{{LANG_PINNED}}` 는 **서버만** 판정할 수 있다.
+
+    클라이언트는 `caption_lang` 이 `?lang=` 에서 왔는지 룸 기본값인지 구분할 수
+    없다 (`stage.html` 은 브라우저에서 쿼리를 다시 파싱하지 않는다). 그래서
+    "요청이 있었고 그 값이 채택되었다" 를 서버가 boolean 으로 실어 보낸다.
+    """
+
+    @staticmethod
+    def _app():
+        from sse_broadcast import BroadcastManager, build_sse_app
+
+        repo = _StubRoomRepo(
+            {
+                "r1": {
+                    "id": "r1",
+                    "name": "A홀",
+                    "status": "active",
+                    "primary_output_lang": "ko",
+                    "output_langs": '["ko"]',
+                    "stage_config": "{}",
+                }
+            }
+        )
+        return build_sse_app(broadcast_manager=BroadcastManager(), room_repo=repo)
+
+    async def _body(self, path: str) -> str:
+        from aiohttp.test_utils import TestClient, TestServer
+
+        async with TestClient(TestServer(self._app())) as client:
+            resp = await client.get(path)
+            assert resp.status == 200
+            return await resp.text()
+
+    @pytest.mark.asyncio
+    async def test_no_lang_query_renders_false(self):
+        body = await self._body("/stage/r1")
+        assert "lang_pinned: false" in body
+        assert "lang_pinned: true" not in body
+
+    @pytest.mark.asyncio
+    async def test_a_supported_lang_query_renders_true(self):
+        """?lang=vi 가 채택되면 pinned 다 — 그 클라이언트는 control 에 안 끌려간다."""
+        body = await self._body("/stage/r1?lang=vi")
+        assert "lang_pinned: true" in body
+        assert 'caption_lang: "vi"' in body
+
+    @pytest.mark.asyncio
+    async def test_the_room_default_spelled_out_still_pins(self):
+        """`?lang=ko` 는 룸 기본값과 같아도 **명시적 선택**이므로 pinned 다.
+
+        값만 비교해서 판정하면(`caption_lang != primary_lang`) 이 케이스가
+        false 로 새고, 청중이 일부러 고른 언어가 control 에 끌려간다.
+        """
+        body = await self._body("/stage/r1?lang=ko")
+        assert "lang_pinned: true" in body
+        assert 'caption_lang: "ko"' in body
+
+    @pytest.mark.asyncio
+    async def test_an_unsupported_lang_query_is_not_pinned(self):
+        """서버가 거부한 코드는 채택되지 않았으므로 pinned 가 아니다."""
+        body = await self._body("/stage/r1?lang=xx")
+        assert "lang_pinned: false" in body
+        assert 'caption_lang: "ko"' in body
+
+    @pytest.mark.asyncio
+    async def test_the_flag_is_a_json_literal_not_a_python_bool(self):
+        """RL-016/RL-020 — 스칼라도 `_json_for_script` 를 통과한다.
+
+        `True` / `False` 가 그대로 나가면 JS 가 파싱하지 못해 부트스트랩 전체가
+        죽는다 (자막 컬럼이 영원히 대기 상태로 남는다).
+        """
+        body = await self._body("/stage/r1?lang=vi")
+        assert "lang_pinned: True" not in body
+        assert "lang_pinned: False" not in body
+
+    @pytest.mark.asyncio
+    async def test_the_viewer_page_does_not_carry_the_flag(self):
+        """뷰어는 `?lang=` 을 읽지 않는다 — 미사용 플레이스홀더를 만들지 않는다."""
+        body = await self._body("/view/r1?lang=vi")
+        assert "lang_pinned" not in body
+        assert "LANG_PINNED" not in body

@@ -793,3 +793,313 @@ class TestViewerLiveRegion:
         )
         assert state["ended"] is True, state
         assert state["announced"] == "", doubled
+
+
+# ---------------------------------------------------------------------------
+# control 이벤트 (ISSUE-53, FR-085 / TC-081)
+# ---------------------------------------------------------------------------
+def _emit_control(page, **fields: Any) -> None:
+    """**named** control 이벤트. 일반 message 로 보내면 리스너를 등록하지 않은
+    클라이언트에서도 통과해 아무것도 증명하지 못한다."""
+    page.evaluate(
+        "(payload) => window.__emit('control', JSON.stringify(payload))", fields
+    )
+
+
+def _sse_urls(page) -> list[str]:
+    return page.evaluate("() => window.__sse.urls.slice()")
+
+
+def _dropdown(page) -> str:
+    return page.evaluate("() => document.getElementById('lang-select').value")
+
+
+class TestViewerControlLanguage:
+    """TC-081 — 구독과 **드롭다운 표시값**을 함께 단언한다 (RL-004).
+
+    구독만 보면 반쪽만 적용된 경우(채널은 바뀌었는데 UI 는 옛 언어)가 통과한다.
+    """
+
+    def test_an_untouched_dropdown_follows_the_control_language(
+        self, page, viewer_server
+    ):
+        _fake_eventsource(page)
+        page.goto(f"{viewer_server}/view/active-room", wait_until="load")
+
+        assert _sse_urls(page) == ["/stream/active-room?lang=ko"]
+        assert _dropdown(page) == "ko"
+
+        _emit_control(page, primary_lang="vi")
+        _settle(page, "() => window.__sse.urls.length === 2")
+
+        urls = _sse_urls(page)
+        assert len(urls) == 2, urls
+        assert urls[1] == "/stream/active-room?lang=vi", urls
+        assert _dropdown(page) == "vi", (
+            f"the subscription moved to vi but the dropdown still reads "
+            f"{_dropdown(page)!r} — the attendee would see Vietnamese captions "
+            "under a Korean label"
+        )
+
+    def test_an_explicit_choice_is_never_overridden(self, page, viewer_server):
+        """청중이 직접 고른 `en` 은 control 이 와도 그대로다 — 구독도 UI 도."""
+        _fake_eventsource(page)
+        page.goto(f"{viewer_server}/view/active-room", wait_until="load")
+
+        page.select_option("#lang-select", "en")
+        _settle(page, "() => window.__sse.urls.length === 2")
+        assert _sse_urls(page)[-1] == "/stream/active-room?lang=en"
+        assert _dropdown(page) == "en"
+
+        _emit_control(page, primary_lang="vi")
+        page.wait_for_timeout(400)
+
+        urls = _sse_urls(page)
+        assert len(urls) == 2, (
+            f"an attendee who chose their own language was dragged to another "
+            f"one mid-talk: {urls}"
+        )
+        assert urls[-1] == "/stream/active-room?lang=en", urls
+        assert _dropdown(page) == "en", _dropdown(page)
+
+    def test_the_lock_survives_a_return_to_the_room_default(self, page, viewer_server):
+        """`ko` 를 **직접** 고른 청중도 잠긴다 — 값이 같다고 잠금이 풀리지 않는다."""
+        _fake_eventsource(page)
+        page.goto(f"{viewer_server}/view/active-room", wait_until="load")
+
+        page.select_option("#lang-select", "en")
+        _settle(page, "() => window.__sse.urls.length === 2")
+        page.select_option("#lang-select", "ko")
+        _settle(page, "() => window.__sse.urls.length === 3")
+
+        _emit_control(page, primary_lang="vi")
+        page.wait_for_timeout(400)
+
+        assert len(_sse_urls(page)) == 3, _sse_urls(page)
+        assert _dropdown(page) == "ko"
+
+    def test_a_repeated_control_does_not_recreate_the_stream(self, page, viewer_server):
+        _fake_eventsource(page)
+        page.goto(f"{viewer_server}/view/active-room", wait_until="load")
+
+        _emit_control(page, primary_lang="vi")
+        _settle(page, "() => window.__sse.urls.length === 2")
+        _emit_control(page, primary_lang="vi")
+        _emit_control(page, primary_lang="vi")
+        page.wait_for_timeout(300)
+
+        assert len(_sse_urls(page)) == 2, _sse_urls(page)
+
+    def test_the_waiting_copy_and_live_region_follow_the_new_language(
+        self, page, viewer_server
+    ):
+        _fake_eventsource(page)
+        page.goto(f"{viewer_server}/view/active-room", wait_until="load")
+
+        _emit_message(page, "옛 채널 자막")
+        _settle(page, "() => document.querySelectorAll('.caption-line').length === 1")
+
+        _emit_control(page, primary_lang="vi")
+        page.wait_for_timeout(400)
+
+        state = page.evaluate(
+            """() => {
+              const empties = document.querySelectorAll('#caption-empty');
+              return {
+                lines: document.querySelectorAll('.caption-line').length,
+                empties: empties.length,
+                emptyText: empties.length ? empties[0].textContent : null,
+                announcer:
+                  document.getElementById('caption-announcer').textContent,
+                liveOwners: Array.from(document.querySelectorAll('[aria-live]'))
+                  .map(el => el.id).sort(),
+              };
+            }"""
+        )
+        assert state["lines"] == 0, state
+        assert state["empties"] == 1, state
+        assert state["emptyText"] == "Sắp bắt đầu", state
+        assert state["announcer"] == "Sắp bắt đầu", state
+        assert state["liveOwners"] == [
+            "caption-announcer",
+            "state-ended",
+            "state-waiting",
+        ], state
+
+    def test_captions_flow_again_on_the_new_channel(self, page, viewer_server):
+        """재구독 뒤에도 뷰어 상한(200)과 트리밍 방향이 그대로다."""
+        _fake_eventsource(page)
+        page.goto(f"{viewer_server}/view/active-room", wait_until="load")
+
+        _emit_message(page, "옛 채널 자막")
+        _settle(page, "() => document.querySelectorAll('.caption-line').length === 1")
+        _emit_control(page, primary_lang="vi")
+        _settle(page, "() => window.__sse.urls.length === 2")
+
+        page.evaluate(
+            """() => {
+              for (let i = 1; i <= 201; i++) {
+                window.__emit("message", JSON.stringify({text: "phụ đề " + i}));
+              }
+            }"""
+        )
+        _settle(
+            page,
+            """() => {
+              const els = document.querySelectorAll(".caption-line");
+              return els.length === 200 &&
+                     els[els.length - 1].textContent === "phụ đề 201";
+            }""",
+        )
+
+        lines = _lines(page)
+        assert (
+            len(lines) == 200
+        ), f"MAX_LINES drifted after a re-subscribe: {len(lines)}"
+        assert lines[0] == "phụ đề 2", lines[0]
+        assert lines[-1] == "phụ đề 201", lines[-1]
+        assert "옛 채널 자막" not in lines, "the old channel's line survived the switch"
+
+    def test_an_ended_session_does_not_resubscribe(self, page, viewer_server):
+        _fake_eventsource(page)
+        page.goto(f"{viewer_server}/view/active-room", wait_until="load")
+
+        page.evaluate("() => window.__emit('session_end', '{}')")
+        _settle(
+            page,
+            "() => document.getElementById('state-ended')"
+            ".classList.contains('active')",
+        )
+
+        _emit_control(page, primary_lang="vi")
+        page.wait_for_timeout(300)
+
+        assert _sse_urls(page) == ["/stream/active-room?lang=ko"]
+
+
+class TestViewerCaptionScaleRendersLarger:
+    @staticmethod
+    def _font_px(page) -> float:
+        return page.evaluate(
+            """() => {
+              const el = document.querySelector('.caption-line');
+              return el === null ? 0 : parseFloat(getComputedStyle(el).fontSize);
+            }"""
+        )
+
+    def test_the_scale_reaches_the_rendered_font_size(self, page, viewer_server):
+        _fake_eventsource(page)
+        page.goto(f"{viewer_server}/view/active-room", wait_until="load")
+
+        _emit_message(page, "크기 확인용 자막")
+        _settle(page, "() => document.querySelectorAll('.caption-line').length === 1")
+        before = self._font_px(page)
+        assert before > 0
+
+        _emit_control(page, caption_scale=1.4)
+        page.wait_for_timeout(200)
+        after = self._font_px(page)
+
+        assert after > before, f"{before} -> {after}"
+        assert abs(after - before * 1.4) < 0.6, f"{before * 1.4:.2f} vs {after:.2f}"
+
+    def test_an_explicit_language_choice_still_takes_the_scale(
+        self, page, viewer_server
+    ):
+        """잠긴 청중도 배율은 받는다 — 잠금은 **언어**에 대한 것이다."""
+        _fake_eventsource(page)
+        page.goto(f"{viewer_server}/view/active-room", wait_until="load")
+
+        page.select_option("#lang-select", "en")
+        _settle(page, "() => window.__sse.urls.length === 2")
+        _emit_message(page, "caption for sizing")
+        _settle(page, "() => document.querySelectorAll('.caption-line').length === 1")
+        before = self._font_px(page)
+
+        _emit_control(page, primary_lang="vi", caption_scale=1.4)
+        page.wait_for_timeout(300)
+
+        assert _dropdown(page) == "en"
+        assert len(_sse_urls(page)) == 2
+        assert self._font_px(page) > before
+
+
+class TestViewerScaleKeepsTheCreditRolling:
+    """UI 리뷰 회귀 — 배율 변경이 크레딧 롤을 꺼뜨리면 안 된다 (RL-018 계열).
+
+    `--caption-scale` 대입은 CSS 변수 한 줄로 보이지만, 화면에 쌓인 모든
+    `.caption-line` 의 높이를 동시에 바꾸는 레이아웃 쓰기다. 재측정 없이 쓰면
+    늘어난 높이가 그대로 `scrollHeight - scrollTop - clientHeight` 에 잡혀
+    slack(80px)을 넘기고, 그 뒤 `_lockLine()` 은 전부 "청중이 위로 스크롤했다"
+    로 오판한다. gap 은 자막이 쌓일수록 커지기만 하므로 되돌릴 계기가 없다.
+
+    수정 전 실측(390×844, 30줄, 1.0 → 1.6): gap 57px → 684px → 다섯 줄 뒤
+    1072px. 즉 배율을 올린 순간 청중의 화면이 영구히 멈췄다.
+    """
+
+    @staticmethod
+    def _gap(page) -> float:
+        return page.evaluate(
+            """() => {
+              const v = document.getElementById('viewer');
+              return v.scrollHeight - v.scrollTop - v.clientHeight;
+            }"""
+        )
+
+    def test_a_scale_up_does_not_latch_the_credit_roll_off(self, page, viewer_server):
+        _fake_eventsource(page)
+        page.set_viewport_size({"width": 390, "height": 844})
+        page.goto(f"{viewer_server}/view/active-room", wait_until="load")
+
+        for i in range(1, 31):
+            _emit_message(page, f"한국어 자막 라인 {i}")
+        _settle(page, "() => document.querySelectorAll('.caption-line').length === 30")
+        page.wait_for_timeout(300)
+        # 전제를 명시적으로 세운다: 청중은 바닥에 있다. (한 태스크에 30건을
+        # 몰아 넣는 픽스처는 rAF 스크롤이 한 번도 돌기 전에 gap 을 벌려 놓아,
+        # 세우지 않으면 이 테스트가 배율과 무관한 이유로 붉어진다.)
+        page.evaluate(
+            """() => { const v = document.getElementById('viewer');
+                       v.scrollTop = v.scrollHeight; }"""
+        )
+        # `#viewer` 는 `scroll-behavior: smooth` 라 스크롤이 애니메이션된다 —
+        # 정착을 기다린 뒤에 재야 한다. 80px 은 `isUserAtBottom()` 이 쓰는
+        # slack 그대로이며, 그 안이면 크레딧 롤은 계속 따라온다.
+        page.wait_for_timeout(700)
+        assert self._gap(page) <= 80, "precondition: the attendee is at the bottom"
+
+        # 자막은 한 줄도 오지 않았다 — 배율 통지 **하나만으로** 컬럼이 밀린다.
+        _emit_control(page, caption_scale=1.6)
+        page.wait_for_timeout(900)
+
+        gap = self._gap(page)
+        assert gap <= 80, (
+            "a caption_scale change alone pushed the credit roll off the "
+            f"bottom by {gap}px — every later _lockLine() then reads "
+            "'the attendee scrolled up' and the column never follows again "
+            "(measured ~650px before the fix, growing with every caption)"
+        )
+
+    def test_a_scrolled_up_attendee_is_not_yanked_to_the_bottom(
+        self, page, viewer_server
+    ):
+        """반대 방향 — 지난 자막을 읽는 청중을 배율 통지가 끌어내리지 않는다."""
+        _fake_eventsource(page)
+        page.set_viewport_size({"width": 390, "height": 844})
+        page.goto(f"{viewer_server}/view/active-room", wait_until="load")
+
+        for i in range(1, 31):
+            _emit_message(page, f"한국어 자막 라인 {i}")
+        _settle(page, "() => document.querySelectorAll('.caption-line').length === 30")
+        page.wait_for_timeout(300)
+        page.evaluate("() => { document.getElementById('viewer').scrollTop = 0; }")
+        page.wait_for_timeout(700)
+
+        _emit_control(page, caption_scale=1.6)
+        page.wait_for_timeout(900)
+
+        top = page.evaluate("() => document.getElementById('viewer').scrollTop")
+        assert top == 0, (
+            "a caption_scale notice yanked a scrolled-up attendee back to the "
+            f"bottom (scrollTop={top})"
+        )

@@ -17,6 +17,15 @@
          안전망이다. 폭 문자열을 그대로 쓰지 않는 이유: 템플릿이 두 비율의
          값을 모두 갖고 있으면 응답 본문으로 룸 설정을 구분할 수 없다. */
       --caption-width: calc(100% / 4);
+      /* 오퍼레이터가 행사 중에 미는 자막 배율 (ISSUE-53). SSE `control`
+         이벤트가 프로그램적으로 덮어쓴다 — 이 페이지에는 조작 UI 가 없다
+         (NFR-025/NFR-030). 허용 범위는 0.8–1.6.
+         **하한이 1.0 미만이어도 되는 이유**: `.caption-line` 의 알파는 애초에
+         large-text 완화(3:1)가 아니라 **일반 텍스트 4.5:1** 기준으로 정해졌다
+         (ISSUE-40/45 — `#0b0b0c` 위 0.45 = 4.52:1). 대비 판정은 글자 크기와
+         무관하므로 축소가 AA 를 깨지 않는다. 이 문단이 없으면 다음 사람이
+         "축소하면 대비가 위험하지 않나" 로 되돌린다. */
+      --caption-scale: 1;
       --canvas: #0b0b0c;
       --hairline: rgba(255, 255, 255, 0.07);
     }
@@ -399,7 +408,9 @@
     }
     /* 좁은 컬럼 타이포 (ux_spec § Stage Composite View). */
     .caption-line {
-      font-size: clamp(20px, 1.4vw + 8px, 32px);
+      /* 배율은 **자막 라인에만** 건다. `.caption-empty` 같은 안내 문구까지
+         따라 커지면 오퍼레이터가 조절하려던 것과 다른 것이 움직인다. */
+      font-size: calc(clamp(20px, 1.4vw + 8px, 32px) * var(--caption-scale));
       font-weight: 500;
       line-height: 1.45;
       letter-spacing: -0.01em;
@@ -488,6 +499,11 @@
       room_id: {{ROOM_ID}},
       output_langs: {{OUTPUT_LANGS_JSON}},
       caption_lang: {{PRIMARY_LANG}},
+      // 서버가 `?lang=` 을 받았고 그 값을 채택했는가 (ISSUE-53). 브라우저는
+      // 이것을 스스로 알 수 없다 — 쿼리를 여기서 다시 파싱하면 서버가 거부한
+      // 코드가 되살아난다. true 면 이 화면은 자기 언어를 명시적으로 고른
+      // 것이므로 룸 단위 `control` 이 언어를 바꾸지 못한다.
+      lang_pinned: {{LANG_PINNED}},
       initial_state: {{INITIAL_STATE}}, // 'waiting' | 'active' | 'closed'
       stage: {{STAGE_CONFIG_JSON}},
     };
@@ -535,6 +551,11 @@
     // -----------------------------------------------------------------------
     const MAX_LINES = 60; // 좁은 컬럼 DOM 상한 (viewer 는 200)
     const MAX_REVEAL_PER_FRAME = 24; // 큰 청크가 한 프레임을 통째로 잡지 않도록
+    // 서버(`websocket_handler.CAPTION_SCALE_MIN/MAX`)와 같은 범위. 서버가 이미
+    // 검증하지만 클라이언트도 자기 범위로 판정한다 — 어떤 이유로든 범위 밖
+    // 값이 도달했을 때 레이아웃이 깨지지 않아야 한다.
+    const CAPTION_SCALE_MIN = 0.8;
+    const CAPTION_SCALE_MAX = 1.6;
     const WAITING_MSG = {
       ko: "잠시 후 시작됩니다",
       en: "Starting shortly",
@@ -551,6 +572,10 @@
     let connError = null;
 
     let es = null;
+    // 지금 구독 중인 언어. `CONFIG.caption_lang` 을 가변 상태로 재활용하지
+    // 않는다 — 부트스트랩 값은 "서버가 무엇을 줬는가" 의 기록으로 남아야
+    // `lang_pinned` 판정과 디버깅의 근거가 된다 (ISSUE-53).
+    let currentLang = CONFIG.caption_lang;
     let captionState = "waiting"; // 'waiting' | 'active' | 'ended'
     // 종료는 최종 상태다. currentLine 만 비우면 나머지 진입점(message)이 살아
     // 있어서, 닫힌 소켓에서 늦게 도착한 프레임 하나가 종료된 컬럼을 되살린다.
@@ -968,7 +993,7 @@
       // 시작하거나 세션이 끝나면 비운다. 자막 **텍스트**를 쓰는 경로는 여전히
       // _lockLine() 하나뿐이다 (RL-019). 종료 문구는 #caption-ended 가
       // role="status" 로 직접 알리므로 여기서 되풀이하지 않는다 — 이중 낭독이 된다.
-      announce(name === "waiting" ? waitingText(CONFIG.caption_lang) : "");
+      announce(name === "waiting" ? waitingText(currentLang) : "");
     }
 
     function applyWaitingText(lang) {
@@ -976,12 +1001,86 @@
       if (empty) empty.textContent = waitingText(lang);
     }
 
-    // 자막 언어는 서버가 ?lang= 을 검증해 내려준 CONFIG.caption_lang 으로
-    // 고정한다. 브라우저에서 쿼리를 다시 파싱하면 서버가 거부한 코드가
-    // 되살아난다 (무대 화면에는 언어 전환 UI 도 없다 — NFR-025).
-    function connect() {
+    // 자막 배율 적용 (ISSUE-53). SSE 로 값만 도착하고 **프로그램적으로만**
+    // 반영된다 — 무대 화면에는 조작 표면이 0개다 (NFR-025/NFR-030).
+    function applyCaptionScale(value) {
+      // 비수치는 클램프가 아니라 무시한다: Number("크게") 는 NaN 이고, NaN 을
+      // 클램프하면 NaN 이 CSS 로 들어가 규칙 전체가 무효가 된다.
+      if (typeof value !== "number" || !isFinite(value)) return;
+      const clamped = Math.min(CAPTION_SCALE_MAX, Math.max(CAPTION_SCALE_MIN, value));
+      const root = document.documentElement;
+      const next = String(clamped);
+      if (root.style.getPropertyValue("--caption-scale") === next) return;
+      root.style.setProperty("--caption-scale", next);
+      // 배율은 쌓여 있는 모든 라인의 높이를 바꾸므로 크레딧 롤의 바닥 위치가
+      // 통째로 움직인다. 무대에는 잴 사용자 스크롤 상태가 없으므로
+      // (test_no_user_scroll_override_controls) 조건 없이 다시 바닥에 붙인다 —
+      // 다음 자막이 올 때까지 최근 줄이 화면 밖에 머무르지 않게 한다.
+      _scrollToBottom();
+    }
+
+    function closeStream() {
+      if (!es) return;
+      try { es.close(); } catch (e) { /* noop */ }
+      es = null;
+    }
+
+    // 언어 재구독. 순서가 계약이다 (ISSUE-53 Implementation Notes):
+    //   ② 스크롤 추종 측정 — 무대에는 조작자가 없어 잴 사용자 상태가 없다.
+    //      viewer.html 의 사용자 스크롤 감지 분기를 이식하지 않는 이유이며,
+    //      test_no_user_scroll_override_controls 가 그것을 못 박고 있다.
+    //   ③ 타자기를 먼저 멈춘다 — ⑤ 보다 앞서야 rAF 콜백이 방금 지운 노드에
+    //      쓰지 않는다.
+    //   ④ 핸들 하나가 아니라 상태 튜플 전체를 초기화한다 (RL-022).
+    //   ⑤ replaceChildren() 으로 스택을 비우고 **새 언어**의 대기 문구를 만든다.
+    //   ⑥⑦ 옛 스트림을 닫고 새 스트림을 연다 — 그 순서는 아래 구독 함수가 쥔다.
+    function resubscribe(next) {
+      _twStop();
+      currentLine = null;
+      twTarget = "";
+      twShown = 0;
+      twFinalize = false;
+      currentLang = next;
+      if (container) {
+        container.replaceChildren();
+        const empty = document.createElement("div");
+        empty.id = "caption-empty";
+        empty.className = "caption-empty";
+        empty.textContent = waitingText(next);
+        container.appendChild(empty);
+      }
+      // announce() 를 여기서 부르지 않는다 — 대기 문구 낭독은 setCaptionState()
+      // 가 이미 소유하고 있고, 쓰기 경로가 둘이 되면 RL-019 로 되돌아간다.
+      setCaptionState("waiting");
+      connect(next);
+    }
+
+    // 룸 기본 언어가 바뀌었다는 통지. **명시적으로 언어를 고른 화면은 절대
+    // 끌려가지 않는다** — 그것이 이 규칙의 존재 이유다.
+    function applyPrimaryLang(next) {
+      if (CONFIG.lang_pinned) return; // ?lang= 을 서버가 채택한 화면
+      if (typeof next !== "string" || !next) return;
+      if (next === currentLang) return; // 중복 통지는 무동작 (자막이 안 끊긴다)
+      const langs = Array.isArray(CONFIG.output_langs) ? CONFIG.output_langs : [];
+      if (!langs.includes(next)) return; // 서버가 막지만 여기서도 판정한다
+      resubscribe(next);
+    }
+
+    function handleControl(payload) {
+      if (sessionEnded) return; // 끝난 세션은 어떤 통지로도 되살아나지 않는다
+      if (!payload) return;
+      applyCaptionScale(payload.caption_scale);
+      applyPrimaryLang(payload.primary_lang);
+    }
+
+    // 초기 구독 언어는 서버가 ?lang= 을 검증해 내려준 CONFIG.caption_lang 이다.
+    // 브라우저에서 쿼리를 다시 파싱하면 서버가 거부한 코드가 되살아난다
+    // (무대 화면에는 언어 전환 UI 도 없다 — NFR-025). 그 뒤의 구독 변경은
+    // 오직 `control` 이벤트가 정한다.
+    function connect(lang) {
+      closeStream(); // 두 스트림이 한 컬럼에 섞이지 않도록 **먼저** 닫는다
       const url = "/stream/" + encodeURIComponent(CONFIG.room_id) +
-                  "?lang=" + encodeURIComponent(CONFIG.caption_lang);
+                  "?lang=" + encodeURIComponent(lang);
       try {
         es = new EventSource(url);
       } catch (e) {
@@ -1011,15 +1110,25 @@
         }
       });
 
+      // 룸 단위 프레젠테이션 상태 (ISSUE-53). 자막과 **별도 리스너**다 —
+      // message 안에서 분기하면 SSE named event 를 쓰는 의미가 없고 자막
+      // 경로에 조건문이 하나 늘어난다.
+      es.addEventListener("control", function (ev) {
+        let payload = null;
+        try {
+          payload = JSON.parse(ev.data);
+        } catch (e) {
+          return; // 깨진 프레임은 무시 (RL-006)
+        }
+        handleControl(payload);
+      });
+
       es.addEventListener("session_end", function () {
         sessionEnded = true;
         _twStop();
         currentLine = null;
         setCaptionState("ended");
-        if (es) {
-          try { es.close(); } catch (e) { /* noop */ }
-          es = null;
-        }
+        closeStream();
       });
 
       // EventSource 는 스스로 재연결한다 — 일시적 힌트만 띄운다.
@@ -1117,7 +1226,7 @@
         setCaptionState("ended");
       } else {
         setCaptionState("waiting");
-        connect();
+        connect(CONFIG.caption_lang);
       }
     });
   </script>
