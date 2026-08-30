@@ -11,6 +11,10 @@ ISSUE-47 — `components/webrtc.html` 무대 화면 열기 컨트롤 정적 검�
      열린 창까지 차단으로 오판한다. 이건 e2e 로도 잡히지만 원인이 한 단어라
      정적으로도 못박아 둔다.
   3. announcer 단일성 — 페이지당 aria-live 소유자를 늘리지 않는다.
+
+ISSUE-49 가 같은 파일의 **웰컴/대기 화면** 대비를 여기에 합류시켰다. 대비 단언을
+한 집에 모아 두는 편이 낫다 — 흩어지면 backdrop 상수가 갈라지고, 갈라진 상수가
+RL-018 을 세 번 물리게 한 원인이다.
 """
 
 from __future__ import annotations
@@ -22,7 +26,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tests.wcag import _contrast_ratio, _hex_rgb, _rule_block, _rule_hex
+from tests.wcag import (
+    _contrast_ratio,
+    _hex_rgb,
+    _relative_luminance,
+    _rule_block,
+    _rule_hex,
+    _rule_rgba,
+)
 
 if "streamlit" not in sys.modules:
     sys.modules["streamlit"] = MagicMock()
@@ -129,6 +140,176 @@ class TestStageLaunchContrast:
             f".stage-launch-button:hover text contrast is {ratio:.2f}:1 against "
             f"{bg} — WCAG AA needs 4.5:1"
         )
+
+
+# ---------------------------------------------------------------------------
+# ISSUE-49 — 웰컴/대기 화면
+# ---------------------------------------------------------------------------
+# 이 화면의 **텍스트** 색 규칙 전부. 두 규칙이 일부러 빠져 있다:
+#   - `.welcome-state .icon` 은 SVG 를 칠하는 비텍스트 색이라 1.4.3 이 아니라
+#     1.4.11 소관이고, 이 이슈의 Scope Out 이다.
+#   - `.qr-code-caption` 은 `.qr-code-container { background: #ffffff }` 흰 카드
+#     위에 래스터라이즈된다 — 아래 두 backdrop 중 어느 쪽도 그 텍스트의
+#     backdrop 이 아니므로 같은 표에 넣으면 계산 자체가 틀린다. 별도 후속.
+_WELCOME_TEXT_RULES = (
+    ".welcome-state",
+    ".welcome-state h1, .welcome-title",
+    ".welcome-room",
+    ".welcome-state p, .welcome-desc",
+    ".welcome-state .hint",
+    ".welcome-rules",
+)
+
+# 위계 단언용 — AC5 가 요구하는 서열의 세 단계.
+_WELCOME_TITLE_RULE = ".welcome-state h1, .welcome-title"
+_WELCOME_DESC_RULE = ".welcome-state p, .welcome-desc"
+_WELCOME_SUPPORT_RULES = (".welcome-state .hint", ".welcome-rules")
+
+_ALPHA_WHITE_COLOUR = re.compile(
+    r"(?<![-\w])color:\s*rgba\(\s*255\s*,\s*255\s*,\s*255\s*,"
+)
+
+# `:fullscreen` / `:-webkit-full-screen` 로 시작하는 자손 규칙 전체.
+# 선택자와 본문을 따로 잡아 "웰컴 선택자에 color 를 다시 선언하는가" 를 본다.
+_FULLSCREEN_RULE = re.compile(
+    r"(?::fullscreen|:-webkit-full-screen)([^{}]*)\{([^{}]*)\}"
+)
+
+
+def _welcome_text_colour(css: str, selector: str) -> tuple[float, float, float, float]:
+    """웰컴 텍스트 규칙의 `color` 를 RGBA 4-튜플로 읽는다.
+
+    hex 와 rgba 를 **둘 다** 읽는 것이 핵심이다. hex 만 읽으면 `.hint` 를
+    `rgba(255,255,255,0.4)` 로 되돌린 변이가 "선언이 없다" 로 죽어서 정작
+    문제인 `3.80:1` 이라는 수치를 한 번도 말하지 못한다 — 실패 메시지가 값을
+    말하지 않으면 다음 사람은 값을 다시 눈대중한다 (RL-004 / RL-018).
+    """
+    block = _rule_block(css, selector)
+    if re.search(r"(?<![-\w])color:\s*#", block):
+        return (*_rule_hex(css, selector, "color"), 1.0)
+    return _rule_rgba(css, selector)
+
+
+class TestWelcomeStateContrast:
+    """RL-018 (Frequency 3) — 웰컴 화면 텍스트도 두 backdrop 모두에서 AA.
+
+    backdrop 상수 자체는 위 `TestStageLaunchContrast` 의
+    `test_body_backdrop_is_the_expected_opaque_colour` /
+    `test_fullscreen_backdrop_is_the_expected_opaque_colour` 가 파일의 실제
+    `background` 선언과 대조해 고정한다. 여기서 상수를 다시 정의하지 않는
+    이유가 그것이다 — 두 벌이 되는 순간 한쪽이 검증되지 않은 가정으로 되돌아간다.
+    """
+
+    @pytest.mark.parametrize("selector", _WELCOME_TEXT_RULES)
+    @pytest.mark.parametrize("backdrop", _ALL_BACKDROPS)
+    def test_welcome_text_meets_aa_against_every_backdrop(
+        self, webrtc_html, selector, backdrop
+    ):
+        """AC1 — large-text(3:1) 완화를 근거로 통과시키지 않는다.
+
+        `.welcome-title` 은 `clamp(26px, 3.4vw, 34px)` 라 큰 텍스트로 **분류될
+        수는** 있지만, `clamp()` 의 하한이 실제 뷰포트 폭에서 임계 아래로
+        내려갈 수 있다는 걸 ISSUE-45 가 확인했다. 완화가 조용히 적용되지 않는
+        경우가 있는 값에 완화를 근거로 삼지 않는다 — 전부 4.5 로 잰다.
+        """
+        colour = _welcome_text_colour(webrtc_html, selector)
+        ratio = _contrast_ratio(colour, _hex_rgb(backdrop))
+        assert ratio >= 4.5, (
+            f"{selector} contrast is {ratio:.2f}:1 against {backdrop} "
+            f"(declared colour {colour}) — WCAG AA 1.4.3 needs 4.5:1"
+        )
+
+    @pytest.mark.parametrize("selector", _WELCOME_TEXT_RULES)
+    def test_welcome_text_declares_an_opaque_hex_colour(self, webrtc_html, selector):
+        """AC4 — 전부 `#rrggbb`.
+
+        불투명이면 backdrop 이 어두워질수록 대비가 **올라간다**. 알파는 반대로
+        내려간다(0.45 → `#0b0b0c` 4.52 / `#000` 4.43). 두 backdrop 이 갈라지지
+        않는 성질을 값의 형태로 못박는다.
+        """
+        block = _rule_block(webrtc_html, selector)
+        match = re.search(r"(?<![-\w])color:\s*([^;\n]+)", block)
+        assert match is not None, f"{selector} declares no color at all"
+        declared = match.group(1).strip()
+        assert re.fullmatch(r"#[0-9a-fA-F]{6}", declared), (
+            f"{selector} declares `color: {declared}` — the welcome block must "
+            "use opaque #rrggbb so the two backdrops cannot diverge"
+        )
+
+    def test_no_alpha_white_text_colour_remains_in_the_welcome_block(self, webrtc_html):
+        """AC4 — `rgba(255, 255, 255, α)` 텍스트 색이 정확히 0건.
+
+        `rgba(0, 0, 0, α)` 는 일부러 걸리지 않는다: `.qr-code-caption` 은 흰
+        카드 위에 있어 backdrop 이 다르고 이 이슈의 Scope Out 이다.
+        """
+        offenders = {
+            selector: _ALPHA_WHITE_COLOUR.findall(_rule_block(webrtc_html, selector))
+            for selector in _WELCOME_TEXT_RULES
+        }
+        total = sum(len(hits) for hits in offenders.values())
+        assert total == 0, (
+            f"{total} alpha-white text colour(s) remain in the welcome block: "
+            f"{[s for s, hits in offenders.items() if hits]}"
+        )
+
+    def test_fullscreen_rules_do_not_re_declare_welcome_text_colour(self, webrtc_html):
+        """AC — backdrop 분기는 되살아나지 못한다.
+
+        원래 `#viewer:fullscreen .welcome-state { color: rgba(255,255,255,0.8) }`
+        가 있었다. 그건 알파가 더 어두운 backdrop 에서 잃은 대비를 되메우려는
+        보정이었고, 불투명 hex 로 바꾼 지금은 되메울 손실 자체가 없다. 분기가
+        다시 생기면 "한 값이 두 backdrop 을 모두 커버한다" 는 성질이 조용히
+        무너지므로, 주석이 아니라 검사된 사실로 둔다 (RL-018 Prevention).
+        """
+        # 주석은 걷어내고 **선언만** 본다. 지운 규칙을 설명하려면 그 규칙을
+        # 인용할 수밖에 없는데, 인용문에 걸리면 다음 사람은 가드를 고치는 대신
+        # 설명을 지운다 (`test_no_pipeline_call_added_to_the_launch_path` 와
+        # 같은 이유). 주석은 아무것도 칠하지 않으므로 스캔 대상이 아니다.
+        rules = _FULLSCREEN_RULE.findall(
+            re.sub(r"/\*.*?\*/", "", webrtc_html, flags=re.S)
+        )
+        # 양성 대조군 — 스캐너가 실제로 전체화면 블록을 보고 있음을 먼저 증명한다.
+        # 이게 없으면 정규식이 깨져 0건이 되어도 아래 단언이 조용히 통과한다.
+        assert any(".caption-container" in sel for sel, _ in rules), (
+            f"the fullscreen rule scanner found {len(rules)} rule(s) but none for "
+            ".caption-container — the pattern broke, so the guard below is vacuous"
+        )
+        for selector, body in rules:
+            if "welcome" not in selector:
+                continue
+            assert not re.search(r"(?<![-\w])color:", body), (
+                f"a fullscreen rule re-declares text colour for `{selector.strip()}`: "
+                f"{{{body.strip()}}} — one opaque value must serve both backdrops"
+            )
+
+    def test_welcome_brightness_hierarchy_is_strictly_descending(self, webrtc_html):
+        """AC5 — 제목 > 설명 > 보조 텍스트의 밝기 서열이 유지된다.
+
+        대비만 올리면 전부 흰색으로 수렴해 화면의 위계가 사라진다. 접근성
+        보정이 디자인을 평평하게 만들지 않았다는 것도 수치로 고정한다.
+        """
+        luminance = {
+            selector: _relative_luminance(
+                _welcome_text_colour(webrtc_html, selector)[:3]
+            )
+            for selector in (
+                _WELCOME_TITLE_RULE,
+                _WELCOME_DESC_RULE,
+                *_WELCOME_SUPPORT_RULES,
+            )
+        }
+        title = luminance[_WELCOME_TITLE_RULE]
+        desc = luminance[_WELCOME_DESC_RULE]
+        assert title > desc, (
+            f"the title ({title:.4f}) is not brighter than the description "
+            f"({desc:.4f}) — the welcome hierarchy inverted"
+        )
+        for selector in _WELCOME_SUPPORT_RULES:
+            support = luminance[selector]
+            assert desc > support, (
+                f"the description ({desc:.4f}) is not brighter than {selector} "
+                f"({support:.4f}) — supporting text must stay subordinate"
+            )
 
 
 class TestPopupOpenContract:

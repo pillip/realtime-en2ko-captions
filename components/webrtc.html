@@ -424,15 +424,34 @@
     #viewer:fullscreen { background: #000; height: 100vh !important; max-height: 100vh !important; padding: 20px; }
     #viewer:fullscreen .caption-container { max-width: 100%; padding: 20px 56px 100px; }
     #viewer:fullscreen .fs-font-controls { display: flex; flex-direction: column; }
-    #viewer:fullscreen .welcome-state { color: rgba(255, 255, 255, 0.8); }
+    /* ISSUE-49: `#viewer:fullscreen .welcome-state { color: ... }` 를 지웠다.
+       그건 알파 텍스트가 더 어두운 backdrop 에서 잃는 대비를 되메우려는
+       보정이었다. 웰컴 텍스트가 불투명 hex 가 된 지금은 되메울 손실이 없다 —
+       합성이 없으므로 #000 쪽 대비가 오히려 올라간다. 분기를 되살리면 값
+       하나가 두 backdrop 을 모두 커버한다는 성질이 깨진다. */
     #viewer:-webkit-full-screen { background: #000; height: 100vh !important; max-height: 100vh !important; padding: 20px; }
     #viewer:-webkit-full-screen .caption-container { max-width: 100%; padding: 20px 56px 100px; }
     #viewer:-webkit-full-screen .fs-font-controls { display: flex; flex-direction: column; }
 
-    /* Welcome / idle screen */
+    /* Welcome / idle screen — ISSUE-49: 텍스트 색은 전부 **불투명 hex** 다.
+       이 화면은 두 backdrop 위에 래스터라이즈된다: body(#0b0b0c) 와
+       전체화면의 #viewer(#000). 알파 텍스트는 backdrop 이 어두워질수록 대비가
+       **내려가서**(0.45 → 4.52:1 / 4.43:1) 전체화면에서만 조용히 AA 를
+       놓쳤다. 불투명이면 합성이 없어 더 어두운 쪽에서 대비가 올라가므로
+       한 값이 두 backdrop 을 모두 커버한다.
+
+       눈대중이 아니라 실측값이다 (RL-018) — 순서대로 #0b0b0c / #000:
+         제목 #ffffff  19.67:1 / 21.00:1
+         본문 #c8c8d2  11.85:1 / 12.65:1
+         보조 #a8a8b3   8.35:1 /  8.92:1
+       보조 텍스트의 #a8a8b3 은 같은 파일 `.stage-launch-hint`(ISSUE-47)와
+       같은 값이다 — supporting-text 단계를 하나로 유지한다. 밝기 서열
+       (제목 > 본문 > 보조)은 tests/test_webrtc_stage_launch.py 가, 실제로
+       칠해지는 값은 tests/e2e/test_operator_welcome_contrast_e2e.py 가
+       두 backdrop 모두에서 다시 계산해 검증한다. */
     .welcome-state {
       text-align: center;
-      color: rgba(255, 255, 255, 0.7);
+      color: #c8c8d2;
       max-width: 560px;
       margin: 0 auto;
       padding: 40px 20px;
@@ -455,18 +474,18 @@
     .welcome-room {
       font-size: 14px;
       letter-spacing: 0.03em;
-      color: rgba(255, 255, 255, 0.45);
+      color: #a8a8b3;
       margin-bottom: 24px;
     }
     .welcome-state p, .welcome-desc {
       font-size: 16px;
-      color: rgba(255, 255, 255, 0.5);
+      color: #c8c8d2;
       margin-bottom: 28px;
       line-height: 1.6;
     }
     .welcome-state .hint {
       font-size: 13px;
-      color: rgba(255, 255, 255, 0.4);
+      color: #a8a8b3;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -475,7 +494,7 @@
     .welcome-rules {
       margin-top: 18px;
       font-size: 13px;
-      color: rgba(255, 255, 255, 0.4);
+      color: #a8a8b3;
       line-height: 1.7;
     }
 
