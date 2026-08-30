@@ -1871,3 +1871,225 @@ RL-016 / RL-020 이 예측한 지점. ISSUE-47 은 악화시키지 않는다 —
   한꺼번에 없애고 ~400줄을 삭제하지만, 이슈의 Implementation Notes / TC-068~070 이
   컴포넌트 + `window.open` + 폴백을 명시하므로 **일방적으로 변경하지 않고 후속
   이슈로 제안**한다.
+
+---
+
+# PR #143 — ISSUE-48 오퍼레이터 부트스트랩 script-context 이스케이프 (code review)
+
+리뷰 커밋 `a016061` + 리뷰 수정 1건. 전용 워크트리 `.worktrees/review-ISSUE-48`
+(detached, 구현자 워크트리와 분리). 구현자 요약을 신뢰하지 않고 전 항목을 재측정했다.
+
+## Code Review
+
+### R-1 (Medium, **이번 PR 에서 수정**) — "시끄럽게 실패한다" 는 설계가 실제로는 조용히 실패한다
+`render_component_html` 은 관대한 `.get` 대신 **엄격 인덱싱**(`values[m.group(1)]`)
+을 택했고, 그 근거를 docstring 과 `test_unknown_placeholder_fails_loudly` 에
+명시한다 — "오타 난 플레이스홀더는 페이지로 새는 대신 `KeyError` 로 죽고,
+`app.py` 의 `try/except` 가 일반 문구로 바꿔 준다 (RL-006)".
+
+전제의 앞쪽 절반은 참이다. 뒤쪽 절반이 거짓이었다. `app.py:491` 의 핸들러는
+
+```python
+    except Exception:
+        st.error("시스템을 로드할 수 없습니다.")
+```
+
+로 예외를 **흔적 없이** 버린다. 같은 파일의 다른 모든 스왈로우는 서버 로그를 남긴다
+— `app.py:130` `print(f"[Sidebar] …: {e!r}")`, `app.py:415` `[QR]`,
+`app.py:438` `[Stage]`. `sse_broadcast.py:516` 도 `[Stage] room lookup failed` 로
+같은 규약을 따른다. BOOT 렌더 경로만 예외였다.
+
+결과적으로 `KeyError` 는 발생하되 **아무도 듣지 못한다.** 게다가 이 핸들러는
+템플릿 파일 누락, 직렬화 불가 payload, 플레이스홀더 오타를 전부 같은 한 문장으로
+접어 버려, 행사 중 오퍼레이터 화면이 죽었을 때 셋을 구분할 단서가 남지 않는다.
+`try/except` 자체는 `72368f1` 부터 있던 선행 결함이지만, **이 PR 이 그것을
+안전장치로 지목하면서 비로소 하중을 받게 됐다.**
+
+수정: 파일의 기존 규약과 동일한 한 줄을 추가했다 (클라이언트 노출 문구는 불변,
+RL-006 유지).
+
+```python
+    except Exception as e:
+        print(f"[Bootstrap] 컴포넌트 렌더 실패: {e!r}")
+        st.error("시스템을 로드할 수 없습니다.")
+```
+
+### R-2 (Low, 미해결 — 후속 판단) — 파일 전체에 대한 문자열 부재 단언
+`test_app_no_longer_dumps_json_into_the_template` 은 `app.py` **전체**에 대해
+`"json.dumps" not in source` 를, `test_app_drops_the_now_unused_json_import` 는
+`"\nimport json\n" not in source` 를 단언한다. 실제 성질("템플릿 문자열에 맨
+`json.dumps` 를 꽂지 않는다")보다 넓다. 훗날 `app.py` 가 템플릿과 무관한 이유로
+`json.dumps` 를 쓰면 이 테스트가 오해를 부르는 메시지로 깨진다. 지금은 참이고
+해가 없어 존치했다 — 좁히는 편집이 CI 사이클을 한 번 더 돌려 ISSUE-49 를 늦춘다.
+
+### R-3 (Low, 미해결 — 후속 이슈 후보) — 치환 실패 정책이 렌더러마다 다르다
+세 렌더러가 같은 `PLACEHOLDER_RE` 를 공유하지만 미매핑 플레이스홀더 정책이 갈린다.
+
+| 렌더러 | 형태 | 미매핑 시 |
+|---|---|---|
+| `sse_broadcast._render_viewer_html:389` | `values[…]` | `KeyError` (엄격) |
+| `operator_ui.render_component_html` (신규) | `values[…]` | `KeyError` (엄격) |
+| `sse_broadcast._render_stage_html:494` | `values.get(…, m.group(0))` | 리터럴 `{{FOO}}` 방출 (관대) |
+
+무대 경로에서 플레이스홀더가 하나라도 누락되면 `<script>` 안에 리터럴
+`{{FOO}}` 가 남아 **SyntaxError 로 부트스트랩이 통째로 죽는다** — RL-020 이
+기록한 자폭 형태와 같고, 예외조차 없어 더 조용하다. 이 PR 이 만든 결함이 아니고
+(`72368f1` 선행), 고치려면 diff 가 `sse_broadcast` 무대 렌더러로 번져
+ISSUE-49 대기를 늘린다. 후속 이슈로 분리 권고.
+
+### R-4 (정보) — AC 5 유니크니스 테스트의 회피면은 구현자 우려보다 좁다
+`_SUBSTITUTION_RE = re.compile(r'\.replace\(\s*"<"')` 는 큰따옴표 형태만 잡는다.
+구현자가 스스로 약점으로 신고했다. 실측 판단:
+
+- **작은따옴표 회피는 닫혀 있다.** `ruff.toml:77` 이 `quote-style = "double"`,
+  CLAUDE.md §6 이 `black` 을 지정한다. `.replace('<'` 는 커밋 전 포매터가
+  큰따옴표로 되돌린다.
+- **`str.translate` / `maketrans` 회피는 열려 있다.** 다만 저장소 전체를 스캔한
+  결과 그 형태는 프로덕션에 0건이고, RL-001 의 실제 실패 양상은 "기존 코드를
+  복사" 이므로 그물이 겨냥한 표적과 일치한다.
+- **더 실질적인 구멍은 `_SKIP_PARTS` 의 `"tests"` 다** (`:59`). 스캔이 `tests/`
+  트리를 통째로 건너뛰므로 **테스트 안의 재구현은 보이지 않는다** — 그런데
+  이 PR 이 제거해야 했던 복사본이 정확히 그것이었다
+  (`test_operator_stage_mode_e2e.py` 의 자체 `json.dumps` fixture, RL-024).
+  현재 그 자리는 `TestE2EFixtureUsesProduction` 이 **파일명 하드코딩**으로만
+  지키므로, 새 e2e 파일이 같은 재구현을 하면 아무것도 잡지 못한다.
+- 무엇보다 이 grep 은 단독 근거가 아니다. `is` 동일성 테스트 3건이 **실제 소비자
+  두 곳이 같은 객체를 쥔다** 는, 정말 중요한 성질을 직접 고정한다. 소비자에
+  연결되지 않은 두 번째 이스케이퍼는 무해하다.
+
+값싼 트립와이어로서 존치가 맞다. 유일한 증명으로 읽지 말 것.
+
+### R-5 (정보) — PR 설명의 Chromium 매트릭스와 커밋된 e2e 스위트가 다르다
+PR 본문은 8행(U+2029 포함) 매트릭스를 싣지만, 커밋된
+`tests/e2e/test_operator_bootstrap_escaping_e2e.py` 는 적대 케이스 **6** + 대조군
+**1** 이다. U+2029 는 e2e 에 없고 유닛 `_HOSTILE_TEXT` 에만 있다. 따라서 수정 전에도
+통과하는 진짜 음성 대조군은 **3 케이스**(U+2028 line-separator, attribute-payload,
+benign `A홀 & B홀`) = 7 테스트이지 4 케이스가 아니다. RL-004 성질 자체는 충족되며
+(아래 뮤테이션 실측), 문서 정확도 문제일 뿐 결함이 아니다.
+
+### R-6 (Low, 미해결) — docstring 이 측정하지 않는 것을 주장한다
+`test_render_helper_is_importable_without_streamlit` 은 "streamlit 없이 임포트
+가능" 을 증명한다고 적었지만, 같은 파일 `:37-38` 이
+`sys.modules["streamlit"] = MagicMock()` 을 주입하므로 임포트 가능성은 **측정되지
+않는다.** 실제로 단언하는 것은 "`operator_ui` 가 `st` / `streamlit` 이름을 바인딩
+하지 않는다" 뿐이다. 그 성질도 가치가 있어(`import streamlit as st` 추가를 잡는다)
+존치하되, docstring 이 과장이다. 진짜로 만들려면 별도 프로세스
+(`subprocess.run([sys.executable, "-c", "import operator_ui"])`)가 필요하다.
+
+### R-7 (Low, 미해결) — AC 3 라운드트립 테스트는 보안 게이트가 아니다
+`test_hostile_payload_round_trips_through_the_boot_literal` 은 **취약한**
+맨 `json.dumps` 구현에서도 통과한다(뮤테이션에서 죽은 6건에 포함되지 않았다) —
+`json.dumps` 출력도 유효한 JSON 이기 때문이다. 데이터 무결성 가드로서는 옳지만
+XSS 게이트로 오독될 수 있다. 실제 보안 단언은 `</script>` **개수 비교**와
+raw 문자 부재 쪽이다. 후속 편집 시 이름/주석에 그 사실을 남길 것.
+
+## Security Findings
+
+이번 PR 의 보안 목적(`room_name` 발 stored XSS + 자폭 부트스트랩 차단)은
+**달성됐다.** 재측정 근거는 아래 "검증" 절에 있다. 신규 보안 결함 없음.
+
+- **BOOT 데이터는 `innerHTML` 싱크에 닿지 않는다(전수 확인).** `webrtc.html` 의
+  `innerHTML` 6곳 중 웰컴 화면 2곳(`:1067` `descEl`, `:1069` `rulesDiv`)은
+  `inputName`/`outputName` 언어명 룩업(닫힌 집합)으로만 조립되고 BOOT 을 참조하지
+  않는다. `:1474`/`:1613` 은 자막 파이프라인, `:1692`/`:1695` 는 정적 문자열이다.
+  `BOOT.room_name` 은 `:1063` `textContent` 와 `:1064` `style.display` 뿐이다.
+
+- **범위 밖(재확인, 재론하지 않음)**: `VIEWER_BASE_URL` 스킴 검증 (PR #137 리뷰
+  S-2). `BOOT.stage_url` / `BOOT.view_url` 은 `fallback.href` 와 `window.open` 으로
+  흐르고 `BOOT.qr_data_url` 은 `img.src` 로 흐른다 — URL 스킴 문제이지
+  script-context 이스케이프 문제가 아니며, 배포자 제어 환경변수다. 이 PR 의
+  이스케이프는 이 싱크들을 **손상시키지 않는다**(라운드트립 실측 확인).
+- **이중 이스케이프 없음(AC 2)**: `room_name` 의 DOM 싱크는 `textContent` 와
+  `style.display` 뿐임을 템플릿 전수로 확인했다. 마크업 이스케이프를 추가하지
+  않은 판단이 옳다. `sse_broadcast` 가 뷰어/무대에서 쓰는
+  `html.escape(name, quote=True)` 는 **마크업 플레이스홀더** 전용이고
+  오퍼레이터 템플릿에는 그런 자리가 없다.
+
+## Over-Engineering (minimality axis)
+
+- `sse_broadcast` 의 두 별칭은 **YAGNI 가 아니다.** `_json_for_script` 는 40곳,
+  `_PLACEHOLDER_RE` 는 `tests/test_viewer_page.py:759` 가
+  `assert "_PLACEHOLDER_RE.sub(" in body` 로 **이름 자체를 소스에서** 고정한다.
+  이름을 갈아엎는 대안이 오히려 diff 를 키운다. 별칭 유지가 최소 선택이다.
+- `script_escape.py` 53줄 중 실행문은 7줄, 나머지는 sink 선택 근거다. 보안
+  헬퍼로서 정당한 비율.
+- `render_component_html` 의 lambda 치환은 취향이 아니라 **필수**다. 문자열
+  치환형은 `re.sub` 가 값 안의 `<` 를 역참조로 해석해
+  `error: bad escape \u` 로 죽는다 (실측 확인).
+
+삭제 가능한 것은 테스트 쪽 **~6줄**뿐이다(프로덕션 코드는 0줄).
+
+```
+tests/test_operator_bootstrap_escaping.py:337-341: native  test_app_drops_the_now_unused_json_import → ruff F401 이 이미 미사용 import 를 CI/pre-commit 에서 잡고, app.py 를 json.dumps 로 되돌리는 변이는 :329 가 이미 죽인다. 고유하게 죽이는 변이가 없다
+tests/test_operator_bootstrap_escaping.py:299: shrink  assert ".replace(" not in body → 삭제. :297-298 의 두 단언이 이미 형태를 고정하고, :271/:312/:147 의 행동 테스트가 관측 가능한 성질을 전부 고정한다. 구현이 정당하게 .replace 를 쓰게 되면 거짓 실패만 만든다
+```
+
+**Net removable: ~6 lines.** 이 PR 의 diff 를 넓히지 않기 위해 적용하지 않았다.
+프로덕션 변경(28 + 53줄, `app.py` 는 호출 한 줄)은 그 자체로 lean 하다.
+
+## 검증 — 구현자 주장 8건 독립 재측정
+
+| # | 주장 | 결과 |
+|---|---|---|
+| 1 | 이스케이퍼 정의가 저장소에 1곳 | **확인.** `script_escape.py:41` 단 1건. `translate(`/`maketrans` 대체 구현 0건. 회피면 평가는 R-4 |
+| 2 | 두 소비자가 **같은 객체** (`is`) | **확인.** `sse_broadcast._json_for_script`, `operator_ui.json_for_script`, 두 `PLACEHOLDER_RE` 모두 `is script_escape.*` → True |
+| 3 | 추출이 `72368f1` 원본과 바이트 동일 | **확인.** 코드 본문 문자 단위 동일(docstring 만 개정). 추가로 원본을 복원해 **12,000 케이스 차등 퍼즈 → mismatch 0**, 라운드트립 실패 0 |
+| 4 | `ensure_ascii` True→False 가 하류를 깨지 않음 | **확인.** 한글 리터럴 방출, `\uXXXX` 형태 부재. 스냅샷/바이트길이 단언 0건. `st.components.v1.html(…, height=900)` 은 **상수**라 내용 길이와 무관 |
+| 5 | 이중 이스케이프 없음 (`.welcome-room` 원문 일치) | **확인.** 룸 이름 `A&lt;홀&amp;` 이 `"A&lt;홀&amp;"` 로 정확히 왕복. e2e 는 `text == room_name` 로 **원문과 등가 비교**(부재 단언 아님) |
+| 6 | 오타 플레이스홀더 → `KeyError` → 일반 문구 | **부분 확인 → R-1.** `KeyError` 는 실제로 발생하고 클라이언트로 내부 텍스트가 새지 않는다. 그러나 서버 로그도 남지 않았다. 수정함 |
+| 7 | 음성 대조군이 진짜이고 값 비교다 | **확인(수 정정).** 뮤테이션 하에서 정확히 **7 테스트가 통과** = 3 대조군 케이스. 4가 아니라 3 (R-5). 단언은 `boot["room_name"] == room_name`, `text == room_name`, `typeof appendLine == "function"`, `is_visible() is True` — 전부 측정값 비교 |
+| 8 | `red` 체크포인트는 false-PASS, 진짜 RED 는 되돌림 실행 | **확인 — 독립 재현.** `render_component_html` 을 `72368f1` 프로덕션 라인으로 되돌린 결과 유닛 **6 failed / 14 passed**, Chromium **12 failed / 7 passed**. 구현자 수치와 정확히 일치 |
+
+## 게이트 실측 (리뷰 수정 반영 후)
+
+- `uv run pytest -q` → **1254 passed, 133 deselected, coverage 94.20%**
+  (구현자 주장과 일치). `operator_ui.py` 100%, `script_escape.py` 100%
+- e2e (ISSUE-48 19건 + ISSUE-47 무대 모드 14건) → **33 passed**
+- `uv run ruff check .` → clean · `black --check` → clean · `ruff format --check` → clean
+- **`test` 체크포인트는 exit 124** — `verify_checkpoint.py` 가 pytest 에
+  `timeout=60` 을 하드코딩하는데 스위트는 실측 **75~98초**다. 테스트 실패가 아니라
+  하네스 한계 (sprint_state 에 이미 등재된 기존 항목)
+
+## 회귀 확인
+
+- `components/webrtc.html` / `stage.html` / `viewer.html` **diff 0바이트** —
+  ISSUE-49 와 파일 충돌 없음, 범위 확장 없음
+- `stage.html` / `viewer.html` 의 `getUserMedia` / `RTCPeerConnection` / OpenAI
+  참조 **각 0건** 유지
+- ISSUE-47 무대 모드 e2e 14건 fixture 교체 후 전건 통과 (AC 7)
+
+## 스프린트 브리프 정정 확인
+
+구현자가 브리프를 정정한 내용은 **정확하다.** `build_bootstrap_payload` 키 집합에
+대한 set-equality 단언은 저장소에 **존재하지 않는다** — `docs/test_plan.md:320`
+의 **TC-089 (계획)** 이며 ISSUE-53 몫이다. 현존 최근접 가드는
+`tests/test_operator_ui.py:474-486` 의 튜플 루프(캡션/무대 모드 간 7개 키 값 일치)
+이고, 이 PR 은 payload 형태를 바꾸지 않는다.
+
+`STATUS.md` 정정도 동시 작업 행을 덮지 않았다 — ISSUE-43 / ISSUE-52 가 in-flight
+로 보존돼 있고, ISSUE-3/4/24 정정 사실이 본문에 명시돼 있다.
+
+## 리뷰 프로세스 사고 (기록)
+
+리뷰어 서브에이전트를 **내가 뮤테이션을 돌리고 있던 것과 같은 워크트리**로
+보냈다. 그 결과 리뷰어의 첫 전체 실행이 `inspect.getsource` 에서
+`import json as _json` 를 읽어 6건 실패로 관측됐고, 리뷰어는 `git status` 가 깨끗한데
+`operator_ui.py` mtime 만 자기 세션 구간 안에 있다는 점으로 외부 간섭을 정확히
+진단한 뒤 두 번 재실행해 그린을 확인했다(1254 passed — 내 수치와 일치). 리뷰어가
+그 때문에 in-place 수정을 하나도 적용하지 않은 판단도 옳다.
+
+이건 `sprint_state.md` 에 이미 등재된 항목의 **재발**이다 — "각 리뷰어에게 자기
+워크트리를 줄 것". 뮤테이션 게이트를 돌리는 리뷰는 워크트리를 **하나 더** 파야
+한다. 이번 결론에는 영향이 없지만(양쪽 최종 수치 일치), 기록해 둔다.
+
+## Verdict
+
+**Approve** (R-1 in-PR 수정 반영). AC 8건 전부 증거로 충족.
+
+R-1 은 독립적으로 두 경로에서 같은 결론에 도달했다 — 내 정적 규약 대조와
+리뷰어 서브에이전트의 독립 분석이 `app.py:491` 을 같은 Medium 으로 지목했다.
+
+R-2 ~ R-7 은 전부 Low 이고 테스트 표현/정책 일관성 영역이다. 이 PR 의 diff 를
+넓히지 않는 편이 낫다 — 특히 **ISSUE-49 가 이 머지를 기다리고 있고** 같은
+`components/webrtc.html` 을 건드린다. R-3(무대 렌더러 엄격/관대 불일치)은
+후속 이슈로 분리 권고.
