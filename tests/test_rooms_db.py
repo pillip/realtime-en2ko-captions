@@ -17,6 +17,7 @@ Note: SQLite tmp_path 기반 격리. 외부 I/O 없음.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import sqlite3
 import sys
@@ -881,3 +882,419 @@ class TestRoomUpdateStageConfig:
         from stage_config import DEFAULT_STAGE_CONFIG
 
         assert room_model.get_stage_config("r-other") == DEFAULT_STAGE_CONFIG
+
+
+# ---------------------------------------------------------------------------
+# 세션 언어 기록 — Room.update_session_languages (ISSUE-52, FR-083)
+# TC-071 / TC-072
+# ---------------------------------------------------------------------------
+class _SqlSpyDb:
+    """DatabaseManager 래퍼 — 실제로 실행된 SQL 문을 수집한다.
+
+    ``sqlite3.Connection.set_trace_callback`` 은 **실행된 문** 만 부르므로
+    "UPDATE 를 0회 실행했다" 를 헬퍼 호출 횟수가 아니라 SQL 수준에서 못 박을
+    수 있다 (TC-072). 메서드 호출을 세는 방식은 no-op 가드를 지우고 UPDATE 를
+    매번 돌려도 통과하므로 이 이슈에는 쓸 수 없다.
+    """
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.statements: list[str] = []
+
+    @contextlib.contextmanager
+    def get_connection(self):
+        with self._inner.get_connection() as conn:
+            conn.set_trace_callback(self.statements.append)
+            try:
+                yield conn
+            finally:
+                conn.set_trace_callback(None)
+
+    @property
+    def updates(self) -> list[str]:
+        return [s for s in self.statements if s.lstrip().upper().startswith("UPDATE")]
+
+
+def _lang_columns(db_manager, room_id: str) -> dict[str, str]:
+    """언어 관련 4개 컬럼을 DB 에서 **원시값 그대로** 읽는다.
+
+    ``output_langs`` 는 정규화를 거치지 않은 원본 문자열이어야 한다 — 이
+    이슈의 핵심 가드가 "바이트 단위로 그대로" 이기 때문.
+    """
+    with db_manager.get_connection() as conn:
+        row = conn.execute(
+            "SELECT input_lang, output_lang, primary_output_lang, output_langs "
+            "FROM rooms WHERE id = ?",
+            (room_id,),
+        ).fetchone()
+    return dict(row)
+
+
+@pytest.fixture
+def lang_room(room_model, admin_user_id):
+    """input_lang='auto', output_lang='ko', primary_output_lang='ko',
+    output_langs='["ko"]' 인 사고 재현 룸 (이슈 본문의 실측 행)."""
+    room_model.create(room_id="lang-room", name="A홀", created_by=admin_user_id)
+    return "lang-room"
+
+
+class TestUpdateSessionLanguages:
+    """오퍼레이터 세션 언어를 rooms 행에 기록한다 (TC-071)."""
+
+    def test_round_trip_writes_all_three_columns(
+        self, room_model, db_manager, lang_room
+    ):
+        """AC1/AC3: ('ko','vi') 기록 후 세 컬럼이 **정확히** 그 값이다."""
+        before = _lang_columns(db_manager, lang_room)
+        assert before["input_lang"] == "auto"
+        assert before["output_lang"] == "ko"
+        assert before["primary_output_lang"] == "ko"
+
+        result = room_model.update_session_languages(
+            lang_room, input_lang="ko", output_lang="vi"
+        )
+        assert result is True
+
+        row = room_model.get_by_id(lang_room)
+        assert row["input_lang"] == "ko"
+        assert row["output_lang"] == "vi"
+        assert row["primary_output_lang"] == "vi"
+
+    def test_output_langs_is_byte_identical_after_the_write(
+        self, room_model, db_manager, lang_room
+    ):
+        """AC5: output_langs 는 **손대지 않는다** (#91/#92 재결합 방지).
+
+        `_supported_output_langs` 가 이 컬럼을 의도적으로 무시하므로, 언어
+        기록이 "김에 같이 동기화" 하는 순간 뷰어 언어 선택이 룸 설정에 다시
+        묶인다. 이 단언이 그 회귀를 잡는 유일한 그물이다 (RL-004).
+        """
+        before = _lang_columns(db_manager, lang_room)
+        assert before["output_langs"] == '["ko"]'
+
+        assert (
+            room_model.update_session_languages(
+                lang_room, input_lang="ko", output_lang="vi"
+            )
+            is True
+        )
+
+        after = _lang_columns(db_manager, lang_room)
+        assert after["output_langs"] == before["output_langs"]
+        assert after["output_langs"] == '["ko"]'
+
+    def test_output_langs_survives_when_it_disagrees_with_the_new_lang(
+        self, room_model, db_manager, lang_room
+    ):
+        """기록 언어가 output_langs 에 **없어도** 컬럼은 그대로다.
+
+        공백까지 포함해 바이트 단위로 비교한다 — 재직렬화(`json.dumps`)로
+        조용히 정규화되는 경우도 실패시키기 위함.
+        """
+        stored = '["ko", "en"]'
+        with db_manager.get_connection() as conn:
+            conn.execute(
+                "UPDATE rooms SET output_langs = ? WHERE id = ?", (stored, lang_room)
+            )
+            conn.commit()
+
+        assert (
+            room_model.update_session_languages(
+                lang_room, input_lang="ko", output_lang="vi"
+            )
+            is True
+        )
+
+        assert _lang_columns(db_manager, lang_room)["output_langs"] == stored
+
+    def test_auto_is_a_valid_input_lang(self, room_model, db_manager, lang_room):
+        """input 화이트리스트는 출력용과 다르다 — 'auto' 가 정당한 값이다.
+
+        SUPPORTED_OUTPUT_LANGS 를 입력에도 재사용하면 이 테스트가 깨진다.
+        """
+        assert (
+            room_model.update_session_languages(
+                lang_room, input_lang="auto", output_lang="en"
+            )
+            is True
+        )
+
+        row = _lang_columns(db_manager, lang_room)
+        assert row["input_lang"] == "auto"
+        assert row["output_lang"] == "en"
+        assert row["primary_output_lang"] == "en"
+
+    def test_unsupported_output_lang_changes_nothing(
+        self, room_model, db_manager, lang_room
+    ):
+        """AC4: 지원 목록 밖 코드는 False + 컬럼 전부 불변, 예외 없음."""
+        before = _lang_columns(db_manager, lang_room)
+
+        assert (
+            room_model.update_session_languages(
+                lang_room, input_lang="ko", output_lang="xx"
+            )
+            is False
+        )
+
+        assert _lang_columns(db_manager, lang_room) == before
+
+    def test_retired_ja_is_not_a_supported_output_lang(
+        self, room_model, db_manager, lang_room
+    ):
+        """'ja' 는 #111 에서 제거됐다 — 리터럴 복사본이면 통과해 버린다.
+
+        검증 목록을 translation.SUPPORTED_OUTPUT_LANGS 에서 import 하지 않고
+        손으로 베끼면 옛 목록이 남아 이 테스트가 실패한다 (RL-001).
+        """
+        from translation import SUPPORTED_OUTPUT_LANGS
+
+        assert "ja" not in SUPPORTED_OUTPUT_LANGS
+
+        before = _lang_columns(db_manager, lang_room)
+        assert (
+            room_model.update_session_languages(
+                lang_room, input_lang="ko", output_lang="ja"
+            )
+            is False
+        )
+        assert _lang_columns(db_manager, lang_room) == before
+
+    def test_every_supported_output_lang_is_accepted(
+        self, room_model, db_manager, lang_room
+    ):
+        """화이트리스트가 지나치게 좁아지는 반대 방향의 회귀도 막는다."""
+        from translation import SUPPORTED_OUTPUT_LANGS
+
+        for lang in SUPPORTED_OUTPUT_LANGS:
+            assert (
+                room_model.update_session_languages(
+                    lang_room, input_lang="auto", output_lang=lang
+                )
+                is True
+            ), lang
+            assert _lang_columns(db_manager, lang_room)["primary_output_lang"] == lang
+
+    def test_unsupported_input_lang_changes_nothing(
+        self, room_model, db_manager, lang_room
+    ):
+        """입력 언어 검증도 출력과 같은 정책 — 거절 시 DB 를 건드리지 않는다."""
+        before = _lang_columns(db_manager, lang_room)
+
+        assert (
+            room_model.update_session_languages(
+                lang_room, input_lang="xx", output_lang="vi"
+            )
+            is False
+        )
+
+        assert _lang_columns(db_manager, lang_room) == before
+
+    def test_unknown_room_id_returns_false_without_raising(self, room_model):
+        """AC9: 존재하지 않는 room_id 는 False, 예외 없음."""
+        assert (
+            room_model.update_session_languages(
+                "no-such-room", input_lang="ko", output_lang="vi"
+            )
+            is False
+        )
+
+    def test_write_does_not_touch_last_activity(
+        self, room_model, db_manager, lang_room
+    ):
+        """언어 기록은 last_activity 를 갱신하지 않는다 (부수 효과 없음)."""
+        sentinel = "2000-01-01 00:00:00"
+        with db_manager.get_connection() as conn:
+            conn.execute(
+                "UPDATE rooms SET last_activity = ? WHERE id = ?", (sentinel, lang_room)
+            )
+            conn.commit()
+
+        assert (
+            room_model.update_session_languages(
+                lang_room, input_lang="ko", output_lang="vi"
+            )
+            is True
+        )
+
+        with db_manager.get_connection() as conn:
+            row = conn.execute(
+                "SELECT last_activity FROM rooms WHERE id = ?", (lang_room,)
+            ).fetchone()
+        assert row["last_activity"] == sentinel
+
+    def test_does_not_touch_other_rooms(self, room_model, db_manager, admin_user_id):
+        room_model.create(room_id="r-a", name="A홀", created_by=admin_user_id)
+        room_model.create(room_id="r-b", name="B홀", created_by=admin_user_id)
+
+        assert (
+            room_model.update_session_languages(
+                "r-a", input_lang="ko", output_lang="vi"
+            )
+            is True
+        )
+
+        other = _lang_columns(db_manager, "r-b")
+        assert other["primary_output_lang"] == "ko"
+        assert other["output_lang"] == "ko"
+        assert other["input_lang"] == "auto"
+
+
+class TestUpdateSessionLanguagesNoOpGuard:
+    """AC7: 같은 값이 반복돼도 UPDATE 는 돌지 않는다 (TC-072).
+
+    재접속마다 쓰기가 도는 것을 막는다.
+    """
+
+    def test_second_identical_call_issues_zero_update_statements(
+        self, db_manager, lang_room
+    ):
+        from database import Room
+
+        spy = _SqlSpyDb(db_manager)
+        model = Room(spy)
+
+        assert (
+            model.update_session_languages(lang_room, input_lang="ko", output_lang="vi")
+            is True
+        )
+        assert len(spy.updates) == 1
+
+        spy.statements.clear()
+        assert (
+            model.update_session_languages(lang_room, input_lang="ko", output_lang="vi")
+            is True
+        )
+        assert spy.updates == []
+
+        # 값이 **바뀌면** 다시 써야 한다 — 항상 no-op 인 구현을 배제한다.
+        spy.statements.clear()
+        assert (
+            model.update_session_languages(lang_room, input_lang="ko", output_lang="en")
+            is True
+        )
+        assert len(spy.updates) == 1
+        assert _lang_columns(db_manager, lang_room)["primary_output_lang"] == "en"
+
+    def test_no_op_guard_still_repairs_a_drifted_mirror_column(
+        self, db_manager, lang_room
+    ):
+        """primary_output_lang 만 vi 이고 output_lang 이 ko 로 어긋난 행.
+
+        "요청 언어 == primary_output_lang" 만 보고 스킵하면 두 컬럼이 서로
+        다른 값으로 굳는다 — 이 이슈가 고치려는 결함과 같은 모양(RL-025).
+        """
+        from database import Room
+
+        with db_manager.get_connection() as conn:
+            conn.execute(
+                "UPDATE rooms SET primary_output_lang = 'vi' WHERE id = ?",
+                (lang_room,),
+            )
+            conn.commit()
+
+        spy = _SqlSpyDb(db_manager)
+        model = Room(spy)
+        assert (
+            model.update_session_languages(lang_room, input_lang="ko", output_lang="vi")
+            is True
+        )
+        assert len(spy.updates) == 1
+
+        row = _lang_columns(db_manager, lang_room)
+        assert row["output_lang"] == "vi"
+        assert row["primary_output_lang"] == "vi"
+        assert row["input_lang"] == "ko"
+
+    def test_rejected_value_issues_zero_update_statements(self, db_manager, lang_room):
+        """검증 실패도 DB 를 건드리지 않는다 — SQL 수준 확인."""
+        from database import Room
+
+        spy = _SqlSpyDb(db_manager)
+        model = Room(spy)
+
+        assert (
+            model.update_session_languages(lang_room, input_lang="ko", output_lang="xx")
+            is False
+        )
+        assert spy.updates == []
+
+    def test_unknown_room_id_issues_zero_update_statements(self, db_manager):
+        """AC9: 존재하지 않는 룸에는 UPDATE 를 **시도조차** 하지 않는다.
+
+        반환값만 단언하면 `get_by_id` 조기 반환을 지워도 통과한다 — 0행짜리
+        UPDATE 가 돌아 rowcount 0 으로 같은 False 가 나오기 때문이다.
+        """
+        from database import Room
+
+        spy = _SqlSpyDb(db_manager)
+        model = Room(spy)
+
+        assert (
+            model.update_session_languages(
+                "no-such-room", input_lang="ko", output_lang="vi"
+            )
+            is False
+        )
+        assert spy.updates == []
+
+
+class TestSessionLanguageWhitelistsTrackTheirSources:
+    """화이트리스트가 출처와 갈라지면 언어 기록이 조용히 멈춘다 (RL-001).
+
+    `SUPPORTED_OUTPUT_LANGS` 는 import 로 묶여 있지만 입력 목록은 오퍼레이터
+    드롭다운(`components/webrtc.html` 의 `#selInputLang`)을 손으로 옮겨 적은
+    것이다. 거기에 옵션이 하나 추가되면 그 언어로 도는 세션은 전부 거절되어
+    (`update_session_languages` → False) 무대가 이전 언어를 계속 구독한다 —
+    로그 한 줄 말고는 증상이 없는, 이 이슈가 고친 결함과 똑같은 모양이다.
+    """
+
+    @staticmethod
+    def _input_lang_options() -> list[str]:
+        """webrtc.html 의 #selInputLang <option value=...> 값을 뽑는다."""
+        import re
+        from pathlib import Path
+
+        html = (Path(__file__).parent.parent / "components" / "webrtc.html").read_text(
+            encoding="utf-8"
+        )
+        block = re.search(
+            r'<select id="selInputLang">(.*?)</select>', html, re.S | re.I
+        )
+        assert block is not None, "webrtc.html 에서 #selInputLang 를 찾지 못했다"
+        return re.findall(r'<option value="([^"]+)"', block.group(1))
+
+    def test_input_whitelist_matches_the_operator_dropdown(self):
+        from database import _SESSION_INPUT_LANGS
+
+        assert set(self._input_lang_options()) == set(_SESSION_INPUT_LANGS)
+
+    def test_every_operator_input_option_is_actually_accepted(
+        self, room_model, db_manager, lang_room
+    ):
+        """집합 비교만으로는 부족하다 — 실제로 기록되는지 값으로 확인한다."""
+        for lang in self._input_lang_options():
+            assert (
+                room_model.update_session_languages(
+                    lang_room, input_lang=lang, output_lang="vi"
+                )
+                is True
+            ), lang
+            assert _lang_columns(db_manager, lang_room)["input_lang"] == lang
+
+    def test_output_whitelist_matches_the_operator_dropdown(self):
+        """출력 드롭다운도 같은 계약이다 (#111 에서 en 추가/ja 제거로 싱크)."""
+        import re
+        from pathlib import Path
+
+        from translation import SUPPORTED_OUTPUT_LANGS
+
+        html = (Path(__file__).parent.parent / "components" / "webrtc.html").read_text(
+            encoding="utf-8"
+        )
+        block = re.search(
+            r'<select id="selOutputLang">(.*?)</select>', html, re.S | re.I
+        )
+        assert block is not None
+        options = re.findall(r'<option value="([^"]+)"', block.group(1))
+        assert set(options) == set(SUPPORTED_OUTPUT_LANGS)

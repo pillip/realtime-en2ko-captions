@@ -1338,3 +1338,82 @@ class TestBrandingAssetRoute:
         async with TestClient(TestServer(self._app())) as client:
             assert (await client.get("/health")).status == 200
             assert (await client.get("/view/no-such-room")).status == 404
+
+
+# ---------------------------------------------------------------------------
+# 룸 행의 언어가 무대/뷰어 페이지 렌더로 흐른다 (ISSUE-52, FR-083 / TC-074)
+# ---------------------------------------------------------------------------
+class TestRenderedLanguageFollowsTheRoomRow:
+    """페이지 로드 시점의 구독 언어 = rooms.primary_output_lang.
+
+    RED 확인: repo 가 'ko' 를 돌려주면 아래 'vi' 단언은 실패해야 한다. 그것이
+    프로덕션 결함(무대에 한국어가 뜬 사고)을 잡는 지점이다.
+    """
+
+    @staticmethod
+    def _repo(primary: str):
+        return _StubRoomRepo(
+            {
+                "r1": {
+                    "id": "r1",
+                    "name": "A홀",
+                    "status": "active",
+                    "primary_output_lang": primary,
+                    # 룸 설정은 ko 하나뿐이지만 뷰어 목록은 여기에 묶이지
+                    # 않아야 한다 (#91/#92).
+                    "output_langs": '["ko"]',
+                    "stage_config": "{}",
+                }
+            }
+        )
+
+    async def _get(self, primary: str, path: str) -> str:
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from sse_broadcast import BroadcastManager, build_sse_app
+
+        app = build_sse_app(
+            broadcast_manager=BroadcastManager(), room_repo=self._repo(primary)
+        )
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get(path)
+            assert resp.status == 200
+            return await resp.text()
+
+    @pytest.mark.asyncio
+    async def test_stage_caption_lang_is_the_rooms_primary_output_lang(self):
+        body = await self._get("vi", "/stage/r1")
+        assert 'caption_lang: "vi"' in body
+        assert 'caption_lang: "ko"' not in body
+
+    @pytest.mark.asyncio
+    async def test_stage_falls_back_to_ko_when_the_row_says_ko(self):
+        """대조군 — 같은 코드 경로가 ko 를 돌려주면 ko 로 렌더된다.
+
+        위 테스트가 상수 'vi' 를 하드코딩해서 통과하는 것이 아님을 보인다.
+        """
+        body = await self._get("ko", "/stage/r1")
+        assert 'caption_lang: "ko"' in body
+        assert 'caption_lang: "vi"' not in body
+
+    @pytest.mark.asyncio
+    async def test_view_primary_lang_is_the_rooms_primary_output_lang(self):
+        body = await self._get("vi", "/view/r1")
+        assert 'primary_lang: "vi"' in body
+
+    @pytest.mark.asyncio
+    async def test_view_language_list_stays_global_not_room_scoped(self):
+        """AC6: output_langs='["ko"]' 이어도 드롭다운은 지원 언어 전부다.
+
+        #91/#92 — 뷰어 언어 선택은 룸 설정에 재결합되지 않는다.
+        """
+        import re
+
+        from translation import SUPPORTED_OUTPUT_LANGS
+
+        body = await self._get("vi", "/view/r1")
+        m = re.search(r"output_langs:\s*(\[[^\]]*\])", body)
+        assert m is not None, "viewer 부트스트랩에 output_langs 리터럴이 없다"
+        langs = json.loads(m.group(1))
+        assert langs == list(SUPPORTED_OUTPUT_LANGS)
+        assert set(langs) == {"ko", "en", "zh", "vi"}
