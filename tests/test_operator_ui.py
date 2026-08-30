@@ -303,3 +303,184 @@ class TestBuildBootstrapPayload:
         )
         assert payload.get("view_url") is None
         assert payload.get("qr_data_url") is None
+
+
+# ---------------------------------------------------------------------------
+# select_display_mode (ISSUE-47, TC-065)
+# ---------------------------------------------------------------------------
+class TestSelectDisplayMode:
+    """표시 모드 정규화 — `session_state` 왕복의 유일한 진입점.
+
+    이 함수가 순수 함수인 이유는 RL-001 / RL-005 다. `app.py` 에는 테스트가
+    0건이라, 모드 결정 로직이 `app.py` 안에 있으면 영원히 검증되지 않는다.
+    """
+
+    def test_none_defaults_to_caption(self):
+        """AC1 — 오퍼레이터가 한 번도 건드리지 않은 상태의 기본값."""
+        from operator_ui import select_display_mode
+
+        assert select_display_mode(None) == "caption"
+
+    def test_missing_key_defaults_to_caption(self):
+        """`session_state.get()` 이 빈 문자열을 돌려주는 경로도 기본값."""
+        from operator_ui import select_display_mode
+
+        assert select_display_mode("") == "caption"
+
+    def test_unrecognised_legacy_value_normalises_to_caption(self):
+        """과거 버전이 남긴 잔여 문자열 → 조용히 기본값으로 정규화.
+
+        여기서 예외를 던지면 `st.radio(index=...)` 가 ValueError 로 죽어
+        오퍼레이터 사이드바 전체가 날아간다 (RL-006).
+        """
+        from operator_ui import select_display_mode
+
+        assert select_display_mode("presenter") == "caption"
+        assert select_display_mode("STAGE") == "caption"
+        assert select_display_mode("무대 화면") == "caption"
+
+    def test_stage_round_trips_unchanged(self):
+        """AC5 — rerun 을 건너 유효한 선택은 그대로 살아남아야 한다."""
+        from operator_ui import select_display_mode
+
+        assert select_display_mode("stage") == "stage"
+
+    def test_caption_round_trips_unchanged(self):
+        from operator_ui import select_display_mode
+
+        assert select_display_mode("caption") == "caption"
+
+    def test_non_string_input_normalises_to_caption(self):
+        """session_state 는 무엇이든 담을 수 있다 — 타입 사고로 죽지 않는다."""
+        from operator_ui import select_display_mode
+
+        assert select_display_mode(0) == "caption"
+        assert select_display_mode(["stage"]) == "caption"
+
+    def test_value_whose_equality_raises_is_normalised_not_propagated(self):
+        """`isinstance` 검사가 실제로 값을 하는 유일한 경로 (RL-006).
+
+        `x in DISPLAY_MODES` 는 튜플 원소와 `==` 비교를 하므로, `__eq__` 가
+        폭발하는 객체가 session_state 에 들어 있으면 예외가 사이드바 전체를
+        무너뜨린다. 타입을 먼저 거르면 그 비교 자체가 일어나지 않는다.
+
+        (경계 뮤테이션 M3 이 이 구멍을 찾았다: `isinstance` 를 지워도 int/list
+        입력만으로는 아무 테스트도 죽지 않았다 — 그 값들은 조용히 False 를
+        돌려주기 때문이다.)
+        """
+        from operator_ui import select_display_mode
+
+        class Hostile:
+            def __eq__(self, other):
+                raise RuntimeError("session_state 에 남은 이상한 값")
+
+        assert select_display_mode(Hostile()) == "caption"
+
+    def test_display_modes_are_exactly_two(self):
+        """모드가 늘어나면 이 테스트가 먼저 깨져 라벨/부트스트랩 갱신을 강제한다."""
+        from operator_ui import DISPLAY_MODES
+
+        assert tuple(DISPLAY_MODES) == ("caption", "stage")
+
+    def test_labels_are_korean_and_cover_every_mode(self):
+        """사이드바 라벨은 한국어 — 기본값이 '일반 자막' 이어야 AC1 이 성립한다."""
+        from operator_ui import DISPLAY_MODES, format_display_mode_label
+
+        assert format_display_mode_label("caption") == "일반 자막"
+        assert format_display_mode_label("stage") == "무대 화면"
+        for mode in DISPLAY_MODES:
+            assert format_display_mode_label(mode).strip()
+
+    def test_unknown_label_falls_back_to_raw_code(self):
+        """format_room_status_label 과 같은 관용 — 알 수 없는 값도 빈칸이 되지 않는다."""
+        from operator_ui import format_display_mode_label
+
+        assert format_display_mode_label("mystery") == "mystery"
+
+
+# ---------------------------------------------------------------------------
+# build_bootstrap_payload — display_mode / stage_url (ISSUE-47, TC-066)
+# ---------------------------------------------------------------------------
+class TestBootstrapPayloadDisplayMode:
+    def test_stage_mode_and_url_are_forwarded_verbatim(self):
+        """AC3 — 두 필드가 브라우저 부트스트랩까지 그대로 실려야 버튼이 뜬다."""
+        from operator_ui import build_bootstrap_payload
+
+        payload = build_bootstrap_payload(
+            action="idle",
+            openai_session=None,
+            websocket_port=None,
+            user_info={"id": 1, "username": "op1"},
+            room_id="r1",
+            display_mode="stage",
+            stage_url="http://localhost:8766/stage/r1",
+        )
+        assert payload["display_mode"] == "stage"
+        assert payload["stage_url"] == "http://localhost:8766/stage/r1"
+
+    def test_omitted_kwargs_are_backward_compatible(self):
+        """TC-066 — 기존 호출부(ISSUE-27/28/32)는 키워드를 모른다.
+
+        `room_name` / `view_url` / `qr_data_url` 이 그랬던 것과 동일한
+        하위호환 패턴이어야 한다.
+        """
+        from operator_ui import build_bootstrap_payload
+
+        payload = build_bootstrap_payload(
+            action="idle",
+            openai_session=None,
+            websocket_port=None,
+            user_info=None,
+            room_id=None,
+        )
+        assert payload["display_mode"] == "caption"
+        assert payload["stage_url"] is None
+
+    def test_payload_stays_json_serializable(self):
+        """webrtc.html 은 이 dict 를 json.dumps 로 받는다."""
+        import json
+
+        from operator_ui import build_bootstrap_payload
+
+        payload = build_bootstrap_payload(
+            action="idle",
+            openai_session=None,
+            websocket_port=None,
+            user_info=None,
+            room_id="r1",
+            display_mode="stage",
+            stage_url="http://localhost:8766/stage/r1",
+        )
+        assert json.loads(json.dumps(payload))["stage_url"] == (
+            "http://localhost:8766/stage/r1"
+        )
+
+    def test_existing_fields_are_untouched_by_the_new_kwargs(self):
+        """AC2 회귀 가드 — 무대 모드가 파이프라인 관련 필드를 바꾸지 않는다."""
+        from operator_ui import build_bootstrap_payload
+
+        common = {
+            "action": "start",
+            "openai_session": {"client_secret": "ek_x"},
+            "websocket_port": 8765,
+            "user_info": {"id": 7, "username": "op7"},
+            "room_id": "r1",
+            "room_name": "A홀",
+        }
+        caption = build_bootstrap_payload(**common)
+        stage = build_bootstrap_payload(
+            **common, display_mode="stage", stage_url="http://h/stage/r1"
+        )
+        for key in (
+            "action",
+            "openai_session",
+            "service",
+            "websocket_port",
+            "user_info",
+            "room_id",
+            "room_name",
+        ):
+            assert caption[key] == stage[key], (
+                f"{key} differs between caption and stage mode — the display "
+                "mode must not touch the caption pipeline (AC2)"
+            )
