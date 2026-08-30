@@ -1625,6 +1625,38 @@ class TestStageCaptionScale:
                     "agree on one range"
                 )
 
+    def test_the_scale_re_anchors_the_credit_roll(self, stage_html):
+        """UI 리뷰 — 배율 변경은 쌓인 모든 라인의 높이를 바꾸는 레이아웃 쓰기다.
+
+        무대에는 잴 사용자 스크롤 상태가 없으므로(`test_no_user_scroll_override_controls`
+        가 `isUserAtBottom` 을 파일 전역에서 금지한다) 조건 없이 다시 바닥에
+        붙인다. 붙이지 않으면 배율을 올린 순간부터 **다음 자막이 도착할 때까지**
+        최근 줄이 컬럼 밖에 머무른다 — 프로젝터에서는 그 공백이 그대로 보인다.
+        """
+        body = _stage_js_body(stage_html, _STAGE_APPLY_SCALE_BODY)
+        written = body.find('setProperty("--caption-scale"')
+        scrolled = body.find("_scrollToBottom()")
+        assert written != -1, f"applyCaptionScale must write the var: {body!r}"
+        assert scrolled != -1, (
+            "applyCaptionScale must re-anchor the credit roll after resizing "
+            f"every caption line: {body!r}"
+        )
+        assert written < scrolled, body
+        # 무대에 사용자 스크롤 분기를 이식하지 않는다는 규칙은 그대로다.
+        assert "isUserAtBottom" not in body, body
+
+    def test_an_unchanged_scale_is_a_noop(self, stage_html):
+        """중복 통지(연결 스냅샷 등)가 매번 스크롤을 건드리지 않는다."""
+        body = _stage_js_body(stage_html, _STAGE_APPLY_SCALE_BODY)
+        guard = body.find('getPropertyValue("--caption-scale")')
+        written = body.find('setProperty("--caption-scale"')
+        assert guard != -1, (
+            "applyCaptionScale must compare against the current value before "
+            f"writing: {body!r}"
+        )
+        assert guard < written, body
+        assert "return;" in body[guard:written], body
+
     def test_the_caption_line_stays_aa_at_the_lower_bound(self, stage_html):
         """AC — 배율 0.8 에서도 4.5:1 이상.
 

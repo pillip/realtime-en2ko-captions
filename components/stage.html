@@ -1008,7 +1008,15 @@
       // 클램프하면 NaN 이 CSS 로 들어가 규칙 전체가 무효가 된다.
       if (typeof value !== "number" || !isFinite(value)) return;
       const clamped = Math.min(CAPTION_SCALE_MAX, Math.max(CAPTION_SCALE_MIN, value));
-      document.documentElement.style.setProperty("--caption-scale", String(clamped));
+      const root = document.documentElement;
+      const next = String(clamped);
+      if (root.style.getPropertyValue("--caption-scale") === next) return;
+      root.style.setProperty("--caption-scale", next);
+      // 배율은 쌓여 있는 모든 라인의 높이를 바꾸므로 크레딧 롤의 바닥 위치가
+      // 통째로 움직인다. 무대에는 잴 사용자 스크롤 상태가 없으므로
+      // (test_no_user_scroll_override_controls) 조건 없이 다시 바닥에 붙인다 —
+      // 다음 자막이 올 때까지 최근 줄이 화면 밖에 머무르지 않게 한다.
+      _scrollToBottom();
     }
 
     function closeStream() {

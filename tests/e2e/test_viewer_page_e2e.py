@@ -1022,3 +1022,84 @@ class TestViewerCaptionScaleRendersLarger:
         assert _dropdown(page) == "en"
         assert len(_sse_urls(page)) == 2
         assert self._font_px(page) > before
+
+
+class TestViewerScaleKeepsTheCreditRolling:
+    """UI 리뷰 회귀 — 배율 변경이 크레딧 롤을 꺼뜨리면 안 된다 (RL-018 계열).
+
+    `--caption-scale` 대입은 CSS 변수 한 줄로 보이지만, 화면에 쌓인 모든
+    `.caption-line` 의 높이를 동시에 바꾸는 레이아웃 쓰기다. 재측정 없이 쓰면
+    늘어난 높이가 그대로 `scrollHeight - scrollTop - clientHeight` 에 잡혀
+    slack(80px)을 넘기고, 그 뒤 `_lockLine()` 은 전부 "청중이 위로 스크롤했다"
+    로 오판한다. gap 은 자막이 쌓일수록 커지기만 하므로 되돌릴 계기가 없다.
+
+    수정 전 실측(390×844, 30줄, 1.0 → 1.6): gap 57px → 684px → 다섯 줄 뒤
+    1072px. 즉 배율을 올린 순간 청중의 화면이 영구히 멈췄다.
+    """
+
+    @staticmethod
+    def _gap(page) -> float:
+        return page.evaluate(
+            """() => {
+              const v = document.getElementById('viewer');
+              return v.scrollHeight - v.scrollTop - v.clientHeight;
+            }"""
+        )
+
+    def test_a_scale_up_does_not_latch_the_credit_roll_off(self, page, viewer_server):
+        _fake_eventsource(page)
+        page.set_viewport_size({"width": 390, "height": 844})
+        page.goto(f"{viewer_server}/view/active-room", wait_until="load")
+
+        for i in range(1, 31):
+            _emit_message(page, f"한국어 자막 라인 {i}")
+        _settle(page, "() => document.querySelectorAll('.caption-line').length === 30")
+        page.wait_for_timeout(300)
+        # 전제를 명시적으로 세운다: 청중은 바닥에 있다. (한 태스크에 30건을
+        # 몰아 넣는 픽스처는 rAF 스크롤이 한 번도 돌기 전에 gap 을 벌려 놓아,
+        # 세우지 않으면 이 테스트가 배율과 무관한 이유로 붉어진다.)
+        page.evaluate(
+            """() => { const v = document.getElementById('viewer');
+                       v.scrollTop = v.scrollHeight; }"""
+        )
+        # `#viewer` 는 `scroll-behavior: smooth` 라 스크롤이 애니메이션된다 —
+        # 정착을 기다린 뒤에 재야 한다. 80px 은 `isUserAtBottom()` 이 쓰는
+        # slack 그대로이며, 그 안이면 크레딧 롤은 계속 따라온다.
+        page.wait_for_timeout(700)
+        assert self._gap(page) <= 80, "precondition: the attendee is at the bottom"
+
+        # 자막은 한 줄도 오지 않았다 — 배율 통지 **하나만으로** 컬럼이 밀린다.
+        _emit_control(page, caption_scale=1.6)
+        page.wait_for_timeout(900)
+
+        gap = self._gap(page)
+        assert gap <= 80, (
+            "a caption_scale change alone pushed the credit roll off the "
+            f"bottom by {gap}px — every later _lockLine() then reads "
+            "'the attendee scrolled up' and the column never follows again "
+            "(measured ~650px before the fix, growing with every caption)"
+        )
+
+    def test_a_scrolled_up_attendee_is_not_yanked_to_the_bottom(
+        self, page, viewer_server
+    ):
+        """반대 방향 — 지난 자막을 읽는 청중을 배율 통지가 끌어내리지 않는다."""
+        _fake_eventsource(page)
+        page.set_viewport_size({"width": 390, "height": 844})
+        page.goto(f"{viewer_server}/view/active-room", wait_until="load")
+
+        for i in range(1, 31):
+            _emit_message(page, f"한국어 자막 라인 {i}")
+        _settle(page, "() => document.querySelectorAll('.caption-line').length === 30")
+        page.wait_for_timeout(300)
+        page.evaluate("() => { document.getElementById('viewer').scrollTop = 0; }")
+        page.wait_for_timeout(700)
+
+        _emit_control(page, caption_scale=1.6)
+        page.wait_for_timeout(900)
+
+        top = page.evaluate("() => document.getElementById('viewer').scrollTop")
+        assert top == 0, (
+            "a caption_scale notice yanked a scrolled-up attendee back to the "
+            f"bottom (scrollTop={top})"
+        )

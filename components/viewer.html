@@ -715,7 +715,18 @@
       // 들어가 규칙 전체가 무효가 된다.
       if (typeof value !== "number" || !isFinite(value)) return;
       const clamped = Math.min(CAPTION_SCALE_MAX, Math.max(CAPTION_SCALE_MIN, value));
-      document.documentElement.style.setProperty("--caption-scale", String(clamped));
+      const root = document.documentElement;
+      const next = String(clamped);
+      if (root.style.getPropertyValue("--caption-scale") === next) return;
+      // 배율 변경은 **화면에 이미 쌓여 있는 모든 라인의 높이를 바꾸는 레이아웃
+      // 쓰기**다. 그래서 `_lockLine()`/`_twStep()` 과 똑같은 규칙을 따른다:
+      // 추종 여부를 **쓰기 전에** 재고, 쓴 뒤 다시 바닥에 붙인다. 재지 않으면
+      // 방금 늘어난 높이가 그대로 gap 으로 잡혀 slack(80px)을 넘기고, 청중이
+      // 스크롤한 적도 없는데 크레딧 롤이 꺼진다 — 그 뒤 gap 은 자막이 쌓일수록
+      // 커지기만 하므로 스스로 되돌아오지 않는다. 1.0 → 1.6 에서 실측된 결함이다.
+      const follow = isUserAtBottom();
+      root.style.setProperty("--caption-scale", next);
+      if (follow) _scrollToBottom();
     }
 
     function connect(lang) {

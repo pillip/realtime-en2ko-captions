@@ -1661,6 +1661,49 @@ class TestViewerCaptionScale:
         assert 'typeof value !== "number"' in body, body
         assert "isFinite(value)" in body, body
 
+    def test_the_scale_write_measures_follow_before_it_resizes(self, viewer_html):
+        """UI 리뷰 — 배율 적용도 `_lockLine()` 과 같은 순서 규칙을 지킨다.
+
+        `--caption-scale` 을 바꾸는 것은 CSS 변수 대입처럼 보이지만 실제로는
+        **화면에 이미 쌓인 모든 `.caption-line` 의 높이를 바꾸는 레이아웃
+        쓰기**다. 재지 않고 쓰면 방금 늘어난 높이가 그대로
+        `scrollHeight - scrollTop - clientHeight` 에 잡혀 slack(80px)을 넘기고,
+        그 뒤 모든 `_lockLine()` 이 "청중이 위로 스크롤했다" 로 오판한다. gap 은
+        자막이 쌓일수록 커지기만 하므로 스스로 되돌아오지 않는다.
+
+        실측(1.0 → 1.6, 390×844, 30줄): gap 57px → 684px → 다섯 줄 뒤 1072px.
+        """
+        body = _js_body(viewer_html, _APPLY_SCALE_BODY)
+        measured = body.find("isUserAtBottom()")
+        written = body.find('setProperty("--caption-scale"')
+        assert measured != -1, f"applyCaptionScale must measure follow: {body!r}"
+        assert written != -1, f"applyCaptionScale must write the var: {body!r}"
+        stale = (
+            "applyCaptionScale must call isUserAtBottom() BEFORE it writes "
+            "--caption-scale — measuring after the resize latches the credit "
+            f"roll off with no recovery path, got {measured}/{written}: {body!r}"
+        )
+        assert measured < written, stale
+        gated = f"the scale write must scroll on the pre-measured flag: {body!r}"
+        assert "if (follow) _scrollToBottom();" in body, gated
+        assert "_scrollIfBottom()" not in body, gated
+
+    def test_an_unchanged_scale_does_not_touch_the_scroll_position(self, viewer_html):
+        """같은 배율의 중복 통지(연결 스냅샷 등)는 무동작이어야 한다.
+
+        가드가 없으면 재연결마다 `_scrollToBottom()` 이 한 번씩 돌아, 위로
+        스크롤해 지난 자막을 읽던 청중이 바닥으로 끌려 내려간다.
+        """
+        body = _js_body(viewer_html, _APPLY_SCALE_BODY)
+        guard = body.find('getPropertyValue("--caption-scale")')
+        written = body.find('setProperty("--caption-scale"')
+        assert guard != -1, (
+            "applyCaptionScale must compare against the current value before "
+            f"writing: {body!r}"
+        )
+        assert guard < written, body
+        assert "return;" in body[guard:written], body
+
     def test_the_caption_line_stays_aa_at_the_lower_bound(self, viewer_html):
         """AC — 배율 0.8 에서도 4.5:1 이상 (`tests/wcag.py` 공용 헬퍼 사용)."""
         canvas = _hex_rgb("#0b0b0c")
