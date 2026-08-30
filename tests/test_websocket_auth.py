@@ -603,25 +603,69 @@ class TestAuthPersistsSessionLanguages:
         assert repo.get_by_id("r1")["input_lang"] == "ko"
 
     def test_recorded_room_id_is_the_server_resolved_one(self, mock_db):
-        """RL-002: 클라이언트가 보낸 room_id 페이로드가 아니라 서버가 확정한 값.
+        """RL-002: 기록 대상은 클라이언트 payload 가 아니라 서버가 확정한 값.
 
-        auth 메시지에 서버가 거부하는 룸을 끼워 넣어도 기록 대상은 인증이
-        실제로 붙은 룸이어야 한다.
+        **두 값이 실제로 갈리는 분기**를 몰아야 의미가 있다. auth 메시지에
+        room_id 를 아예 넣지 않으면 서버는 DEFAULT_ROOM_ID 로 라우팅하므로,
+        `data.get("room_id")`(=None)를 쓰는 구현과 `resolved_room_id` 를 쓰는
+        구현이 서로 다른 결과를 낸다. room_id 를 보내면서 같은 값을 단언하는
+        형태는 두 구현 모두 통과시켜 가드가 되지 못한다 (RL-004).
         """
-        from room_manager import RoomManager
+        from room_manager import DEFAULT_ROOM_ID, RoomManager
         from websocket_handler import _authenticate_client
 
-        repo = _RecordingRoomRepo({"id": "r1", "status": "active"})
+        repo = _RecordingRoomRepo({"id": DEFAULT_ROOM_ID, "status": "active"})
         mgr = RoomManager(room_repository=repo)
-        ws = _auth_ws_for_room("r1", input_lang="ko", output_lang="vi")
+        ws = _make_websocket(
+            {
+                "type": "auth",
+                "user": {"id": 1, "username": "testuser", "role": "user"},
+                # room_id 없음 → 서버가 DEFAULT_ROOM_ID 로 확정한다.
+                "language_settings": {"input_lang": "ko", "output_lang": "vi"},
+            }
+        )
 
         with (
             patch("websocket_handler.get_user_model", return_value=mock_db),
             patch("websocket_handler._room_manager", mgr),
         ):
-            asyncio.run(_authenticate_client(ws))
+            result = asyncio.run(_authenticate_client(ws))
 
-        assert [c["room_id"] for c in repo.calls] == ["r1"]
+        assert result is not None
+        assert [c["room_id"] for c in repo.calls] == [DEFAULT_ROOM_ID]
+        assert None not in [c["room_id"] for c in repo.calls]
+
+    def test_unsupported_output_lang_does_not_break_auth(self, mock_db):
+        """AC4 를 WS 계층에서 확인 — 지원 목록 밖 코드도 세션을 죽이지 않는다.
+
+        DB 계층 거절은 test_rooms_db 가 덮는다. 여기서 보는 것은 그 False 가
+        인증 흐름으로 새어 나오지 않는다는 것 — auth_success 는 그대로 나가고
+        응답에 검증 사유가 실리지 않는다 (RL-006).
+        """
+        from room_manager import RoomManager
+        from websocket_handler import _authenticate_client
+
+        class _RejectingRepo(_RecordingRoomRepo):
+            def update_session_languages(self, room_id, *, input_lang, output_lang):
+                self.calls.append({"room_id": room_id, "output_lang": output_lang})
+                return False  # database.Room 의 검증 실패 계약과 동일
+
+        repo = _RejectingRepo({"id": "r1", "status": "active"})
+        mgr = RoomManager(room_repository=repo)
+        ws = _auth_ws_for_room("r1", input_lang="ko", output_lang="xx")
+
+        with (
+            patch("websocket_handler.get_user_model", return_value=mock_db),
+            patch("websocket_handler._room_manager", mgr),
+        ):
+            result = asyncio.run(_authenticate_client(ws))
+
+        assert result is not None
+        assert [c["output_lang"] for c in repo.calls] == ["xx"]
+        sent = _get_sent_messages(ws)
+        assert any(m.get("type") == "auth_success" for m in sent)
+        assert all(m.get("type") != "auth_error" for m in sent)
+        assert "xx" not in json.dumps(sent, ensure_ascii=False)
 
     def test_auth_succeeds_when_the_language_write_raises(self, mock_db, capsys):
         """AC8/RL-006: 기록이 터져도 auth_success 는 그대로 나가고 예외 문구는

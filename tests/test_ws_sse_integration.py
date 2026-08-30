@@ -571,16 +571,13 @@ class TestWsToSsePipeline:
 # 둘을 맞춰 주지 않았기 때문이다. 이 테스트는 두 값을 **같은 실행 안에서**
 # 비교한다 — 어느 단위 테스트도 이 비교를 하지 않아 사고를 놓쳤다 (RL-005).
 # ---------------------------------------------------------------------------
-_LANG_DB_COUNTER = {"n": 0}
-
-
 @pytest.fixture
 def real_room_repo(tmp_path):
     """진짜 SQLite + database.Room — 왕복을 스텁으로 대체하지 않는다."""
     from database import DatabaseManager, Room, User
 
-    _LANG_DB_COUNTER["n"] += 1
-    db = DatabaseManager(str(tmp_path / f"lang{_LANG_DB_COUNTER['n']}.db"))
+    # tmp_path 는 테스트 함수마다 고유하므로 별도 카운터가 필요 없다.
+    db = DatabaseManager(str(tmp_path / "lang.db"))
     admin_id = User(db).create_user(
         username="admin52", password="pw", role="admin", usage_limit_seconds=0
     )

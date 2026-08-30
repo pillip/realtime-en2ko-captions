@@ -112,12 +112,10 @@ def _persist_session_languages(room_id, language_settings) -> bool:
         # 메모리 전용 모드(기본 룸 / repo 미주입) — 기록할 DB 행이 없다.
         return False
     try:
-        return bool(
-            repo.update_session_languages(
-                room_id,
-                input_lang=language_settings.get("input_lang", "auto"),
-                output_lang=language_settings.get("output_lang", "ko"),
-            )
+        return repo.update_session_languages(
+            room_id,
+            input_lang=language_settings.get("input_lang", "auto"),
+            output_lang=language_settings.get("output_lang", "ko"),
         )
     except Exception as e:
         # RL-006: 내부 예외는 서버 로그로만. 파이프라인은 계속 돈다.
@@ -260,6 +258,12 @@ async def _authenticate_client(websocket):
             # 새로 여는 /stage/{room_id} · /view/{room_id} 가 실제 송출 채널을
             # 구독하게 만드는 지점이다. room_id 는 클라이언트 payload 가 아니라
             # 서버가 확정한 resolved_room_id (RL-002). 실패해도 인증은 계속된다.
+            #
+            # language_update 분기(:900 부근)와 달리 여기서는 ack(auth_success)
+            # **전에** 기록한다 — 의도적이다. 오퍼레이터가 인증 직후 곧바로
+            # 무대 화면을 열 수 있으므로, 그 페이지가 읽을 행이 그 시점에 이미
+            # 정확해야 한다. 세션 도중의 language_update 는 그런 경합이 없어
+            # ack 지연을 없애는 쪽(먼저 응답)을 택했다.
             _persist_session_languages(
                 resolved_room_id, validated_user["language_settings"]
             )

@@ -1237,3 +1237,64 @@ class TestUpdateSessionLanguagesNoOpGuard:
             is False
         )
         assert spy.updates == []
+
+
+class TestSessionLanguageWhitelistsTrackTheirSources:
+    """화이트리스트가 출처와 갈라지면 언어 기록이 조용히 멈춘다 (RL-001).
+
+    `SUPPORTED_OUTPUT_LANGS` 는 import 로 묶여 있지만 입력 목록은 오퍼레이터
+    드롭다운(`components/webrtc.html` 의 `#selInputLang`)을 손으로 옮겨 적은
+    것이다. 거기에 옵션이 하나 추가되면 그 언어로 도는 세션은 전부 거절되어
+    (`update_session_languages` → False) 무대가 이전 언어를 계속 구독한다 —
+    로그 한 줄 말고는 증상이 없는, 이 이슈가 고친 결함과 똑같은 모양이다.
+    """
+
+    @staticmethod
+    def _input_lang_options() -> list[str]:
+        """webrtc.html 의 #selInputLang <option value=...> 값을 뽑는다."""
+        import re
+        from pathlib import Path
+
+        html = (Path(__file__).parent.parent / "components" / "webrtc.html").read_text(
+            encoding="utf-8"
+        )
+        block = re.search(
+            r'<select id="selInputLang">(.*?)</select>', html, re.S | re.I
+        )
+        assert block is not None, "webrtc.html 에서 #selInputLang 를 찾지 못했다"
+        return re.findall(r'<option value="([^"]+)"', block.group(1))
+
+    def test_input_whitelist_matches_the_operator_dropdown(self):
+        from database import _SESSION_INPUT_LANGS
+
+        assert set(self._input_lang_options()) == set(_SESSION_INPUT_LANGS)
+
+    def test_every_operator_input_option_is_actually_accepted(
+        self, room_model, db_manager, lang_room
+    ):
+        """집합 비교만으로는 부족하다 — 실제로 기록되는지 값으로 확인한다."""
+        for lang in self._input_lang_options():
+            assert (
+                room_model.update_session_languages(
+                    lang_room, input_lang=lang, output_lang="vi"
+                )
+                is True
+            ), lang
+            assert _lang_columns(db_manager, lang_room)["input_lang"] == lang
+
+    def test_output_whitelist_matches_the_operator_dropdown(self):
+        """출력 드롭다운도 같은 계약이다 (#111 에서 en 추가/ja 제거로 싱크)."""
+        import re
+        from pathlib import Path
+
+        from translation import SUPPORTED_OUTPUT_LANGS
+
+        html = (Path(__file__).parent.parent / "components" / "webrtc.html").read_text(
+            encoding="utf-8"
+        )
+        block = re.search(
+            r'<select id="selOutputLang">(.*?)</select>', html, re.S | re.I
+        )
+        assert block is not None
+        options = re.findall(r'<option value="([^"]+)"', block.group(1))
+        assert set(options) == set(SUPPORTED_OUTPUT_LANGS)
