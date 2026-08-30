@@ -2826,6 +2826,426 @@ AC 7/7, 프로덕션 변경은 색 리터럴뿐, 회귀 4건(ISSUE-47 / ISSUE-48
 
 **차단 없음.** F-1·F-2 는 Medium 이지만 **테스트 강도**에 대한 것이고, 출하된 코드는 규격을 만족하며, F-1 은 CI e2e 가 그물을 유지한다. 다만 F-2 는 RL-018 의 재발 벡터 그 자체이고 직전 이슈(ISSUE-45)가 이미 정답 형태를 출하해 두었으므로, **후속 이슈 2번을 다음 스프린트에 반드시 잡을 것**을 권고한다.
 
+# PR #146 — ISSUE-53 SSE control 이벤트 채널 (code / correctness / security / minimality review)
+
+- 리뷰 대상: `a4c7e58` (12 files, +2506/−54), GH Issue #144, 계약 `issues.md:3123`
+- 리뷰 워크트리: `.worktrees/review-ISSUE-53-code` (UI 리뷰어와 분리 — RL-027 재발 방지)
+- 실측: `1382 passed / 155 deselected / 94.09%` (리뷰 전) → **`1385 passed / 155 deselected / 94.09%`** (리뷰 수정 후, 커밋 `020a06b`)
+- e2e(stage+viewer): **78 passed / 23s**. 전체 `-m e2e` 는 136 passed + 19 error — 19건 전부 `test_fullscreen_e2e.py` / `test_room_id_e2e.py` 의 `ERR_CONNECTION_REFUSED`(Streamlit 서버 미기동)로 **이 PR 과 무관한 환경 제약**
+- `ruff check .` / `black --check .` 초록
+- 뮤테이션: **37 뮤턴트 설계 → 35 KILLED, 2 SURVIVED**. 생존 2건은 이 리뷰에서 in-PR 로 가드를 추가해 KILLED 로 전환
+
+## Verdict
+
+**APPROVE-WITH-NITS.** AC 30건 전부 증거로 충족했고, 개발자가 선언한 20 뮤턴트를
+독립적으로 재도출·확장한 37 뮤턴트 중 35건이 스스로 죽었다. 생존한 2건은 **프로덕션
+코드가 옳고 규칙이 주석으로만 존재하던 자리**(RL-004 의 정확한 모양)여서 테스트 3건을
+추가해 닫았다 — 프로덕션 코드는 한 줄도 바꾸지 않았다.
+
+## 1. `_ControlEnvelope` 사양 이탈 — 독립 검증 결과: **개발자가 옳다**
+
+이슈 Implementation Notes 의 스니펫은 이렇다.
+
+```python
+name = payload.get("event")
+await _write_sse_event(resp, name if name in _CONTROL_EVENT_NAMES else "message", payload)
+```
+
+**이 스니펫은 같은 이슈의 AC 를 문자 그대로 위반한다.** AC:
+"Given 자막 payload 에 `"event": "control"` 키가 섞여 들어간 상황 … then **`control` 로
+승격되지 않는다**." 스니펫에 `{"event": "control", "text": "위조"}` 를 넣으면
+`name == "control"` 이고 그것은 허용 목록 안이므로 **정확히 `event: control` 로 승격된다.**
+Implementation Note 자신의 근거("이름 결정 권한을 payload 에 통째로 넘기면 …")도 스니펫이
+아니라 봉투 쪽을 가리킨다 — 스니펫은 그 권한을 payload 에 주되 이름 하나로 제한할 뿐이다.
+
+### 봉투가 건전한 권위 신호인가 — payload 경로 전수 추적
+
+`publish_control` → `_write_sse_event` 사이에서 타입이 세탁될 수 있는지 전 구간을 읽었다.
+
+1. `_publish_control(room_id, **fields)` — 키워드는 `primary_lang` / `caption_scale` 둘뿐
+2. `set_control(...)` → `dict(state)` **평범한 dict**
+3. `build_control_payload(...)` → dict 리터럴, **평범한 dict**
+4. `publish_control(room_id, payload)` → **여기서 `_ControlEnvelope(payload)` 를 매니저가 스스로 붙인다** (호출자가 태그를 인자로 넘기지 않는다)
+5. `_enqueue` → `queue.put_nowait(envelope)` — 포화 경로의 `get_nowait()`+`put_nowait()` 도 **같은 객체**
+6. `_handle_stream`: `get_task.result()` → 같은 객체 → `isinstance(...)`
+
+**5→6 구간에 `dict(x)` / `{**x}` / `.copy()` / JSON 왕복이 하나도 없다.** 세탁 불가.
+역방향도 막혀 있다 — 봉투는 `publish_control` 안에서만 생성되고, 자막은
+`broadcast_translation_for_room` → `mgr.publish(...)` 로만 흐르며 `publish` 는 아무것도
+감싸지 않는다. 즉 **권위가 "내용" 이 아니라 "어느 함수를 호출했는가"** 로 옮겨 갔고, 그
+성질은 런타임 데이터가 아니라 호출 지점의 성질이다. 신뢰 경계가 더 미묘한 곳으로
+옮겨간 것이 아니라 **더 검증 가능한 곳으로** 옮겨갔다.
+
+### 허용 목록이 여전히 load-bearing 인가 — 지워 보고 확인
+
+`event_name = declared if declared in _CONTROL_EVENT_NAMES else "message"` 를
+`declared or "message"` 로 바꾼 뮤턴트(**M2**)는
+`test_the_allow_list_bounds_even_the_control_path` 에서 **KILLED**.
+`publish_control("r1", {"event": "session_end"})` 가 `event: message` 로 나가야 한다는
+단언이 그것을 붙잡는다. `publish_control` 은 공개 메서드이므로 미래의 호출자가 다른
+이름을 실을 수 있고, 허용 목록이 그 상한을 구조적으로 잡는다. **살아 있다.**
+
+봉투 검사만 지운 뮤턴트(**M3** = 이슈의 스니펫 그대로)는
+`test_a_caption_payload_cannot_name_its_own_event` 에서 **KILLED**.
+두 가드가 각각 다른 뮤턴트를 죽인다 — 둘 다 필요하다.
+
+**잔여 관찰(Info, 결함 아님).** `publish`(자막 경로)는 봉투를 벗기거나 거부하지 않는다.
+같은 프로세스 안에서 `sse_broadcast._ControlEnvelope` 라는 **비공개 이름을 일부러 import**
+하면 자막 내용을 control 로 내보낼 수 있다. 공격 경로가 아니고(공격자는 in-process 코드를
+실행하지 못한다) 방어를 추가하면 도달 불가능한 경로에 대한 과잉 방어가 되므로 **고치지
+않는 것이 옳다.** 기록만 남긴다.
+
+## 2. `update_session_languages() -> bool` 의 이중 조건 — TOCTOU 없음, 형식은 개선 여지
+
+```python
+previous = _current_primary_lang(room_id)          # 동기
+if not _persist_session_languages(room_id, ...):   # 동기
+    return
+if previous == output_lang:
+    return
+await _publish_control(...)
+```
+
+- **TOCTOU 없음.** 두 함수 모두 `def`(동기)이고 읽기와 쓰기 사이에 `await` 가 **하나도 없다.**
+  WS 서버는 단일 데몬 스레드의 단일 이벤트 루프이므로 그 구간에 다른 코루틴이 끼어들 수
+  없다. 프로세스가 둘이면 경합하지만 그것은 ISSUE-52 의 쓰기 자체가 이미 갖는 성질이다.
+- **AC 대조.** "성공 → 1회 / 스킵(값 동일·검증 실패) → 0회" 를 만족한다. M11(무조건 발행),
+  M12(쓰기 실패에도 발행) 둘 다 KILLED.
+- **문자 그대로의 한 가지 틈(Info).** `input_lang` 만 바뀌고 `output_lang` 은 그대로인 경우
+  (`auto`→`ko`, 출력은 `vi` 유지) 실제 UPDATE 가 일어나 "기록 성공" 인데 발행은 0회다.
+  AC 를 엄격히 읽으면 1회여야 하지만, 바뀌지 않은 `primary_lang` 을 알리는 것은 모든
+  클라이언트의 `next === currentLang` 가드에서 어차피 무동작이다. AC 괄호의 "(값 동일)" 이
+  의도를 드러내므로 **동작은 개발자 쪽이 옳다.**
+- **비용.** `update_session_languages` 는 no-op 가드를 위해 **이미 내부에서 `get_by_id` 를
+  한다.** `_current_primary_lang` 이 한 번 더 읽으므로 auth 1회당 룸 행을 **두 번** 읽는다.
+  auth 는 세션당 1회, `language_update` 는 사람의 제스처이므로 **성능상 무시 가능**하다.
+- **더 깨끗한 형식(follow-up).** `Room.update_session_languages` 가 bool 대신 이전
+  `primary_output_lang` 또는 `Literal["written","unchanged","rejected"]` 를 돌려주면
+  `_current_primary_lang`(21줄)과 중복 조회가 **동시에** 사라진다. ISSUE-52 의 공개 계약과
+  TC-071/TC-072 를 바꾸므로 이 PR 이 아니라 별도 이슈다.
+
+## Code Review
+
+### C-1 (Low, 수정함) `websocket_handler.py:1025` — 서버 확정 room_id 규칙에 가드가 없었다
+
+핸들러 주석이 "room_id 는 클라이언트 payload 가 아니라 인증이 확정한 값이다 (RL-002)" 를
+주장하지만, 그것을 깨뜨리는 뮤턴트가 **전체 스위트를 통과했다**.
+
+```python
+# M19 (SURVIVED, 105 passed)
+room_id = data.get("room_id") or user_info.get("room_id")
+```
+
+PR #141 에서 잡은 `test_recorded_room_id_is_the_server_resolved_one` 과 **같은 실패 모양**이다
+— 주장은 있고 그 주장이 거짓일 때 붉어지는 단언이 없다. WS 인증에 아직 룸 소유권 검사가
+없으므로(ISSUE-56, 미소유) 이 한 줄이 다른 룸의 무대 화면을 건드리지 못하게 막는 **유일한**
+장치다.
+**수정**: `test_a_client_supplied_room_id_is_ignored` 추가 — payload 에 `room_id:"victim-room"`
+을 실어 보내고 상태·발행이 전부 `r1` 로만 가는 것을 값으로 단언. RED 확인 완료(M19 → KILLED).
+
+### C-2 (Low, 수정함) `components/viewer.html:829-833` — `langLocked` 순서 규칙에 가드가 없었다
+
+```js
+langLocked = true;                                  // ← 이 두 줄의 순서가 규칙이다
+if (!next || next === currentLang) return;
+```
+
+두 줄을 맞바꾼 뮤턴트(**C13**)가 **정적 + e2e 281건을 전부 통과**했다. 그 상태에서는 "룸
+기본값을 일부러 다시 고른 청중" 만 조용히 잠기지 않고, 이후 control 통지에 끌려간다.
+기존 e2e `test_the_lock_survives_a_return_to_the_room_default` 는 `en`→`ko` 로 값이 **달라지는**
+경로만 태우므로 이 분기를 밟지 못한다.
+**수정**: `test_the_lock_is_recorded_before_the_no_op_early_return` — 두 문장의 오프셋 순서를
+단언(파일의 기존 순서 단언 스타일 그대로). RED 확인 완료.
+
+### C-3 (Low, 수정함) 배율 범위 0.8/1.6 이 세 곳에 손으로 적혀 있고 대조가 없다 (RL-025)
+
+`websocket_handler.CAPTION_SCALE_MIN/MAX`, `stage.html`, `viewer.html` — 세 사본.
+ISSUE-54 가 `<input min=0.8 max=1.6>` 로 **네 번째** 사본을 만들 예정이다. 갈라지면 서버가
+허용하는 값을 클라이언트가 잘라 내고(무대 자막이 슬라이더를 안 따라온다) **어디에도 로그가
+남지 않는다.** 번들러가 없어 상수를 공유할 수 없으므로 ISSUE-52 리뷰가 입력언어 화이트리스트에
+한 것과 같은 처리를 한다.
+**수정**: `test_the_range_is_one_rule_across_the_server_and_both_templates` — 서버 상수와 두
+템플릿 상수의 값 일치를 단언. RED 확인 3건(뷰어 MAX / 무대 MIN / 서버 MIN) 전부 KILLED.
+
+### C-4 (Info) `websocket_handler.py:190-191` — `_publish_control` 의 `if not room_id: return` 은 두 호출자 모두에서 도달 불가
+
+auth 경로는 falsy room_id 면 `_persist_session_languages` 가 이미 `False` 를 돌려주고,
+`stage_control` 은 `if scale is None or not room_id` 로 먼저 걸러 낸다. 커버리지에서도
+새로 미커버(`websocket_handler.py:191`)로 나타난다. 상태를 쓰는 함수의 방어 가드를 지우는
+것은 "명백히 안전한 삭제" 가 아니므로 **보고만 한다.**
+
+### C-5 (Info) 무대 재구독의 "측정 먼저" AC 는 무대에서 공허하다 — 개발자의 대체가 옳다
+
+AC 는 재구독 경로에 스크롤 추종 측정이 DOM 쓰기보다 앞선다는 순서 단언을 요구한다.
+`stage.html` 에는 `isUserAtBottom()` 자체가 없다(`_scrollToBottom()` 무조건 호출) — 무대에는
+잴 사용자 상태가 없고 `test_no_user_scroll_override_controls` 가 그것을 못 박는다.
+개발자는 `test_resubscribe_keeps_the_stage_free_of_scroll_affordances` 로 **반대 불변식**을
+단언했다. 뷰어 쪽은 AC 그대로 `test_switch_language_measures_follow_before_it_writes` 가
+있고 뮤턴트 C15 로 KILLED 확인. **정당한 이탈이며 주석에 근거가 남아 있다.**
+
+### C-6 (Info) `build_control_payload` 의 `room_id` / `timestamp` 는 어떤 소비자도 읽지 않는다
+
+두 템플릿이 control payload 에서 읽는 것은 `caption_scale` 과 `primary_lang` 둘뿐이다
+(`event` 는 서버의 허용 목록이 읽으므로 필수). 자막 payload 와 모양을 맞추는 것,
+`architecture.md` 이벤트 표에 계약으로 적힌 것이 방어 근거이므로 **삭제를 권하지 않는다.**
+
+## Security Findings
+
+### S-1 (Medium) — 인증 없는 WS 채널의 능력이 하나 늘고, 그중 하나는 **실시간 반복 가능**하다
+
+이 이슈가 `_authenticate_client` 의 구멍(ISSUE-55: 비밀 없음, ISSUE-56: 룸 소유권 검사 없음)을
+만들지는 않았지만 **넓힌다.** 증분을 정직하게 적으면:
+
+| | ISSUE-53 이전 | 이후 |
+|---|---|---|
+| 자막 위조 | 가능 (ISSUE-30 채널) | 그대로 |
+| 룸 언어 영구 덮어쓰기 | 가능 (ISSUE-52) — **다음에 여는 페이지**만 영향 | 그대로 |
+| 이미 열린 무대/뷰어의 실시간 조작 | **불가** | **가능** — `language_update` 하나가 열려 있는 모든 non-pinned 화면을 즉시 재구독시킨다 |
+| 자막 배율 | 불가 | 가능 (0.8–1.6, 인메모리, 비영속) |
+
+핵심은 마지막에서 두 번째 줄이다. 언어를 `ko`↔`vi` 로 번갈아 보내면 매번 `replaceChildren()` +
+대기 문구 복귀가 일어나므로, `WS_RATE_LIMIT_PER_MINUTE=30` 안에서도 **2초에 한 번 자막 컬럼을
+비울 수 있다.** 무대 화면에는 조작 표면이 0개라(NFR-025) 현장에서 되돌릴 수단이 없고, 새로고침도
+서버 상태가 스냅샷으로 다시 밀어 주므로 소용없다 — 행사장 자막 블랙아웃이다.
+
+**증분은 Medium**(기존 능력이 이미 "프로젝터에 임의 문자열 표시" 이므로 상한을 넘지 않는다),
+**밑에 깔린 구멍은 High**(ISSUE-55). 이 PR 에서 고치지 않는 것이 옳다 — 소유자가 다르고,
+여기서 임시 방어를 넣으면 ISSUE-55 가 진짜 해법을 넣을 때 두 번째 규칙이 된다.
+**ISSUE-55 본문에 이 증분(실시간·반복 가능·복구 수단 없음)을 근거로 추가할 것을 권한다.**
+
+### S-2 (통과) 범위 검증 — 요청받은 값 전부 실측
+
+`_coerce_caption_scale` 을 값 단위로 확인했다. `0.1` / `9` / `0.79` / `1.61` / `"크게"` /
+`"1.2"` / `NaN` / `inf` / `None` / `True` / `[1.2]` 전부 거절, 경계 `0.8`·`1.6` 포함 허용.
+`True` 는 `isinstance(value, bool)` 를 **먼저** 걷어내므로 통과하지 못한다(파이썬의 고전적
+구멍이며 파라미터 목록에 값으로 들어가 있다). 뮤턴트 4종 전부 KILLED:
+M13(bool 검사 삭제), M14(`isfinite` 삭제), M15(경계 배타 비교), M16(문자열 강제 변환).
+거절 시 **상태 0건 / 발행 0건 / `stage_control_ack` 없음**(M20 KILLED), 응답은 고정 상수
+하나이고 받은 값·예외 문자열·`caption_scale` 키가 와이어에 없다(M17 KILLED, RL-006).
+
+### S-3 (통과) 크로스룸 유출 없음
+
+`publish_control` 은 `rid != room_id` 를 continue 로 걸러 낸다.
+`test_every_language_channel_of_the_room_receives_it` 이 **다른 룸의 큐 0건**을 단언하고,
+M1(첫 채널만 발행)이 KILLED. `set_control`/`get_control` 도 룸 키 사전이며
+`test_control_state_is_per_room` 이 값으로 확인한다.
+
+### S-4 (통과) SSE 프레임 인젝션 없음
+
+`_write_sse_event` 는 `json.dumps(payload, ensure_ascii=False)` 를 쓰므로 payload 안의 개행이
+`\n` 으로 이스케이프되어 프레임 경계를 깰 수 없다. `event_name` 은 허용 목록이 만든 리터럴
+`"control"`/`"message"` 둘뿐이라 이름 쪽으로도 주입이 불가능하다. control payload 의 값은
+검증된 언어 코드와 검증된 float 뿐이다(임의 문자열이 들어가는 자리가 없다).
+
+### S-5 (Info) 거절 로그가 클라이언트 입력을 무제한 `!r` 로 찍는다
+
+`print(f"[Control] stage_control 거절 (room={room_id}): {data.get('caption_scale')!r}")`.
+10MB 문자열을 보내면 그대로 서버 로그에 들어간다. 분당 30건 레이트리밋이 상한을 잡고,
+파일이 아니라 stdout 이며, **같은 패턴이 `database.update_session_languages` 에 이미 있다**
+(`{input_lang!r}`). 이 PR 이 만든 규칙이 아니므로 여기서 바꾸지 않는다.
+
+## RL-004 스윕 — 뮤테이션 37건
+
+개발자가 선언한 20건을 그대로 믿지 않고 독립적으로 재도출하고 확장했다. **diff 밖 호출부**를
+특히 팠다(ISSUE-47 의 High 가 거기서 새어 나왔다).
+
+**서버 (20/20 중 19 KILLED, 1 SURVIVED)**
+M1 fan-out 첫 채널만 · M2 허용 목록 삭제 · M3 봉투 검사 삭제(=이슈 스니펫) · M4 `set_control`
+머지→대입 · M5 `get_control` 사본 미반환 · M6 스냅샷 기본값 날조 · M7 스냅샷 블록 삭제 ·
+M8 포화 시 새 프레임 폐기 · M9 `lang_pinned` 를 값 비교로 · M10 `LANG_PINNED` 미이스케이프 ·
+M11 무조건 발행 · M12 쓰기 실패에도 발행 · M13 bool 허용 · M14 `isfinite` 삭제 ·
+M15 경계 배타 · M16 문자열 강제 변환 · M17 거절에 값 에코 · M18 auth 스냅샷 제거 ·
+M20 거절 시 발행 → **전부 KILLED**.
+**M19 클라이언트 room_id 채택 → SURVIVED** (C-1 에서 수정).
+
+**클라이언트 (17/17 중 16 KILLED, 1 SURVIVED)**
+C1 `lang_pinned` 무시 · C2 동일 언어 가드 삭제 · C3 지원 목록 검사 삭제 · C4 무대 `sessionEnded`
+가드 삭제 · C5 재구독 타자기 튜플 미초기화 · C6 `connect()` 가 부트스트랩 재독 · C7/C17 클램프
+삭제 · C8 재구독 `_twStop()` 삭제 · C9/C16 리스너를 다른 이름에 등록 · C10 `currentLang` 미갱신 ·
+C11 `langLocked` 무시 · C12 드롭다운 미동기화 · C14 뷰어 종료 가드 삭제 · C15 측정을 쓰기 뒤로
+→ **전부 KILLED**.
+**C13 `langLocked` 를 조기 반환 뒤로 → SURVIVED** (C-2 에서 수정).
+
+**개발자가 특히 지목한 단언 재도출**
+- "정확히 2 채널 수신" 은 **언어별 publish 에서 실제로 붉어진다** (M1 KILLED). 개수 단언이라 `>= 1` 로는 통과하는 결함을 잡는다.
+- "스킵 시 발행 0" 은 M11/M12 양쪽에서 붉어진다 — 값 동일 / 검증 실패 두 스킵을 **각각** 태운다.
+- 접속 스냅샷 순서는 M7(블록 삭제)에서 붉어지고, `test_the_snapshot_precedes_caption_frames` 가 오프셋 비교로 자막 프레임과의 순서까지 잡는다.
+- 클램프 경계는 M15(배타 비교)와 e2e 클램프 테스트 양쪽에서 붉어진다.
+- `langLocked`/`lang_pinned` 는 C11/C1 에서 붉어진다 — 다만 `langLocked` **기록 시점**만 구멍이었다(C-2).
+
+**약점 하나(Low, 보고만).** C5(재구독이 `twTarget`/`twShown`/`twFinalize` 를 남겨 둠)와
+C8(`_twStop()` 삭제)는 **정적 단언 1건씩으로만** 죽는다 — 행동 e2e 는 이 두 뮤턴트를 보지
+못한다. `test_a_mid_typewriter_switch_settles_clean` 이 rAF 수와 최종 DOM 만 보기 때문이다.
+정적 단언이 문장 단위로 정확해서 실용상 충분하지만, RL-022 의 교훈이 걸린 자리이므로 기록한다.
+
+## diff 밖 호출부 추적 (ISSUE-47 형태)
+
+**"내가 세운 상태를 다른 코드가 지우는가" 를 별도 질문으로 다뤘다.**
+
+- `--caption-scale` 은 `document.documentElement.style` 에 산다. 두 파일 전체에
+  `removeProperty` / `style.cssText` 대입이 **0건**이고, `stage.html:512` 의
+  `--caption-width` 설정은 부트스트랩 1회뿐이다. **지우는 경로 없음.**
+- `stage.html` 의 `currentLang` 쓰기는 `let` 초기화와 `resubscribe` 둘뿐(C10 KILLED).
+  `applyWaitingText(CONFIG.caption_lang)`(`:1177`)은 `DOMContentLoaded` 안, `connect()` **이전**
+  1회이므로 재구독을 되돌리지 않는다.
+- `connect()` 호출부는 정확히 2곳 — 부트스트랩과 `resubscribe(next)` — 이고
+  `test_stream_subscription_uses_the_bootstrapped_caption_lang` 이 `sorted(callers) ==
+  ["CONFIG.caption_lang", "next"]` 로 **개수와 인자 철자까지** 못 박는다. 세 번째 호출부가
+  생기면 붉어진다.
+- `appendLine`/`_lockLine`/`_ensureCurrentLine`/`clearCaptions`/`setCaptionState` 를 읽었다 —
+  control 상태를 만지는 것이 하나도 없다.
+
+### EventSource 자동 재연결은 바뀐 언어로 재구독하는가 — **그렇다**
+
+`EventSource` 는 **생성 시점의 URL 로만** 재연결한다. `connect(lang)` 이 URL 을 인자에서
+만들고 `resubscribe` 가 새 언어로 새 인스턴스를 만들므로, 재연결은 **현재 언어**를 쓴다.
+부트스트랩 값으로 되돌아가는 경로는 존재하지 않는다(위의 `connect()` 호출부 2개 단언이 이를
+구조적으로 보장한다).
+
+서버 쪽도 안전한 방향으로 맞물린다 — 재연결하면 접속 스냅샷이 다시 오지만
+`next === currentLang` 가드가 무동작으로 처리한다(C2 KILLED, e2e
+`test_a_repeated_control_does_not_recreate_the_stream`). 뷰어에서 `en` 을 직접 고른 청중은
+`langLocked` 로 보호된다.
+
+**주의(Info).** e2e 하네스의 `FakeEventSource` 는 자동 재연결을 흉내 내지 않으므로 이 성질은
+**행동으로 검증되지 않았다** — 위 결론은 코드 추적 + 호출부 개수 단언에 근거한다. 실제 재연결
+경로가 행동으로 필요해질 때(ISSUE-55/56 이후)를 위해 기록해 둔다.
+
+## NFR-025 가드 2건 — 바이트 동일 확인
+
+두 함수 본문을 `origin/main` 과 `HEAD` 에서 각각 추출해 SHA-256 을 비교했다.
+
+| 테스트 | origin/main | HEAD | 판정 |
+|---|---|---|---|
+| `test_no_interactive_controls` | `058f13df6080` (1752 B) | `058f13df6080` (1752 B) | **바이트 동일** |
+| `test_no_presenter_keyboard_interference` | `92bc0b574ee2` (3408 B) | `92bc0b574ee2` (3408 B) | **바이트 동일** |
+
+테스트 전체 diff 에서 삭제된 단언 라인은 **`assert "CONFIG.caption_lang" in stage_html` 단 1줄**이며,
+그 자리는 4개의 더 구체적인 단언(seed 정규식 / `URLSearchParams(location.search)` 개수 1 /
+`connect()` 호출부 집합 상등 / `resubscribe` 안의 `connect(next)`)으로 대체됐다. 원래 의도
+("브라우저가 쿼리를 다시 파싱하지 않는다")는 두 번째 단언이 **개수까지** 못 박아 오히려
+강해졌다. **완화·삭제·축소된 기존 단언은 그 외 0건.**
+
+## RL-022 — 뷰어 종료 창이 넓어졌는가: **아니다**
+
+- 새 `control` 리스너는 `stateNodes.ended.classList.contains("active")` 를 **모든 효과보다 먼저**
+  읽고 조기 반환한다(C14 KILLED, e2e + 정적 순서 단언 양쪽).
+- **`session_end` 는 서버가 접속 시점에만 쓴다** (`sse_broadcast.py:689-707`, closed 룸 →
+  1건 쓰고 `write_eof`). 살아 있는 스트림 중간에 나가는 `session_end` 는 존재하지 않는다.
+  따라서 "재구독이 in-flight `session_end` 를 삼킨다" 는 시나리오는 **성립하지 않는다** —
+  오히려 재구독하면 새 연결에서 즉시 `session_end` 를 받는 자가 교정 방향이다.
+- 기존 `message` 경로의 결함(늦은 프레임 하나가 끝난 세션을 되살림)은 **그대로**이며 이 PR 이
+  건드리지 않았다 — 범위 밖 선언대로다. 진입점이 하나 늘었지만 그 진입점은 무장되지 않았다.
+
+**미소유 2건도 악화되지 않음을 확인**: `broadcast_translation_for_room` 의 빈 프레임 서버측
+가드 부재(무대 `finalizeCaption` 의 클라이언트측 가드가 그대로), `source_lang == target_lang`
+자기 번역(ISSUE-57) — 둘 다 control 경로가 지나가지 않는다.
+
+## 커버리지 델타 — −0.20pp, 전부 방어 분기
+
+기준선을 직접 측정했다. 현재 `origin/main` 은 `ee409e7`(ISSUE-43 머지 후)이고
+`guard_mutations.py`(262 stmts / 9 miss)를 포함하므로 PR 브랜치(`972653b` 파생)와 직접 비교할
+수 없다. 그 모듈을 뺀 정규화 값:
+
+| | Stmts | Miss | Cover |
+|---|---|---|---|
+| 기준선 (`ee409e7` − `guard_mutations.py`) | 2135 | 122 | **94.29 %** |
+| PR (`a4c7e58`) | 2216 | 131 | **94.09 %** |
+
+**새로 미커버가 된 줄은 정확히 4곳이다** (나머지 미커버 블록은 줄 번호만 이동한 기존 항목):
+
+| 위치 | 무엇인가 | 문제인가 |
+|---|---|---|
+| `sse_broadcast.py:741-743` | 접속 스냅샷 쓰기 중 `ConnectionResetError` 정리 | 3줄 위의 `: connected` 쓰기 실패 핸들러(`724-726`)와 **동일한 모양이고 그것도 main 에서 미커버**다. 일관됨 |
+| `websocket_handler.py:177-180` | `_current_primary_lang` 의 DB 읽기 예외 (RL-006 로그 후 None) | 미커버. 다만 `get_by_id` 가 터지면 뒤이은 `_persist_session_languages` 도 같은 repo 를 때려 `False` → 발행 0회로 **안전하게 열화**한다 |
+| `websocket_handler.py:191` | `_publish_control` 의 `if not room_id` | **두 호출자 모두에서 도달 불가** (C-4) |
+| `websocket_handler.py:197-198` | `_publish_control` 의 발행 실패 로그 | 실질적으로 도달 불가 — `set_control` 은 던지지 않고 `_enqueue` 는 `QueueFull` 을 삼킨다 |
+
+**AC 를 담은 줄은 하나도 새로 미커버가 되지 않았다.** 하락분은 전부 "터질 리 없지만 터지면
+세션을 죽이지 않기 위한" 열화 분기다. 차단 사유 아님.
+
+## AC 대조 (30건 전부 충족)
+
+프로토콜/서버 8건, 클라이언트 언어 7건, 파이프라인 불변식 5건, 폰트 배율 3건, NFR-025 3건,
+`#### Tests` 17 bullet — 각각 대응 테스트를 확인했고, 위 뮤테이션 표가 "그 테스트가 실제로
+문다" 를 증명한다. `{{LANG_PINNED}}` 는 무대 템플릿에만 있고 뷰어에는 없다
+(`test_the_viewer_page_does_not_carry_the_flag`), `_json_for_script` 를 통과하며
+(`test_the_flag_is_a_json_literal_not_a_python_bool`, M10 KILLED), 값 비교가 아니라
+"요청이 있었고 채택되었다" 로 판정한다(M9 KILLED — `?lang=ko` 가 룸 기본값과 같아도 pinned).
+
+## Over-Engineering
+
+`websocket_handler.py:190-191`: delete `_publish_control` 의 `if not room_id: return` (두 호출자 모두에서 도달 불가, 커버리지도 미커버) → 상태를 쓰는 함수의 방어 가드라 **보고만 한다**, −2
+`websocket_handler.py:161-181`: yagni `_current_primary_lang` 은 `update_session_languages` 의 bool 이 두 가지를 뭉갠 탓에만 존재한다 → ISSUE-52 의 반환을 tri-state/이전값으로 바꾸면 함수와 중복 `get_by_id` 가 동시에 사라진다 (별도 이슈), −21
+`sse_broadcast.py:88-90`: delete `build_control_payload` 의 `room_id`/`timestamp` — 어떤 클라이언트도 읽지 않는다 → 자막 payload 와의 모양 일치 + architecture.md 계약이 방어 근거이므로 **삭제 권하지 않음**, −2
+`components/stage.html` ↔ `components/viewer.html`: shrink `applyCaptionScale`(6) · `closeStream`(5) · `CAPTION_SCALE_*` 상수와 주석(6) · `control` 리스너 본문(11) · `:root` 근거 주석(9) ≈ **37줄이 두 파일에 사실상 동일하게 존재** → 번들러도 정적 JS 라우트도 없다는 기존 판정(RL-001 의 ISSUE-41 항목)이 여전히 유효하므로 **통합하지 않는 것이 옳다**. 다만 이번에는 사본이 **의미 있게 갈라져 있다**(무대는 `sessionEnded` 플래그, 뷰어는 DOM 클래스) — 강제된 차이지만 RL-001 드리프트가 시작되는 정확한 모양이다. C-3 의 상수 대조 테스트가 최소한 숫자 사본만은 묶는다, −37 (실행 안 함)
+
+**Net removable: 약 −25줄** (도달 불가 가드 2줄 + `_current_primary_lang` 21줄, 둘 다 별도 이슈).
+템플릿 중복 37줄은 아키텍처 결정이 막고 있으므로 제외했다. `_ControlEnvelope`(사양 이탈의
+핵심, 사다리 통과), `build_control_payload`(호출부 2곳·모듈 2개), `_enqueue`(호출부 2곳,
+이슈가 명시적으로 요구 — RL-001), `_coerce_caption_scale`(신뢰 경계 검증, 잘라 내면 안 됨),
+`_publish_control`/`_record_session_languages`(각각 호출부 2곳, RL-001 을 옳게 적용),
+`SpyBroadcastManager`(테스트 모듈 2개 공유, 진짜 매니저를 상속해 fan-out 을 실제로 통과시킨다)
+— **나머지는 전부 사다리를 통과했다.**
+
+## Follow-ups (이 PR 이 아니라 별도 이슈)
+
+1. **ISSUE-55 본문 보강** — S-1 의 증분(실시간·반복 가능·현장 복구 수단 없음)을 근거 표로 추가.
+   지금 이슈 본문은 "다음에 여는 페이지가 틀린다" 수준으로만 적혀 있는데, ISSUE-53 이후에는
+   **이미 열린 프로젝터 화면을 2초마다 비울 수 있다.**
+2. **`Room.update_session_languages` 의 반환을 tri-state 로** — `_current_primary_lang`(21줄)과
+   auth 경로의 중복 `get_by_id` 를 동시에 없앤다. ISSUE-52 의 공개 계약과 TC-071/TC-072 변경.
+3. **재구독 타자기 튜플 초기화의 행동 가드** — C5/C8 은 정적 단언 1건씩으로만 죽는다.
+   RL-022 가 걸린 자리이므로 rAF 계측이 아니라 `twTarget`/`twShown` 을 직접 들여다보는 e2e 가
+   하나 있으면 좋다.
+4. **live 스트림에는 `session_end` 가 흐르지 않는다** — 살아 있는 무대 화면은 룸이 닫혀도
+   연결이 끊기기 전까지 종료를 모른다(`sse_broadcast.py:689` 는 접속 시점 검사뿐). 이 PR 과
+   무관한 기존 성질이지만 control 채널이 생긴 지금은 `session_end` 를 control 과 같은 fan-out 에
+   태울 수 있다 — 별건.
+
+## Self-Review
+
+**심각도 재검토.** S-1 을 High 로 올릴지 오래 고민했다. 올리지 않은 이유는 **증분** 판정이기
+때문이다 — 같은 소켓으로 이미 "프로젝터에 임의 문자열 표시" 가 가능하므로 상한이 올라가지
+않는다. 다만 *복구 불가능성*(무대에 조작 표면 0개, 새로고침도 스냅샷에 덮인다)은 새로 생긴
+성질이라 Low 로 내리는 것도 정직하지 않다. Medium 이 맞다.
+C-1/C-2/C-3 는 **프로덕션 코드가 옳으므로** 결함이 아니라 가드 부재다 — Low. 다만 C-1 은
+보안 불변식이라 Low 중에서도 우선순위가 높고, 그래서 in-PR 로 닫았다.
+
+**오탐 점검.** ① "`stage_control` 이 크로스룸을 허용한다" 는 **오탐이다** — `user_info["room_id"]`
+는 auth 가 확정한 값이다. 진짜 문제는 auth 자체에 소유권 검사가 없다는 것이고 그것은 ISSUE-56 다.
+② "봉투가 `dict()` 로 세탁된다" 는 **오탐이다** — 큐 경로를 전수 추적해 복사가 0건임을 확인했다.
+③ "재구독이 `session_end` 를 삼킨다" 는 **오탐이다** — 서버가 live 스트림에 `session_end` 를
+쓰지 않는다는 사실을 코드로 확인했다. ④ "허용 목록이 봉투 때문에 죽은 코드가 됐다" 는
+**오탐이다** — M2 가 실제로 죽는다.
+
+**사각 지대 스캔.** 결함을 하나도 못 찾은 범주를 다시 뒤졌다 — SSE 프레임 인젝션(S-4),
+크로스룸(S-3), 언어 화이트리스트(control 발행 값은 `update_session_languages` 가 이미 검증한
+뒤의 값), 라이브 리전 중복(e2e 가 `[aria-live]` 소유자 집합을 단언), HTML sink(기존 회귀
+테스트 유지), 스레드 간 큐 접근(WS 루프 → SSE 루프, **이 PR 이 만든 성질이 아니라 자막이
+이미 지나가는 경로**이고 설계 결정 3 에 명시). 전부 통과.
+**남은 사각 지대 하나**: EventSource 자동 재연결이 행동으로 검증되지 않았다(하네스가 흉내
+내지 않는다). 코드 추적 + 호출부 개수 단언으로 대신했다.
+
+**AC 검증.** 30건 전부 대응 테스트를 확인했고, 그 테스트들이 실제로 문다는 것을 37 뮤턴트로
+확인했다.
+
+**확신도: High.** 개발자의 20/20 주장을 그대로 받지 않고 37건을 독립 도출해 2건의 생존자를
+찾았다. 가드 바이트 동일성은 SHA-256 으로, 커버리지 기준선은 `origin/main` 을 실제로 체크아웃해
+측정했다. 유일하게 Medium 확신인 것은 위 사각 지대(자동 재연결의 행동 미검증) 하나다.
+
+## Resolution — 리뷰어 in-PR 수정 (커밋 `020a06b`)
+
+| ID | 심각도 | 처리 | RED 확인 |
+|---|---|---|---|
+| C-1 | Low(보안 불변식) | `test_a_client_supplied_room_id_is_ignored` | M19 SURVIVED → **KILLED** |
+| C-2 | Low | `test_the_lock_is_recorded_before_the_no_op_early_return` | C13 SURVIVED → **KILLED** |
+| C-3 | Low | `test_the_range_is_one_rule_across_the_server_and_both_templates` | 뷰어 MAX / 무대 MIN / 서버 MIN 3종 전부 **KILLED** |
+
+**프로덕션 코드 변경 0건.** 반영 후 `1385 passed / 155 deselected / 94.09%`,
+e2e(stage+viewer) `78 passed`, `ruff` · `black` 초록.
+S-1, C-4, C-5, C-6 및 Follow-ups 4건은 이 PR 에서 건드리지 않았다.
+
 ---
 
 # Review Notes — ISSUE-50 (PR #149)

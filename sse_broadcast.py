@@ -50,9 +50,43 @@ from translation import SUPPORTED_OUTPUT_LANGS
 # 메모리 누수는 불가).
 _DEFAULT_QUEUE_MAXSIZE = 32
 
+# 기본 `message` 가 아닌 이름으로 나갈 수 있는 이벤트의 **전부** (ISSUE-53).
+# 이름 결정 권한을 payload 에 통째로 넘기면 그 성질이 코드가 아니라 관행으로만
+# 유지된다. 허용 목록 한 줄이 그것을 구조적 불변식으로 바꾼다.
+_CONTROL_EVENT_NAMES = frozenset({"control"})
+
+
+class _ControlEnvelope(dict):
+    """`publish_control` 이 큐에 넣는 payload 래퍼 (ISSUE-53).
+
+    ``dict`` 그대로라 큐/직렬화/동등 비교가 전부 기존과 같지만, **타입으로**
+    자막 경로와 구분된다. 이 구분이 필요한 이유: 이벤트 이름을 payload 내용
+    에서만 읽으면 ``{"event": "control"}`` 이 섞인 자막 payload 가 자기 이름을
+    정하게 된다. 이름은 **어느 경로로 발행됐는가**가 정해야 하고, 그 사실을
+    담을 수 있는 것은 내용이 아니라 타입뿐이다.
+    """
+
+    __slots__ = ()
+
+
 # Type alias for the translate callback the websocket_handler passes in.
 # Signature: (text, source_lang, target_lang) -> translated_text
 TranslateFn = Callable[[str, str, str], Awaitable[str | None]]
+
+
+def build_control_payload(room_id: str, state: dict[str, Any]) -> dict[str, Any]:
+    """룸 control 상태를 SSE 프레임 payload 로 만든다 (ISSUE-53).
+
+    고정 키를 ``**state`` **뒤에** 놓는 것이 의도된 순서다 — 상태에 ``event``
+    키가 들어와도 프레임 이름을 바꿀 수 없다. `_handle_stream` 의 허용 목록과
+    같은 규칙을 조립 시점에서 한 번 더 적용한다.
+    """
+    return {
+        **state,
+        "event": "control",
+        "room_id": room_id,
+        "timestamp": time.time(),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +125,16 @@ class BroadcastManager:
         self._current: dict[str, int] = {}
         # room_id -> {lang: count}
         self._by_lang: dict[str, dict[str, int]] = {}
+        # ISSUE-53: 룸 단위 프레젠테이션 control 상태 (primary_lang / caption_scale).
+        # **프로세스 메모리 전용이다.** rooms.stage_config 에 넣지 않는 이유는
+        # 그 블롭이 관리자 소유의 행사 전 브랜딩 기록이고, 관리자 폼의
+        # normalize→save 왕복이 자기가 모르는 키를 조용히 버리기 때문이다
+        # (stage_config.normalize_stage_config) — 행사 중에 맞춰 둔 값이 로고
+        # 하나 바꾸는 순간 아무 로그 없이 사라진다 (RL-024/RL-025).
+        # 잔여 갭: **서버 재시작 시 caption_scale 이 1.0 으로 돌아간다.**
+        # 복구는 오퍼레이터가 슬라이더를 한 번 움직이는 것이고, 언어는 룸 행에
+        # 남아 있으므로(ISSUE-52) 페이지 로드 시점 정합은 유지된다.
+        self._control: dict[str, dict[str, Any]] = {}
         # database.Room 호환 (update_viewer_metrics / get_viewer_metrics).
         # Typed Any to avoid an import cycle and to keep tests trivial.
         self._metrics_repo = metrics_repo
@@ -210,6 +254,58 @@ class BroadcastManager:
         viewers = self._channels.get((room_id, lang))
         return bool(viewers)
 
+    def set_control(self, room_id: str, **fields: Any) -> dict[str, Any]:
+        """Merge ``fields`` into the room's control state; return the snapshot.
+
+        Synchronous and lock-free like :meth:`has_viewers` / :meth:`get_metrics`
+        — this is a two-scalar dict update on the operator's path, and putting
+        it behind the channel registry lock would block the SSE handler on an
+        operator gesture. Merge (not replace) so a caption-scale update cannot
+        wipe the primary language, and vice versa.
+        """
+        state = self._control.setdefault(room_id, {})
+        state.update(fields)
+        # Copy on the way out too — the caller builds a wire payload from this
+        # and must not be able to reach back into the manager's state.
+        return dict(state)
+
+    def get_control(self, room_id: str) -> dict[str, Any] | None:
+        """Return a **copy** of the room's control state, or None if it has none.
+
+        ``None`` rather than ``{}`` is deliberate: "no state" is what stops
+        `_handle_stream` from writing a connect-time snapshot, and inventing a
+        default there would push a made-up language onto every new viewer.
+        """
+        state = self._control.get(room_id)
+        return dict(state) if state else None
+
+    def _enqueue(
+        self, queue: asyncio.Queue, payload: dict[str, Any], *, room_id: str, lang: str
+    ) -> None:
+        """Put ``payload`` on ``queue``, dropping its oldest item when full.
+
+        Shared by :meth:`publish` and :meth:`publish_control` so the saturation
+        policy has exactly one definition — a second copy drifts, and the shape
+        of that drift is "control frames are the only ones silently lost"
+        (RL-001).
+        """
+        try:
+            queue.put_nowait(payload)
+        except asyncio.QueueFull:
+            # Drop one old message, then put the new one.
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            try:
+                queue.put_nowait(payload)
+            except asyncio.QueueFull:
+                # Still full (concurrent producer) — give up on this viewer.
+                print(
+                    f"[SSE] dropping payload, viewer queue saturated "
+                    f"(room={room_id} lang={lang})"
+                )
+
     async def publish(self, room_id: str, lang: str, payload: dict[str, Any]) -> None:
         """Enqueue payload for every viewer of (room_id, lang).
 
@@ -221,22 +317,22 @@ class BroadcastManager:
             return
         # Snapshot so concurrent unregisters don't trip iteration.
         for q in list(viewers):
-            try:
-                q.put_nowait(payload)
-            except asyncio.QueueFull:
-                # Drop one old message, then put the new one.
-                try:
-                    q.get_nowait()
-                except asyncio.QueueEmpty:
-                    pass
-                try:
-                    q.put_nowait(payload)
-                except asyncio.QueueFull:
-                    # Still full (concurrent producer) — give up on this viewer.
-                    print(
-                        f"[SSE] dropping payload, viewer queue saturated "
-                        f"(room={room_id} lang={lang})"
-                    )
+            self._enqueue(q, payload, room_id=room_id, lang=lang)
+
+    async def publish_control(self, room_id: str, payload: dict[str, Any]) -> None:
+        """Fan a control frame out to **every language channel** of the room.
+
+        Room-wide rather than per-language because the whole point of a
+        language announcement is to reach the clients still sitting on the
+        *old* channel — a per-language publish would deliver it to everyone
+        except the people who need it.
+        """
+        envelope = _ControlEnvelope(payload)
+        for (rid, lang), viewers in list(self._channels.items()):
+            if rid != room_id:
+                continue
+            for q in list(viewers):
+                self._enqueue(q, envelope, room_id=room_id, lang=lang)
 
     def channel_count(self) -> int:
         """Total number of (room, lang) channels with at least one viewer."""
@@ -454,6 +550,7 @@ def _render_stage_html(
     room_name: str,
     output_langs: list[str],
     caption_lang: str,
+    lang_pinned: bool,
     initial_state: str,
     stage_config: dict[str, Any],
 ) -> str:
@@ -488,6 +585,13 @@ def _render_stage_html(
         "ROOM_ID": _json_for_script(room_id),
         "OUTPUT_LANGS_JSON": _json_for_script(output_langs),
         "PRIMARY_LANG": _json_for_script(caption_lang or "ko"),
+        # ISSUE-53: "이 언어는 명시적으로 요청된 것인가" — 서버만 답할 수 있다.
+        # 클라이언트는 `caption_lang` 이 `?lang=` 에서 왔는지 룸 기본값인지
+        # 구분할 수 없고, 브라우저에서 쿼리를 다시 파싱하면 서버가 거부한
+        # 코드가 되살아난다. `_json_for_script` 를 통과시키는 것은 스칼라도
+        # 예외가 아니기 때문이다 (RL-016/RL-020) — Python `True` 가 그대로
+        # 나가면 JS 부트스트랩 전체가 죽는다.
+        "LANG_PINNED": _json_for_script(bool(lang_pinned)),
         "INITIAL_STATE": _json_for_script(initial_state),
         "STAGE_CONFIG_JSON": _json_for_script(payload),
     }
@@ -526,6 +630,11 @@ async def _handle_stage(request: web.Request) -> web.Response:
     output_langs = _supported_output_langs(primary_lang)
     requested_lang = request.query.get("lang")
     caption_lang = requested_lang if requested_lang in output_langs else primary_lang
+    # ISSUE-53 / FR-085: "이 화면은 자기 언어를 명시적으로 골랐는가."
+    # 값 비교(`caption_lang != primary_lang`)로 대신할 수 없다 — `?lang=ko` 는
+    # 룸 기본값과 같아도 **명시적 선택**이고, 그런 화면이 control 에 끌려가면
+    # 일부러 고른 언어가 발표 중간에 바뀐다.
+    lang_pinned = requested_lang is not None and requested_lang in output_langs
     room_name = room.get("name") or room_id
     status = room.get("status") or "waiting"
     initial_state = "closed" if status == "closed" else status
@@ -536,6 +645,7 @@ async def _handle_stage(request: web.Request) -> web.Response:
             room_name=room_name,
             output_langs=output_langs,
             caption_lang=caption_lang,
+            lang_pinned=lang_pinned,
             initial_state=initial_state,
             stage_config=normalize_stage_config(room.get("stage_config")),
         )
@@ -615,6 +725,23 @@ async def _handle_stream(request: web.Request) -> web.StreamResponse:
         await mgr.unregister_viewer(room_id, requested_lang, queue)
         return resp
 
+    # ISSUE-53: connect-time control snapshot. The position matters — **after**
+    # register_viewer (earlier and an update arriving during registration is
+    # lost), **before** the queue loop (inside it and the snapshot interleaves
+    # with caption frames). A room with no control state gets no frame at all:
+    # inventing a default here would push a made-up language onto every viewer.
+    # This is what lets a reloaded stage screen recover the current language and
+    # font scale with no DB round trip and nothing persisted.
+    control_state = mgr.get_control(room_id)
+    if control_state:
+        try:
+            await _write_sse_event(
+                resp, "control", build_control_payload(room_id, control_state)
+            )
+        except (ConnectionResetError, asyncio.CancelledError):
+            await mgr.unregister_viewer(room_id, requested_lang, queue)
+            return resp
+
     # Watcher task: poll the underlying transport so client TCP close
     # (FIN/RST) is detected within ~0.5s instead of waiting for the next
     # heartbeat write to fail. Without this the in-memory viewer count
@@ -671,8 +798,18 @@ async def _handle_stream(request: web.Request) -> web.StreamResponse:
             except asyncio.CancelledError:
                 break
 
+            # ISSUE-53: the event name comes from an allow-list, and only a
+            # frame published through `publish_control` may declare one at all.
+            # Reading `event` off any dict would let a caption payload carrying
+            # `{"event": "control"}` name itself; the envelope type records the
+            # publishing path, which content never can.
+            declared = (
+                payload.get("event") if isinstance(payload, _ControlEnvelope) else None
+            )
+            event_name = declared if declared in _CONTROL_EVENT_NAMES else "message"
+
             try:
-                await _write_sse_event(resp, "message", payload)
+                await _write_sse_event(resp, event_name, payload)
             except (ConnectionResetError, asyncio.CancelledError):
                 break
             except Exception as e:

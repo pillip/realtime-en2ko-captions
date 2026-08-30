@@ -717,3 +717,172 @@ class TestAuthPersistsSessionLanguages:
 
         assert result is not None
         assert any(m.get("type") == "auth_success" for m in _get_sent_messages(ws))
+
+
+# ===========================================================================
+# 언어 기록 성공 시 control 발행 (ISSUE-53, FR-084 / TC-079 앞절반)
+# ===========================================================================
+class TestAuthPublishesLanguageControl:
+    """AC: 기록이 성공하면 control 1회, 스킵되면 0회.
+
+    "스킵" 은 두 가지다 — 검증 실패(repo → False)와 **값이 이미 같은 경우**.
+    후자를 함께 단언하지 않으면 "무조건 발행" 구현이 통과한다 (RL-004).
+    """
+
+    @staticmethod
+    def _row(primary: str) -> dict:
+        return {
+            "id": "r1",
+            "status": "active",
+            "input_lang": "auto",
+            "output_lang": primary,
+            "primary_output_lang": primary,
+        }
+
+    @staticmethod
+    def _run(mock_db, repo, ws, spy):
+        from room_manager import RoomManager
+        from websocket_handler import _authenticate_client
+
+        mgr = RoomManager(room_repository=repo) if repo is not None else RoomManager()
+        with (
+            patch("websocket_handler.get_user_model", return_value=mock_db),
+            patch("websocket_handler._room_manager", mgr),
+            patch("websocket_handler._broadcast_manager", spy),
+        ):
+            return asyncio.run(_authenticate_client(ws))
+
+    def test_a_changed_language_publishes_exactly_one_control_frame(self, mock_db):
+        """ko → vi 기록이 실제로 일어나면 control 이 정확히 1회 나간다."""
+        from tests.broadcast_spy import SpyBroadcastManager
+
+        spy = SpyBroadcastManager()
+        repo = _RecordingRoomRepo(self._row("ko"))
+        ws = _auth_ws_for_room("r1", input_lang="ko", output_lang="vi")
+
+        assert self._run(mock_db, repo, ws, spy) is not None
+
+        assert spy.control_count == 1, spy.control_calls
+        room_id, payload = spy.control_calls[0]
+        assert room_id == "r1"
+        assert payload["event"] == "control"
+        assert payload["primary_lang"] == "vi"
+        assert spy.get_control("r1") == {"primary_lang": "vi"}
+
+    def test_an_unchanged_language_publishes_nothing(self, mock_db):
+        """행이 이미 vi 인데 vi 로 다시 인증하면 발행 0회다.
+
+        재접속마다 control 을 쏘면 이미 보고 있는 화면이 이유 없이 재구독하고
+        자막이 한 프레임 끊긴다.
+        """
+        from tests.broadcast_spy import SpyBroadcastManager
+
+        spy = SpyBroadcastManager()
+        repo = _RecordingRoomRepo(self._row("vi"))
+        ws = _auth_ws_for_room("r1", input_lang="auto", output_lang="vi")
+
+        assert self._run(mock_db, repo, ws, spy) is not None
+
+        assert spy.control_count == 0, spy.control_calls
+        assert spy.get_control("r1") is None
+
+    def test_a_rejected_write_publishes_nothing(self, mock_db):
+        """검증 실패(repo → False)면 상태도 발행도 없다."""
+        from tests.broadcast_spy import SpyBroadcastManager
+
+        class _RejectingRepo(_RecordingRoomRepo):
+            def update_session_languages(self, room_id, *, input_lang, output_lang):
+                self.calls.append({"room_id": room_id, "output_lang": output_lang})
+                return False
+
+        spy = SpyBroadcastManager()
+        repo = _RejectingRepo(self._row("ko"))
+        ws = _auth_ws_for_room("r1", input_lang="ko", output_lang="xx")
+
+        assert self._run(mock_db, repo, ws, spy) is not None
+
+        assert [c["output_lang"] for c in repo.calls] == ["xx"]
+        assert spy.control_count == 0, spy.control_calls
+        assert spy.get_control("r1") is None
+
+    def test_a_raising_write_publishes_nothing_and_still_authenticates(
+        self, mock_db, capsys
+    ):
+        """RL-006 — 기록이 터져도 auth 는 살아 있고 control 은 나가지 않는다."""
+        from tests.broadcast_spy import SpyBroadcastManager
+
+        spy = SpyBroadcastManager()
+        repo = _RecordingRoomRepo(
+            self._row("ko"), raises=RuntimeError("db on fire /secret/app.db")
+        )
+        ws = _auth_ws_for_room("r1", input_lang="ko", output_lang="vi")
+
+        assert self._run(mock_db, repo, ws, spy) is not None
+
+        assert spy.control_count == 0, spy.control_calls
+        sent = _get_sent_messages(ws)
+        assert any(m.get("type") == "auth_success" for m in sent)
+        wire = json.dumps(sent, ensure_ascii=False)
+        assert "db on fire" not in wire
+        assert "/secret/app.db" not in wire
+        assert "db on fire" in capsys.readouterr().out
+
+    def test_memory_only_mode_publishes_nothing(self, mock_db):
+        """repo 미주입이면 기록할 행이 없으므로 발행도 없다."""
+        from tests.broadcast_spy import SpyBroadcastManager
+
+        spy = SpyBroadcastManager()
+        ws = _make_websocket(
+            {
+                "type": "auth",
+                "user": {"id": 1, "username": "testuser", "role": "user"},
+                "language_settings": {"input_lang": "ko", "output_lang": "vi"},
+            }
+        )
+
+        assert self._run(mock_db, None, ws, spy) is not None
+
+        assert spy.control_count == 0, spy.control_calls
+
+    def test_auth_success_carries_the_current_control_snapshot(self, mock_db):
+        """ISSUE-54 가 슬라이더를 서버 값으로 맞추기 위해 소비하는 스냅샷."""
+        from tests.broadcast_spy import SpyBroadcastManager
+
+        spy = SpyBroadcastManager()
+        spy.set_control("r1", caption_scale=1.4)
+        repo = _RecordingRoomRepo(self._row("vi"))
+        ws = _auth_ws_for_room("r1", input_lang="auto", output_lang="vi")
+
+        assert self._run(mock_db, repo, ws, spy) is not None
+
+        sent = _get_sent_messages(ws)
+        success = next(m for m in sent if m["type"] == "auth_success")
+        assert success["control"] == {"caption_scale": 1.4}
+
+    def test_auth_success_snapshot_includes_a_language_set_in_the_same_call(
+        self, mock_db
+    ):
+        """스냅샷은 방금 기록한 언어까지 담는다 — 발행보다 뒤에 조립된다."""
+        from tests.broadcast_spy import SpyBroadcastManager
+
+        spy = SpyBroadcastManager()
+        repo = _RecordingRoomRepo(self._row("ko"))
+        ws = _auth_ws_for_room("r1", input_lang="ko", output_lang="vi")
+
+        assert self._run(mock_db, repo, ws, spy) is not None
+
+        success = next(m for m in _get_sent_messages(ws) if m["type"] == "auth_success")
+        assert success["control"] == {"primary_lang": "vi"}
+
+    def test_auth_success_snapshot_is_null_when_the_room_has_no_state(self, mock_db):
+        """상태가 없으면 기본값을 지어내지 않는다 — null 이다."""
+        from tests.broadcast_spy import SpyBroadcastManager
+
+        spy = SpyBroadcastManager()
+        repo = _RecordingRoomRepo(self._row("vi"))
+        ws = _auth_ws_for_room("r1", input_lang="auto", output_lang="vi")
+
+        assert self._run(mock_db, repo, ws, spy) is not None
+
+        success = next(m for m in _get_sent_messages(ws) if m["type"] == "auth_success")
+        assert success["control"] is None

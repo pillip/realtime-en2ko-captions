@@ -1526,3 +1526,308 @@ High. Two independent measurement paths (the PR's own e2e suite, and a
 separately-authored Playwright script) produced identical numbers; worktree
 stayed pinned and clean at `247860c` for the whole session with no observed
 interference.
+
+# UI Review Notes — ISSUE-53 (PR #146, GH #144)
+
+**Reviewer**: Claude Opus 5 (automated, ui-review phase)
+**Date**: 2026-08-31
+**Head reviewed**: `a4c7e58`
+**Files reviewed**: `components/stage.html`, `components/viewer.html` (+ their unit/e2e guards)
+
+> Scope: rendered state coverage, copy usage, token usage in code, interaction
+> fidelity, in-code accessibility, component existence.
+> Out of scope: the design system itself (token scales, component definitions,
+> philosophy) — those belong to `design-auditor`. Server-side protocol
+> (`sse_broadcast.py`, `websocket_handler.py`) belongs to the code reviewer.
+
+**Verdict: APPROVE-WITH-NITS** — one High defect found by rendering and fixed
+in-PR; everything else the issue asserts reproduced exactly as claimed.
+
+Every number below was **measured in Chromium**, most of it against a **real
+aiohttp SSE server** publishing through the production
+`build_control_payload()` → `publish_control()` path, not against the
+fake-EventSource harness.
+
+## Interaction Fidelity — "explicit selection wins"
+
+All four headline rows reproduce **exactly** as the developer reported.
+
+| Scenario | before control | after `{primary_lang:"vi", caption_scale:1.4}` | verdict |
+|---|---|---|---|
+| `/stage/r1` (`CONFIG.lang_pinned === false`) | `["/stream/r1?lang=ko"]` | `["/stream/r1?lang=ko","/stream/r1?lang=vi"]` | ✅ |
+| `/stage/r1?lang=ko` (`lang_pinned === true`) | `["/stream/r1?lang=ko"]` | unchanged; `--caption-scale` `1.4`, `.caption-line` **32px → 44.8px** | ✅ |
+| `/view/r1`, dropdown untouched | url `?lang=ko`, dropdown `"ko"` | url `?lang=vi`, dropdown `"vi"` — **both** move | ✅ |
+| `/view/r1`, attendee picked `en` | url `?lang=en`, dropdown `"en"` | **identical**; font 24px → 33.6px only | ✅ |
+
+Extra probes the issue did not require:
+
+- **Re-selecting the value it already had counts as explicit.** `select_option("ko")`
+  while already on `ko` → later `control{primary_lang:"vi"}` is ignored;
+  EventSource count stays `1`, dropdown stays `"ko"`. Correct: the `change`
+  handler sets `langLocked = true` *before* the `next === currentLang` early
+  return (`viewer.html:836-843`). A naive implementation would have returned first.
+- **Control while the dropdown is focused/open** (`#lang-select` is
+  `document.activeElement`): switch completes, url `?lang=vi` **and** dropdown
+  `"vi"` — no divergence, and the programmatic `langSelect.value = next`
+  correctly does **not** fire `change`, so the attendee is not silently locked.
+- **Unsupported `xx`**: ignored client-side against `CONFIG.output_langs`; url
+  and dropdown both stay `ko`; no EventSource churn.
+- **Two/three controls in rapid succession** (`vi`, `vi`, `en`), emitted the way
+  production does (`set_control` then `publish_control`): urls settle on
+  `["…?lang=ko","…?lang=vi","…?lang=en"]` — the duplicate `vi` opens nothing, and
+  the `en` frame that lands inside the re-subscribe gap is healed by the
+  connect-time snapshot. Worth recording explicitly: **the snapshot is not
+  belt-and-braces here, it is the only thing that makes rapid switching
+  correct.** Publishing without `set_control` first loses that frame permanently
+  (verified: it settles on `vi`).
+
+## Token Usage (implementation)
+
+- `--caption-scale: 1` declared on `:root` in both templates; applied **only** to
+  `.caption-line` via `calc(clamp(…) * var(--caption-scale))`. Measured:
+  `.caption-empty` is `15px` (viewer) / `19px` (stage) at every scale — status
+  copy does not move. Correct call, and **not** a visual problem: `#caption-empty`
+  is removed by `_ensureCurrentLine()` the moment the first line arrives, so a
+  1.6× caption and a 1.0× notice can never be on screen together (measured:
+  `lines:0, empty:1` or `lines:N, empty:0`, never both).
+- No new hex literals, magic font sizes or inline colour overrides in the diff.
+  Clamp bounds are token-shaped (`CAPTION_SCALE_MIN/MAX` mirror the server
+  constants and are named, not inlined).
+
+## Accessibility (implementation)
+
+- **Contrast, measured from real composited pixels** (screenshot with glyphs,
+  screenshot with `color: transparent`, compare the peak differing pixel) —
+  the method RL-018 demands, not a nominal-hex calculation. The stage was
+  measured with a **live `captureStream()` layer painting a white→amber
+  gradient behind the page**:
+
+  | surface | 0.8 | 1.0 | 1.6 | composited backdrop |
+  |---|---|---|---|---|
+  | stage `.caption-line` (dim) | **4.5194:1** @25.6px | 4.5194:1 @32px | 4.5194:1 @51.2px | `rgb(11,11,12)` |
+  | stage `.caption-line:last-child` | 19.6738:1 | 19.6738:1 | 19.6738:1 | `rgb(11,11,12)` |
+  | stage `#caption-empty` | 5.3368:1 | — | 5.3368:1 | `rgb(11,11,12)` |
+  | viewer `.caption-line` (dim) | **4.5194:1** @19.2px | 4.5194:1 @24px | 4.5194:1 @38.4px | `rgb(11,11,12)` |
+  | viewer `.caption-line:last-child` | 19.6738:1 | 19.6738:1 | 19.6738:1 | `rgb(11,11,12)` |
+  | viewer `#caption-empty` | 5.3368:1 | 5.3368:1 | 5.3368:1 | `rgb(11,11,12)` |
+
+  The composited backdrop **is** `#0b0b0c` at every scale: `.caption-column` is a
+  grid *sibling* of the presentation area with an opaque `background: var(--canvas)`,
+  so the capture video never rasterises under caption text. RL-018's ISSUE-42
+  failure mode (a hint at a nominal 11.42:1 rendering at 1.00:1 over live
+  capture) does **not** recur here — verified by pixel, not by reading.
+  `caption_scale: 9` clamps to 1.6 (51.2 / 38.4px); `-5` clamps to 0.8.
+  Note the brief's expected "viewer 0.8 → 30.4px" assumes a wide viewport; on a
+  390px phone `clamp(24px, 3.4vw, 38px)` pins at 24px, so 0.8 renders **19.2px**.
+  That is precisely why the alpha was set at the normal-text 4.5:1 threshold and
+  not the large-text 3:1 relaxation — the decision holds, with 0.0194 of margin.
+- **Exactly one caption live region after a re-subscribe.** Runtime
+  `[aria-live]` ids after switching channels and injecting 201 lines:
+  stage `["caption-announcer"]`, viewer `["state-waiting","state-ended","caption-announcer"]`.
+  Matches the developer's report; waiting/ended keep their own owners (RL-019).
+- **Screen-reader narration across a language switch, measured with a
+  MutationObserver on `#caption-announcer`** (per-record, not per-callback —
+  a per-callback observer under-counts because microtask batching collapses two
+  synchronous writes into one invocation):
+  - stage: `['+Sắp bắt đầu', '-한국어 확정 자막']` — **one** write, new language. Correct.
+  - viewer: `['+잠시 후 시작됩니다', '-한국어 확정 자막', '+Sắp bắt đầu', '-잠시 후 시작됩니다']`
+    — **two** writes, the first in the **old** language. See L-1.
+  Neither page calls `announce()` from the re-subscribe path itself; ownership
+  stays with `setCaptionState()` / `syncStateAnnouncement()`.
+- **`#caption-empty` after a switch**: exactly 1, carrying the **new** language's
+  copy, for `en` ("Starting shortly"), `vi` ("Sắp bắt đầu"), `zh` ("即将开始").
+
+## State Coverage (rendered)
+
+- Waiting / active / ended all render on both pages across a re-subscribe.
+  `session_end` → ended state survives a subsequent `control` in the same batch
+  (measured: stays ended, no third EventSource).
+- **MAX_LINES after a channel switch**, injecting 201 lines on the *new* channel:
+  stage `n=60`, first `NEW-142`, last `NEW-201`; viewer `n=200`. **Zero** lines
+  from the old channel survived on either page. Caps unchanged by the switch.
+- No blank/broken view at any point; `replaceChildren()` is the only clear path
+  and **0** occurrences of `innerHTML`/`outerHTML`/`insertAdjacentHTML`/
+  `document.write` in either file (independently counted, before and after).
+
+## Component Existence / NFR-025
+
+Static counts, recomputed independently against `972653b..a4c7e58`
+(`components/stage.html`) — **every one matches the developer's table**:
+
+`cursor: none` 2→2 · `addEventListener("keydown"` 1→1 · `preventDefault` 0→0 ·
+`stopPropagation` 0→0 · `keyup` 0→0 · `requestFullscreen` 0→0 · `.focus()` 0→0 ·
+`<button` 1→1 · `<input`/`<select`/`<textarea>`/`tabindex` 0→0.
+
+`tests/test_stage_page.py::test_no_interactive_controls` and
+`::test_no_presenter_keyboard_interference` are **byte-identical** to their
+`972653b` versions (verified by AST extraction, not by eyeballing the diff), as
+are `test_no_user_scroll_override_controls`, `test_the_page_owns_exactly_one_live_region`
+and `test_caption_typography_for_narrow_column`. No test function was deleted.
+
+**Behavioural guard, after delivering real control frames over the wire** to a
+stage in the post-connect (`capture-live`) state — eight frames including
+`caption_scale: 9`, `caption_scale: "크게"`, `caption_scale: null`,
+`caption_scale: -5`, `primary_lang: {a:1}`, `primary_lang: "<img src=x onerror=…>"`,
+one delivered mid-typewriter and one after `session_end`:
+
+```
+visible clickable (button,a,input,select,textarea,[tabindex],[contenteditable]) = []
+document.activeElement === document.body      → true
+document.fullscreenElement                     → null
+getComputedStyle(#stage-root).cursor           → "none"
+window.__pwned                                 → false
+--caption-scale                                → "0.8"  (clamped from -5)
+[aria-live] ids                                → ["caption-announcer"]
+```
+
+The `control` handler creates no nodes at runtime. NFR-025 holds behaviourally,
+not just statically. (`#capture-connect` is visible **before** capture is
+connected — that is ISSUE-42's designed pre-connect affordance, not a regression.)
+
+## Findings
+
+### F-1 (High, FIXED IN-PR) — a `caption_scale` change latches the viewer's credit roll off, permanently
+`components/viewer.html:713-719` (pre-fix). `applyCaptionScale()` wrote
+`--caption-scale` with no scroll-follow measurement. That write is not a CSS
+variable assignment in effect — it **resizes every `.caption-line` already on
+screen**, so `scrollHeight` jumps while `scrollTop` does not. The next
+`_lockLine()` reads `scrollHeight - scrollTop - clientHeight > 80`, concludes
+"the attendee scrolled up", and stops following. The gap only grows from there.
+
+This is the exact defect class the same file documents at `:540-546`
+("한 번 꺼지면 끝이다") and that ISSUE-46 shipped once already — reached here
+through a code path the ordering rule was never applied to.
+
+Measured, 390×844, 30 lines, `control{caption_scale:1.6}`, attendee never touched the screen:
+
+| | pre-fix | post-fix |
+|---|---|---|
+| gap before control | 57px (following) | 58px |
+| gap right after control | **684px** | **0px** |
+| gap after 5 more captions | **1072px** | 0px |
+| gap after 10 more paced captions | (never recovers) | **0px** |
+
+**Fix**: measure `isUserAtBottom()` before the write and `_scrollToBottom()` after
+if it was following — the same rule `_lockLine()` / `_twStep()` already obey.
+Plus a no-op guard so a duplicate notice (e.g. the connect-time snapshot on every
+reconnect) cannot yank a scrolled-up attendee to the bottom.
+
+Guards added, each verified RED against the unfixed implementation:
+- `tests/test_viewer_page.py::test_the_scale_write_measures_follow_before_it_resizes` (order)
+- `tests/test_viewer_page.py::test_an_unchanged_scale_does_not_touch_the_scroll_position`
+- `tests/e2e/test_viewer_page_e2e.py::TestViewerScaleKeepsTheCreditRolling::test_a_scale_up_does_not_latch_the_credit_roll_off` (behaviour: 279px → pass)
+- `…::test_a_scrolled_up_attendee_is_not_yanked_to_the_bottom` (the opposite direction)
+
+### F-2 (Medium, FIXED IN-PR) — the stage column is not re-anchored after a scale change
+`components/stage.html:1005-1013` (pre-fix). Same write, different consequence:
+the stage has no follow measurement at all, so it self-heals — but only on the
+**next caption**. Between the operator's gesture and the next utterance the most
+recent lines sit below the fold on the projector. Fixed with an unconditional
+`_scrollToBottom()` after the write (no `isUserAtBottom` — the file-wide ban
+stands), plus the same no-op guard. Guards:
+`tests/test_stage_page.py::test_the_scale_re_anchors_the_credit_roll`,
+`::test_an_unchanged_scale_is_a_noop`, both RED against the unfixed version.
+
+### L-1 (Low, NOT fixed — follow-up) — the viewer announces the *old* language's waiting copy first
+`components/viewer.html:666-689` (`clearCaptions()` → `syncStateAnnouncement()`)
+then `:801` (`applyWaitingText(next)` → `syncStateAnnouncement()`) write
+`#caption-announcer` twice in the same task: `잠시 후 시작됩니다`, then
+`Sắp bắt đầu`. Both writes are synchronous within one frame, so a polite
+`aria-atomic` region will in practice announce only the final value — impact is
+low. But it is two writers on the one live region RL-019 exists to keep single,
+and this PR changes its trigger from "the attendee chose a language" to
+"the operator changed the room default", i.e. it now fires unprompted on every
+unlocked attendee's phone. The stage does this correctly with one write
+(`resubscribe()` sets `currentLang` before `setCaptionState("waiting")`).
+Minimal future fix: give `clearCaptions()` an explicit `lang` argument so the
+recreated `#caption-empty` starts in the new language. Not fixed here — it is a
+pre-existing sequence the author documented deliberately at `:479-486`.
+
+### L-2 (Low, informational) — RL-022's viewer window did **not** widen at the control listener, but its blast radius grew
+The issue asks that RL-022 not get worse. Measured on `/view/r1` with a stub that
+keeps delivering after `close()`:
+- `session_end` → ended ✅
+- a late `message` frame → `ended:false, active:true` — the **pre-existing**
+  ISSUE-53-out-of-scope defect, reproduced unchanged.
+- a late `control` frame *after that resurrection* → opened a second EventSource,
+  moved the dropdown to `vi`, applied scale `1.4`.
+
+The `control` listener itself is correct: with `session_end` and `control`
+delivered in the same batch it refuses (`stateNodes.ended.classList.contains("active")`,
+`viewer.html:812`) — measured `urls[-1] == "?lang=vi"`, never `en`, ended stays true.
+So this is **not** a new hole; it is the old hole with a larger consequence
+(previously one stale caption line, now a live re-subscription on an ended
+session). In production the real `EventSource` is closed by `closeStream()`, so
+only frames already in the same task batch can reach it — and that case is
+guarded. Recording it so the eventual RL-022 issue knows the surface grew.
+
+### L-3 (Low, informational) — `publish_control()` silently downgrades a payload with no `event` key to `event: message`
+`sse_broadcast.py:322-335` + `:806-810`. The allow-list is keyed on
+`_ControlEnvelope` **and** `payload.get("event")`, so `publish_control(room, {"primary_lang":"vi"})`
+goes out as `event: message` and no client reacts. Only `build_control_payload()`
+adds the key. This bit me while building the probe harness and cost a full run to
+diagnose. Not a UI defect and not mine to fix — flagged for the code reviewer
+under "Notes" below.
+
+## Layout at the extremes — measured
+
+- **Viewer at 1.6×, 320px and 360px, Korean and Latin.** A 70-char URL
+  (`https://conference.example.com/2026/sessions/keynote-opening-remarks`) and a
+  30-char unbroken Korean compound, both at 38.4px:
+  `scrollWidth == clientWidth` (276/276 at 320px, 316/316 at 360px) and
+  `document.scrollWidth == innerWidth` on every combination. **No overflow, no
+  horizontal page scroll.** `word-break: keep-all` survives; note the viewer's
+  companion declaration is `overflow-wrap: break-word` (not `anywhere` as on the
+  stage) — that is pre-existing, unchanged by this PR, and empirically sufficient
+  at 1.6×.
+- **Stage at 1.6× on 1920×1080** with six long Korean compounds and a long URL at
+  51.2px: 0 lines overflow their box, 0 lines escape `#caption-column`'s left or
+  right edge, no page scroll. Visible short lines 12/12 at 1.0× vs 11/12 at 1.6×
+  in a 1080px column — the projector loses roughly one line of history at maximum
+  scale, which is the intended trade.
+
+## Adjudication — the stage's missing scroll-follow measurement
+
+**The deviation is correct.** `test_no_user_scroll_override_controls` bans
+`isUserAtBottom` in `stage.html` file-wide because the projector has no operator
+to have scrolled; `_scrollToBottom()` there is unconditional by design. Asserting
+0 occurrences in the re-subscribe body and pinning
+`_twStop()` < `replaceChildren()` < `connect(next)` instead is the right
+substitution, and the ordering it pins is the part that actually matters (a rAF
+callback writing into just-removed nodes).
+
+Verified by rendering rather than by argument: with 30 Korean lines on screen I
+scrolled `.caption-scroll` to `scrollTop = 0` mid-session, fired
+`control{primary_lang:"vi"}`, then pushed 20 Vietnamese lines — final gap **0px**,
+20 lines, no survivor from the old channel. The stage's credit roll is genuinely
+safe across a re-subscribe.
+
+The one thing the deviation did *not* cover is the **scale** path, where "no
+measurement" also meant "no re-anchor" — that is F-2, now fixed.
+
+## Notes for design-auditor / code reviewer
+
+- (code reviewer) L-3 above: `publish_control()` accepts a payload that will not
+  go out as a `control` frame. Consider having `publish_control` build the
+  envelope itself, or assert the key.
+- (code reviewer) `tests/e2e/test_admin_stage_config_e2e.py` fails 6 tests + 16
+  errors when the **whole** `-m e2e` suite runs in one process (Streamlit fixture
+  timeout), and passes 34/34 when its module runs alone. Pre-existing fixture
+  contention, unrelated to this PR — but it makes a full green e2e run
+  order-dependent.
+- (design-auditor) `.conn-error` (`stage.html:468-485`,
+  `rgba(255,255,255,0.65)` at `clamp(12px,0.7vw,16px)` over `#0b0b0c` + a 7%
+  white pill) is the one status surface that *can* coexist with captions and is
+  not covered by the scale rule. Untouched by this PR; worth a token-level look.
+
+## Summary
+
+- **Critical: 0 | High: 1 | Medium: 1 | Low: 3**
+- Fixed in-PR: F-1 (High), F-2 (Medium) — 2 template changes, 4 unit guards,
+  2 e2e guards, every guard verified RED against the unfixed implementation.
+- Follow-up issues suggested: L-1 (viewer live-region double write on switch),
+  L-2 (fold into the eventual RL-022 issue), L-3 (code reviewer's call).
+- Full unit suite `1386 passed`; e2e `157 passed` when run per-module.
+- **Confidence: High.** Every claim in the issue was re-derived from a rendered
+  page; contrast was sampled from screenshot pixels over a live capture layer;
+  every fix was mutation-checked.
