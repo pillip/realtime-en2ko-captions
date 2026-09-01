@@ -716,8 +716,18 @@
     <div class="control-group">
       <label for="stageScaleSlider">무대 자막 크기</label>
       <input type="range" id="stageScaleSlider" min="0.8" max="1.6" value="1" step="0.1"
-             class="slider" aria-describedby="stageScaleHint">
-      <span id="stageScaleValue" aria-live="polite">1.0×</span>
+             class="slider" aria-describedby="stageScaleHint" aria-valuetext="1.0배">
+      <!-- 시각 표시 전용. aria-live 를 붙이지 않는다 (RL-019).
+           range 컨트롤은 값을 접근성 트리로 직접 노출하므로 스크린리더가
+           조작할 때마다 이미 읽어 준다. 여기에 라이브 리전을 얹으면 같은 값이
+           두 번 낭독된다. 형식("1.0×")은 슬라이더의 aria-valuetext 가 들고
+           가므로 정보도 잃지 않는다.
+           아래 전체화면 폰트 표시(fsTransSize/fsOrigSize)가 aria-live 를 쓰는
+           것은 그쪽 컨트롤이 +/- **버튼**이라 값을 스스로 알리지 못하기
+           때문이다 — 대칭이 아닌 것이 맞다.
+           주석에 range 입력 태그를 리터럴로 적지 않는다: 마크업을 문자열로
+           세는 가드가 주석까지 집계한다. -->
+      <span id="stageScaleValue" aria-hidden="true">1.0×</span>
       <div class="control-hint" id="stageScaleHint">세션을 시작하면 적용됩니다.</div>
     </div>
 
@@ -1206,7 +1216,13 @@ try {
     const scale = Number(value);
     if (!Number.isFinite(scale)) return;
     const clamped = Math.min(CAPTION_SCALE_MAX, Math.max(CAPTION_SCALE_MIN, scale));
-    if (stageScaleSlider) stageScaleSlider.value = String(clamped);
+    if (stageScaleSlider) {
+      stageScaleSlider.value = String(clamped);
+      // 스크린리더 낭독은 여기 하나뿐이다 (RL-019). 값 표시 span 은
+      // aria-hidden 이므로, 형식을 잃지 않으려면 valuetext 를 함께 옮겨야
+      // 한다 — 빠뜨리면 "1.4" 로만 읽히고 배율이라는 사실이 사라진다.
+      stageScaleSlider.setAttribute('aria-valuetext', `${clamped.toFixed(1)}배`);
+    }
     if (stageScaleValue) stageScaleValue.textContent = `${clamped.toFixed(1)}×`;
   }
 

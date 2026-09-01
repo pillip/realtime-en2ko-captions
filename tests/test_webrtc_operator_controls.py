@@ -264,12 +264,43 @@ class TestStageScaleAccessibility:
             "visually adjacent label announces as 'slider' with no name"
         )
 
-    def test_value_readout_is_announced_politely(self, html: str):
-        match = re.search(rf"<span\b[^>]*\bid=\"{re.escape(_VALUE_ID)}\"[^>]*>", html)
-        assert match is not None, f"no <span id={_VALUE_ID!r}>"
-        assert 'aria-live="polite"' in match.group(0), (
-            "the value readout carries no aria-live — a keyboard user pressing "
-            "arrow keys gets no feedback that the value moved"
+    def test_value_change_is_announced_exactly_once(self, html: str):
+        """키보드 사용자는 값 변화를 듣되, **한 번만** 듣는다.
+
+        원래 이 테스트는 값 표시 span 의 `aria-live` 를 요구했다. 그건 틀린
+        기제다 — range 컨트롤은 값을 접근성 트리로 직접 노출하므로 조작할 때마다
+        이미 낭독된다. 거기에 라이브 리전을 얹으면 같은 값이 두 번 읽힌다.
+        ISSUE-49 가 심어 둔 `test_no_new_aria_live_owner`(페이지당 announcer 2개)
+        가 실제로 이 충돌을 잡아냈다.
+
+        올바른 기제는 슬라이더의 `aria-valuetext` 다: 낭독은 한 번이고 "1.4배"
+        라는 형식도 유지된다. span 은 `aria-hidden` 시각 표시로만 남는다.
+        """
+        span = re.search(rf"<span\b[^>]*\bid=\"{re.escape(_VALUE_ID)}\"[^>]*>", html)
+        assert span is not None, f"no <span id={_VALUE_ID!r}>"
+        assert "aria-live" not in span.group(0), (
+            "the value readout must not be a live region — the range control "
+            "already announces its own value, so this double-reads it (RL-019)"
+        )
+        assert 'aria-hidden="true"' in span.group(0), (
+            "the value readout is a visual mirror of the slider value; leaving "
+            "it exposed reads the same number twice in one control"
+        )
+
+        slider = re.search(
+            rf"<input\b[^>]*\bid=\"{re.escape(_SLIDER_ID)}\"[^>]*>", html
+        )
+        assert slider is not None, f"no <input id={_SLIDER_ID!r}>"
+        assert "aria-valuetext=" in slider.group(0), (
+            "the slider carries no aria-valuetext — a keyboard user would hear "
+            "the bare number and lose the fact that it is a multiplier"
+        )
+        # 초기 마크업과 JS 갱신이 같은 형식이어야 한다. 한쪽만 고치면 첫 낭독과
+        # 이후 낭독의 단위가 달라지고, 그건 화면에는 보이지 않는다.
+        assert 'aria-valuetext="1.0배"' in slider.group(0), slider.group(0)
+        assert "setAttribute('aria-valuetext'" in html, (
+            "aria-valuetext is set once in markup but never updated — after the "
+            "first drag it would announce a stale multiplier"
         )
 
     def test_sliders_have_a_visible_focus_ring(self, css: str):
