@@ -84,17 +84,46 @@ class TestTemplateOwnershipBoundary:
     """
 
     @staticmethod
-    def _diff_stat(path: str) -> str:
+    def _merge_base() -> str:
+        """이 브랜치의 diff 기준점. 비교할 브랜치 커밋이 없으면 skip.
+
+        **이 검사는 브랜치 전용이다.** 소유권 경계("이 브랜치가 남의 파일을
+        건드렸나")는 PR 시점의 질문이고, 머지된 뒤에는 물을 대상이 없다.
+        머지 후 `main` 에서는 `merge-base(HEAD, origin/main) == HEAD` 라 diff 가
+        항상 비고, 공허성 게이트가 **원리적으로 실패**한다 — 실제로 ISSUE-54
+        머지 직후 main CI 가 이것 때문에 red 가 됐다.
+
+        조용히 통과시키지 않고 skip 하는 이유는, 통과시키면 소유권 단언이
+        main 에서 아무것도 검증하지 않으면서 초록으로 보이기 때문이다 (RL-004).
+        """
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=_REPO_ROOT,
+            capture_output=True,
+            text=True,
+        )
         merge_base = subprocess.run(
             ["git", "merge-base", "HEAD", "origin/main"],
             cwd=_REPO_ROOT,
             capture_output=True,
             text=True,
         )
-        if merge_base.returncode != 0:
+        if merge_base.returncode != 0 or head.returncode != 0:
             pytest.skip("origin/main is unavailable — cannot compute the diff base")
+        base = merge_base.stdout.strip()
+        if base == head.stdout.strip():
+            pytest.skip(
+                "HEAD is the merge base (already on main, or no branch commits) — "
+                "the ownership boundary is a branch-time question and there is no "
+                "branch diff left to inspect"
+            )
+        return base
+
+    @classmethod
+    def _diff_stat(cls, path: str) -> str:
+        """이 브랜치가 `path` 를 얼마나 바꿨는지 — merge-base 대비 numstat."""
         return subprocess.run(
-            ["git", "diff", "--numstat", merge_base.stdout.strip(), "--", path],
+            ["git", "diff", "--numstat", cls._merge_base(), "--", path],
             cwd=_REPO_ROOT,
             capture_output=True,
             text=True,
@@ -117,13 +146,36 @@ class TestTemplateOwnershipBoundary:
         """RL-004 게이트 — 위 단언이 공허하지 않다는 양성 신호.
 
         `_diff_stat` 이 (경로 오타든 git 호출 실패든) 항상 빈 문자열을 돌려
-        준다면 위 두 테스트는 아무것도 검증하지 않는다. 이 브랜치가 확실히
-        바꾼 파일 하나를 같은 함수로 물어 **비어 있지 않음**을 확인한다.
+        준다면 위 두 테스트는 아무것도 검증하지 않는다. 그래서 같은 함수로
+        **비어 있지 않은** 결과를 하나 확인한다.
+
+        대상 파일을 하드코딩하지 않는다. 처음에는 `components/webrtc.html` 을
+        박아 두었는데, 그 파일을 건드리지 않는 브랜치(예: 이 게이트 자체를
+        고치는 브랜치)에서 곧바로 실패했다. 프로브는 **이 브랜치가 실제로 바꾼**
+        파일을 물어야 한다.
         """
-        stat = self._diff_stat("components/webrtc.html")
+        base = self._merge_base()
+        changed = subprocess.run(
+            ["git", "diff", "--name-only", base],
+            cwd=_REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.split()
+        # 소유권 단언이 "비어 있어야 한다" 고 주장하는 두 파일은 프로브 대상에서
+        # 뺀다 — 그 둘로 프로브가 성공한다는 것은 곧 소유권 위반이라, 게이트가
+        # 위반 상황에서만 통과하는 뒤집힌 물건이 된다.
+        owned = {"components/stage.html", "components/viewer.html"}
+        candidates = [p for p in changed if p not in owned]
+        if not candidates:
+            pytest.skip(
+                "this branch changed nothing outside the ISSUE-53-owned templates "
+                "— no independent file to prove the probe against"
+            )
+        stat = self._diff_stat(candidates[0])
         assert stat != "", (
-            "the diff probe reported no change to components/webrtc.html, which "
-            "this issue definitely modifies — the ownership guard above is "
+            f"the diff probe reported no change to {candidates[0]}, which this "
+            "branch demonstrably modified — the ownership guard above is "
             "therefore vacuous"
         )
 
