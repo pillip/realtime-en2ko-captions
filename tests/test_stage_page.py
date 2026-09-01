@@ -1625,6 +1625,32 @@ class TestStageCaptionScale:
                     "agree on one range"
                 )
 
+        # ISSUE-54 가 예고된 네 번째 사본을 만들었다: 오퍼레이터 슬라이더의
+        # `<input min/max>`. 별도 테스트를 새로 세우지 않고 이 대조를 넓힌다 —
+        # 규칙이 둘로 갈라지면 갈라진 사실 자체가 안 보인다.
+        #
+        # 이 사본이 서버와 어긋나는 방향은 둘 다 조용하다: 슬라이더가 더 좁으면
+        # 오퍼레이터는 서버가 허용하는 배율을 **보낼 방법이 없고**, 더 넓으면
+        # 보낸 값이 서버에서 잘려 무대가 슬라이더를 따라오지 않는다. 어느 쪽도
+        # 로그가 남지 않는다.
+        operator_template = _STAGE_TEMPLATE.parent / "webrtc.html"
+        operator_source = operator_template.read_text(encoding="utf-8")
+        slider = re.search(
+            r'<input[^>]*id="stageScaleSlider"[^>]*>', operator_source, re.S
+        )
+        assert slider is not None, (
+            "webrtc.html must expose the stage caption scale slider as "
+            'id="stageScaleSlider" — the range cross-check anchors on it'
+        )
+        markup = slider.group(0)
+        for attr, want in (("min", expected["MIN"]), ("max", expected["MAX"])):
+            found = re.findall(rf'{attr}="([0-9.]+)"', markup)
+            assert found == [f"{want}"], (
+                f"webrtc.html slider declares {attr}={found}, but the server "
+                f"enforces {want} — a fourth copy of the range must not drift "
+                "from the other three"
+            )
+
     def test_the_scale_re_anchors_the_credit_roll(self, stage_html):
         """UI 리뷰 — 배율 변경은 쌓인 모든 라인의 높이를 바꾸는 레이아웃 쓰기다.
 
