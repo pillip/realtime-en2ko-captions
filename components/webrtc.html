@@ -137,6 +137,19 @@
     }
     .lang-warning.visible { display: block; }
 
+    /* ISSUE-54: 컨트롤 보조 설명. `.lang-warning` 과 달리 **항상 보인다** —
+       조건부로 숨기면 오퍼레이터가 읽어야 할 시점에 없다.
+       알파는 `.lang-warning` 과 같은 0.65 를 쓴다. 설정 패널 배경(#0e0e10)
+       위에서 8.40:1 로 WCAG AA 를 넘고, 새 알파 값을 만들지 않는 것이
+       "근거 없는 준수 추정"(RL-018)을 하나 더 만들지 않는 가장 싼 방법이다. */
+    .control-hint {
+      margin-top: 8px;
+      color: rgba(255, 255, 255, 0.65);
+      font-size: 12px;
+      line-height: 1.7;
+    }
+    .control-hint div + div { margin-top: 4px; }
+
     /* Slider — monochrome */
     .slider {
       width: 100%;
@@ -420,6 +433,18 @@
     .settings-fab:focus:not(:focus-visible),
     .fullscreen-fab:focus:not(:focus-visible) { outline: none; }
 
+    /* ISSUE-54 / RL-010 — `.slider` 는 `outline: none` 이라 링을 따로 그려야
+       한다. 트랙이 3px 이라 트랙 그림자만으로는 눈에 잘 안 띄어 thumb 에도
+       건다. 새 슬라이더만 예외로 두지 않는 이유는, 같은 패널의 세 슬라이더가
+       서로 다른 포커스 동작을 하면 그게 더 큰 혼란이기 때문이다. */
+    .slider:focus-visible {
+      outline: none;
+      box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.16);
+    }
+    .slider:focus-visible::-webkit-slider-thumb {
+      box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.28);
+    }
+
     /* Fullscreen */
     #viewer:fullscreen { background: #000; height: 100vh !important; max-height: 100vh !important; padding: 20px; }
     #viewer:fullscreen .caption-container { max-width: 100%; padding: 20px 56px 100px; }
@@ -668,6 +693,42 @@
         <option value="vi">베트남어</option>
       </select>
       <div class="lang-warning" id="langWarning">입력 언어와 출력 언어가 동일합니다</div>
+      <!-- ISSUE-54: ISSUE-52/53 이후 이 드롭다운은 오퍼레이터 자기 화면이
+           아니라 **룸 전체의 기본 송출 언어**를 바꾼다. 그 사실이 화면에
+           없으면 오퍼레이터는 청중 화면을 모르는 채로 바꾸게 되고, 두 번째
+           문장을 모르면 "언어를 바꿨는데 뒷줄 화면은 그대로" 를 버그로
+           신고한다 — 사양대로 동작하는데도. 그래서 카피가 산출물이다. -->
+      <div class="control-hint" id="outputLangHint">
+        <div>무대·뷰어 화면의 기본 자막 언어가 함께 바뀝니다.</div>
+        <div>직접 언어를 고른 청중 화면은 그대로 유지됩니다.</div>
+        <div>세션을 시작하면 그때 반영됩니다.</div>
+      </div>
+    </div>
+
+    <!-- ISSUE-54: 무대 자막 크기. 아래 "번역 글자 크기"(px)는 오퍼레이터
+         **자기 화면**용이고 이쪽은 행사장 무대/뷰어용이다 — 대상이 다르므로
+         통합하지 않고 라벨로 구분한다. 통합하면 오퍼레이터가 자기 모니터를
+         키울 때마다 행사장 자막이 함께 커진다.
+         값은 BOOT payload 가 아니라 이미 열려 있는 WebSocket 으로 흐른다:
+         payload 를 타면 iframe `srcdoc` 이 바뀌어 세션이 죽는다 (RL-028).
+         단위는 px 가 아니라 배율(×)이다 — 무대 자막이 `clamp()` 기반이라
+         px 로 환산해 보여 줄 수 없다. -->
+    <div class="control-group">
+      <label for="stageScaleSlider">무대 자막 크기</label>
+      <input type="range" id="stageScaleSlider" min="0.8" max="1.6" value="1" step="0.1"
+             class="slider" aria-describedby="stageScaleHint" aria-valuetext="1.0배">
+      <!-- 시각 표시 전용. aria-live 를 붙이지 않는다 (RL-019).
+           range 컨트롤은 값을 접근성 트리로 직접 노출하므로 스크린리더가
+           조작할 때마다 이미 읽어 준다. 여기에 라이브 리전을 얹으면 같은 값이
+           두 번 낭독된다. 형식("1.0×")은 슬라이더의 aria-valuetext 가 들고
+           가므로 정보도 잃지 않는다.
+           아래 전체화면 폰트 표시(fsTransSize/fsOrigSize)가 aria-live 를 쓰는
+           것은 그쪽 컨트롤이 +/- **버튼**이라 값을 스스로 알리지 못하기
+           때문이다 — 대칭이 아닌 것이 맞다.
+           주석에 range 입력 태그를 리터럴로 적지 않는다: 마크업을 문자열로
+           세는 가드가 주석까지 집계한다. -->
+      <span id="stageScaleValue" aria-hidden="true">1.0×</span>
+      <div class="control-hint" id="stageScaleHint">세션을 시작하면 적용됩니다.</div>
     </div>
 
     <!-- 🎨 폰트 크기 조절 -->
@@ -845,6 +906,9 @@ try {
   const selInputLang = document.getElementById('selInputLang');
   const selOutputLang = document.getElementById('selOutputLang');
   const langWarning = document.getElementById('langWarning');
+  const stageScaleSlider = document.getElementById('stageScaleSlider');
+  const stageScaleValue = document.getElementById('stageScaleValue');
+  const stageScaleHint = document.getElementById('stageScaleHint');
   const fullscreenFab = document.getElementById('fullscreenFab');
   const fsFontControls = document.getElementById('fsFontControls');
   const fsTransSize = document.getElementById('fsTransSize');
@@ -858,6 +922,22 @@ try {
   if (!viewer || !captionContainer || !statusEl) {
     throw new Error('필수 DOM 요소를 찾을 수 없습니다.');
   }
+
+  // ISSUE-54: 무대 자막 배율의 허용 범위. 이 두 값은 서버
+  // (`websocket_handler.CAPTION_SCALE_MIN/MAX`)와 `components/stage.html`,
+  // `components/viewer.html` 에 이미 손으로 적혀 있고 여기가 **네 번째 사본**
+  // 이다. 번들러가 없어 상수를 공유할 수 없으므로 이름과 값을 그대로 맞추고,
+  // 일치는 `tests/test_stage_page.py::
+  // test_the_range_is_one_rule_across_the_server_and_both_templates` 의
+  // **단일 대조**가 지킨다 (RL-025). 갈라지면 서버가 허용하는 값을 오퍼레이터가
+  // 보낼 수 없거나 그 반대가 되고, 어디에도 로그가 남지 않는다.
+  const CAPTION_SCALE_MIN = 0.8;
+  const CAPTION_SCALE_MAX = 1.6;
+  const CAPTION_SCALE_DEFAULT = 1;
+  // 전송만 억제하는 디바운스 — 표시값은 매 틱 갱신한다. 한 번의 드래그가
+  // 수십 건의 control 방송이 되면 그 룸의 모든 뷰어에게 그대로 fan-out 된다.
+  const STAGE_SCALE_SEND_DELAY_MS = 150;
+  let stageScaleSendTimer = null;
 
   // localStorage에서 설정 불러오기
   const loadSettings = () => {
@@ -896,6 +976,13 @@ try {
       originalSizeValue.textContent = `${originalSize}px`;
       document.documentElement.style.setProperty('--original-font-size', `${originalSize}px`);
     }
+
+    // ISSUE-54: 무대 자막 배율. 이 값은 **서버 스냅샷이 도착하기 전의 폴백**
+    // 일 뿐이다 — `auth_success` 의 control 이 오면 그쪽이 이긴다. 로드 시점에
+    // 아무것도 전송하지 않는 것이 중요하다: 자동 전송은 이미 그 룸을 보고 있는
+    // 다른 오퍼레이터의 설정을 조용히 되돌린다.
+    showStageScale(localStorage.getItem('stageCaptionScale') || CAPTION_SCALE_DEFAULT);
+    updateStageScaleHint();
 
     // 언어 설정 (입력: 기본 auto, 출력: 기본 ko)
     const savedInputLang = localStorage.getItem('inputLanguage') || 'auto';
@@ -1092,6 +1179,70 @@ try {
   // 설정 초기화
   loadSettings();
 
+  // ---------------------------------------------------------------------
+  // ISSUE-54 — 무대 자막 배율 컨트롤
+  //
+  // 이 값이 BOOT payload 가 아니라 **이미 열려 있는 WebSocket** 으로 흐르는
+  // 것이 이 이슈의 핵심 설계다. payload 에 실으면 `render_component_html` 의
+  // 결과 문자열이 바뀌고, 그 문자열이 컴포넌트 iframe 의 `srcdoc` 이라
+  // Streamlit 이 문서를 통째로 새로 로드한다 — RTCPeerConnection, 마이크
+  // 스트림, 번역 WS, 자막 스크롤백이 전부 사라진다 (ISSUE-47 F-2 / RL-028).
+  // 출력 언어 드롭다운이 이미 같은 규칙으로 동작하고 있다.
+  //
+  // 화면에 실제로 배율을 적용하는 쪽은 stage/viewer 템플릿이며 ISSUE-53 이
+  // 소유한다. 여기서는 숫자 하나를 보낼 뿐이고, 이 파일은 자막 스크롤
+  // 컨테이너(`#viewer`)에 아무것도 쓰지 않는다.
+  // ---------------------------------------------------------------------
+  function isTranslationSocketOpen() {
+    return !!openaiWebSocket && openaiWebSocket.readyState === WebSocket.OPEN;
+  }
+
+  function updateStageScaleHint() {
+    if (!stageScaleHint) return;
+    // 시작 전에 "적용됐다" 고 말하지 않는다. 단정적인 성공 표시는 오퍼레이터를
+    // "슬라이더는 움직였는데 무대는 그대로" 앞에 세워 둔다.
+    stageScaleHint.textContent = isTranslationSocketOpen()
+      ? '무대·뷰어 화면에 바로 적용됩니다.'
+      : '세션을 시작하면 적용됩니다.';
+  }
+
+  // 표시만 바꾼다 — **전송하지 않는다.** 서버 스냅샷(auth_success)과 ack 가
+  // 이 함수를 쓰기 때문에, 여기서 전송하면 서버가 보낸 값이 곧바로 서버로
+  // 되돌아가는 무한 왕복이 된다. 전송은 사용자 이벤트 핸들러 안에서만 한다.
+  function showStageScale(value) {
+    // 슬라이더 값은 문자열이고 서버/ack 값은 숫자다. 두 경로를 하나로 받기
+    // 위해 숫자로 강제하되, NaN 은 클램프하지 않고 버린다 — NaN 을 클램프하면
+    // NaN 이 그대로 표시된다.
+    const scale = Number(value);
+    if (!Number.isFinite(scale)) return;
+    const clamped = Math.min(CAPTION_SCALE_MAX, Math.max(CAPTION_SCALE_MIN, scale));
+    if (stageScaleSlider) {
+      stageScaleSlider.value = String(clamped);
+      // 스크린리더 낭독은 여기 하나뿐이다 (RL-019). 값 표시 span 은
+      // aria-hidden 이므로, 형식을 잃지 않으려면 valuetext 를 함께 옮겨야
+      // 한다 — 빠뜨리면 "1.4" 로만 읽히고 배율이라는 사실이 사라진다.
+      stageScaleSlider.setAttribute('aria-valuetext', `${clamped.toFixed(1)}배`);
+    }
+    if (stageScaleValue) stageScaleValue.textContent = `${clamped.toFixed(1)}×`;
+  }
+
+  function sendStageControl() {
+    stageScaleSendTimer = null;
+    // RL-006: 세션 미시작이면 조용히 로컬 표시만 남긴다. 여기서 예외를 던지거나
+    // 오류 문구를 띄우면 오퍼레이터는 자기가 뭘 잘못했다고 생각한다.
+    if (!isTranslationSocketOpen() || !stageScaleSlider) return;
+    openaiWebSocket.send(JSON.stringify({
+      type: 'stage_control',
+      caption_scale: Number(stageScaleSlider.value)
+    }));
+    console.log('[Control] 무대 자막 배율 전송:', stageScaleSlider.value);
+  }
+
+  function queueStageControl() {
+    if (stageScaleSendTimer !== null) clearTimeout(stageScaleSendTimer);
+    stageScaleSendTimer = setTimeout(sendStageControl, STAGE_SCALE_SEND_DELAY_MS);
+  }
+
   // 언어 변경을 WebSocket으로 전송 (ISSUE-2: 재연결 없이 반영)
   function sendLanguageUpdate() {
     if (openaiWebSocket && openaiWebSocket.readyState === WebSocket.OPEN) {
@@ -1121,6 +1272,21 @@ try {
       checkLangWarning();
       updateWelcomeTranslationRules();
       sendLanguageUpdate();
+    };
+  }
+
+  // ISSUE-54: 무대 자막 크기 슬라이더. 표시값은 매 틱 갱신하고 **전송만**
+  // 억제한다 — 표시까지 미루면 슬라이더가 뻑뻑하게 느껴진다.
+  if (stageScaleSlider) {
+    stageScaleSlider.oninput = (e) => {
+      showStageScale(e.target.value);
+      try {
+        localStorage.setItem('stageCaptionScale', String(Number(e.target.value)));
+      } catch (err) {
+        // 저장 실패로 잃는 것은 다음 로드의 폴백뿐이다. 조작을 막지 않는다.
+        console.warn('[Control] 배율 로컬 저장 실패:', err);
+      }
+      queueStageControl();
     };
   }
 
@@ -1840,6 +2006,7 @@ try {
 
       openaiWebSocket.onopen = () => {
         console.log(`✅ OpenAI WebSocket 연결됨: ${wsUrl}`);
+        updateStageScaleHint();  // ISSUE-54: 이제부터는 바로 반영된다
 
         // 사용자 정보 + 언어 설정 전송 (ISSUE-2)
         if (BOOT.user_info) {
@@ -1879,6 +2046,7 @@ try {
 
       openaiWebSocket.onclose = (event) => {
         console.log(`🔌 OpenAI WebSocket 연결 종료 (${wsUrl}): Code ${event.code}`);
+        updateStageScaleHint();  // ISSUE-54: 다시 "시작하면 적용" 상태로
       };
 
       return true;
@@ -2008,6 +2176,33 @@ try {
 
       case 'auth_success':
         console.log('[Translation] 인증 성공:', data.message);
+        // ISSUE-54: 서버가 이미 알고 있는 배율이 localStorage 보다 우선한다.
+        // `control` 은 **dict 또는 null** 이고, dict 여도 설정된 키만 담긴다
+        // (`BroadcastManager.get_control` — 상태가 없으면 `{}` 가 아니라
+        // `None`). 즉 `{"primary_lang":"vi"}` 처럼 caption_scale 이 아예
+        // 없을 수 있다. `typeof === 'number'` 하나로 세 경우(null / 키 없음 /
+        // 값 있음)를 모두 다룬다 — 없을 때 1.0 으로 지어내면 서버가 모르는
+        // 값을 권위처럼 표시하게 되고, 폴백으로 복원한 값을 덮어써 버린다.
+        if (data.control && typeof data.control.caption_scale === 'number') {
+          showStageScale(data.control.caption_scale);
+        }
+        updateStageScaleHint();
+        break;
+
+      case 'stage_control_ack':
+        // 서버가 확정한 값으로 표시를 맞춘다. `showStageScale` 은 전송하지
+        // 않으므로 되먹임 루프가 생기지 않는다 — 이 줄을 전송 핸들러로
+        // 바꾸면 ack 하나가 무한 왕복이 된다.
+        if (typeof data.caption_scale === 'number') {
+          showStageScale(data.caption_scale);
+        }
+        break;
+
+      case 'stage_control_error':
+        // 서버가 내보내는 문구는 고정 상수 하나뿐이다(사유도 받은 값도 담기지
+        // 않는다 — RL-006). 그 문구만 그대로 보여 준다.
+        console.warn('[Control] 무대 자막 배율 거절됨');
+        showToast(data.message || '자막 크기를 적용하지 못했습니다.', 'warning');
         break;
 
       case 'usage_exceeded':
