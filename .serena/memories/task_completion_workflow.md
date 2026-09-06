@@ -30,7 +30,7 @@
    ```bash
    git commit -m "type(scope): description"
    ```
-   
+
    **Types**: feat, fix, docs, chore, refactor, test, ci
    **Examples**:
    - `feat(transcribe): add sentence completion logic`
