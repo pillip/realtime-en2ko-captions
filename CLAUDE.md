@@ -39,6 +39,42 @@ docker run --rm -p 8501:8501 -p 8765:8765 -p 8766:8766 \
 # 권장: docker-compose up -d --build  (.env 자동 로드, 포트/볼륨 일괄 구성)
 ```
 
+### Formatter policy — black only, ruff is a linter (ISSUE-65)
+
+**`black` is the sole formatter. `ruff` is used as a linter only.** There is
+deliberately **no `ruff-format` hook** in `.pre-commit-config.yaml`, and
+deliberately no `[tool.ruff.format]` table in `pyproject.toml`.
+
+Reason: `ruff format` and `black` do not converge on the wrapped
+`assert <cond>, <long msg>` layout. `ruff format` parenthesises the *message*,
+`black` parenthesises the *condition*, and each reverts the other:
+
+```
+ruff format ->  assert cond, (        black ->  assert (
+                    msg                             cond
+                )                               ), msg
+```
+
+Running both makes the two hooks cycle with period 2, so **both** report "files
+were modified by this hook" on every run and the file can never be committed
+without `SKIP=ruff-format`.
+
+Note the trap: the hooks run in one pass (`ruff-format`, then `black`), so the
+cycle completes **inside a single `pre-commit` run** and the file ends
+byte-identical to how it started. A "run `--all-files` twice and diff the tree"
+convergence check therefore sees nothing wrong — only the hook **exit status**
+exposes the deadlock. Any convergence test for this must assert *both* "0 files
+modified" and "all hooks passed"; the file check alone is blind here.
+
+That deadlock recurred across four sprints and had
+already started shaping how tests were written (artificially short assert
+messages) before it was fixed.
+
+This mirrors the global rules §6, which names `black` as the formatter and
+`ruff` as the linter. Do not re-add `ruff-format` — the lint config is not
+half-finished, it is intentional. `tests/test_precommit_formatter_policy.py`
+guards this and carries the conflicting layout as a live canary.
+
 ## Essential Environment Variables
 
 - `AWS_ACCESS_KEY_ID`: Required for AWS service authentication (server-side only)

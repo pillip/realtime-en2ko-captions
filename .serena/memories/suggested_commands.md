@@ -38,5 +38,5 @@ docker run --rm -p 8501:8501 -e AWS_ACCESS_KEY_ID=... -e AWS_SECRET_ACCESS_KEY=.
 
 ## Environment Variables
 - `AWS_ACCESS_KEY_ID`: Required for AWS authentication
-- `AWS_SECRET_ACCESS_KEY`: Required for AWS authentication  
+- `AWS_SECRET_ACCESS_KEY`: Required for AWS authentication
 - `AWS_REGION`: Optional, defaults to us-east-1

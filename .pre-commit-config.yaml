@@ -13,17 +13,19 @@ repos:
       - id: check-toml
       - id: mixed-line-ending
 
-  # Ruff linter and formatter
+  # Ruff — LINTER ONLY. Do not add ruff's formatter hook here (ISSUE-65):
+  # `ruff format` and `black` disagree on the wrapped `assert <cond>, <long msg>`
+  # layout and revert each other on every run, so both hooks fail forever and the
+  # file becomes uncommittable. black is this repo's only formatter.
+  # Rationale and guard: CLAUDE.md "Formatter policy",
+  # tests/test_precommit_formatter_policy.py
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.12.9
     hooks:
-      # Run the linter
       - id: ruff
         args: [--fix]
-      # Run the formatter
-      - id: ruff-format
 
-  # Black formatter
+  # Black — the single formatter
   - repo: https://github.com/psf/black
     rev: 25.1.0
     hooks:

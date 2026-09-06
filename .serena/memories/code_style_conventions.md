@@ -10,7 +10,7 @@
 ## Ruff Configuration
 **Selected Rules**:
 - E: pycodestyle errors
-- W: pycodestyle warnings  
+- W: pycodestyle warnings
 - F: pyflakes
 - I: isort (import sorting)
 - B: flake8-bugbear

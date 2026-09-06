@@ -3522,3 +3522,267 @@ This is a test-only PR whose entire value is discriminating power, and it has it
 across two relocation mutations that the pre-existing guard survives 2/2, precise
 single-node attribution, an anti-vacuity gate proven load-bearing by direct falsification,
 and zero flakes in six consecutive green runs. The production diff is genuinely zero.
+
+---
+
+# ISSUE-65 — pre-commit `ruff-format` / `black` 포매터 충돌 해소 (PR #154)
+
+Reviewed at `5810ff6`, base `3a16837`, branch `issue/ISSUE-65-todo`, in a dedicated
+reviewer worktree. `Track: platform`, `Type: chore`, `UI: false`. No `.py` file outside
+`tests/` is touched, so the correctness/security surface is nil by construction; the review
+weight is on **whether the fix is the fix**, whether the guard can actually fire, and whether
+the reason is recorded durably enough that the next reader does not undo it.
+
+Every claim below was re-derived in the worktree. Nothing here is taken from the PR
+description.
+
+## Verdict
+
+**APPROVE.** 0 Critical, 0 High. One Medium fixed in-review, three Low deferred with
+rationale. All four AC-related claims held up under independent testing.
+
+## Code Review
+
+### 1. Is the fix actually the fix? — verified, and the subtle claim is true
+
+The PR's load-bearing claim is that the two formatters form a period-2 cycle **that
+completes inside a single `pre-commit` run**, so the file ends byte-identical while both
+hooks report modifying it. Re-derived from scratch by copying the canary out of the
+worktree and hashing after each formatter invocation:
+
+```
+step0 committed state   : cae5f1d
+step1 after ruff format : 5d00805
+step2 after black       : cae5f1d
+step3 after ruff format : 5d00805
+step4 after black       : cae5f1d
+```
+
+Byte-identical to the committed file after two full cycles. The disputed construct is
+exactly as documented — `black` parenthesises the **condition**, `ruff format`
+parenthesises the **message**:
+
+```
+black (committed)                     ruff format
+    assert (                              assert "ruff-format" not in ids, (
+        "ruff-format" not in ids              f"...",
+    ), f"..."                             )
+```
+
+Base hook order was `ruff` -> `ruff-format` -> `black`, so within one run `ruff-format`
+takes `cae5f1d -> 5d00805` and `black` takes it straight back to `cae5f1d`. **Net file
+change per run: zero bytes; both hooks fail.** The implementer's observation is correct and
+is the most important sentence in the PR: a convergence test that only diffs the tree is
+identically blind on the healthy and the broken config. Recorded as **RL-037**.
+
+### 2. AC 1 — convergence: verified, and stronger than required
+
+`uv run pre-commit run --all-files` twice from the clean committed state:
+
+| run | hooks | exit | files modified |
+|---|---|---|---|
+| 1 | all Passed (`check json` skipped, no files) | 0 | **0** |
+| 2 | all Passed | 0 | **0** |
+
+Run 1 also modifies nothing, which means the `style:` commit genuinely converged the tree —
+AC 1 holds from a fresh clone, not just on the second pass.
+
+### 3. Is the guard honest? — yes, with one real limit
+
+Six tests, all passing (`6 passed in 0.12s`). Scrutinised against RL-024 ("a closed finding
+whose caller can never reach the helper is a marker, not a fix"):
+
+- **It can fire.** Independently confirmed by the dispatching lead: restoring the base
+  `.pre-commit-config.yaml` + `pyproject.toml` turns it **3 failed / 3 passed**. Not
+  decorative.
+- **The canary is live, and pinned from both sides.** `black --check` must exit 0 and
+  `ruff format --check` must exit **1** on this very file. Asserting `== 1` rather than
+  `!= 0` is the right choice: ruff exits **2** on error (missing file, bad config), so
+  deleting or breaking the canary fails the test instead of accidentally satisfying it.
+  This closes the RL-024 hole properly — someone rewriting the asserts into a shape both
+  formatters accept kills the canary, and only this test notices.
+- **Structural, not textual.** The four config tests parse YAML/TOML, so prose mentioning
+  `ruff-format` neither satisfies nor breaks them. Confirmed by reading `_hooks()`.
+- **`_tool()` fails loudly, it does not silently skip.** This was the sharpest concern
+  (a guard that no-ops in CI is worse than none). Executed the missing-binary path
+  directly: `_tool()` falls back to the bare name, and `subprocess.run` then raises
+  `FileNotFoundError` — the test **errors**, it does not skip. Under `uv run pytest`,
+  `sys.executable` is `<worktree>/.venv/bin/python3` and both `.venv/bin/black` and
+  `.venv/bin/ruff` resolve (verified), and `black`/`ruff` are declared dev deps, so CI
+  resolves them too.
+- **Limit (accepted):** the guard is a denylist over hook **ids**. A hand-rolled
+  `repo: local` hook with `entry: ruff format` and a custom id would evade all six tests.
+  The realistic regression — pasting the stock `- id: ruff-format` block back from a
+  template — is caught. Not worth an allowlist's brittleness.
+
+### 4. Does the `style:` commit hide anything? — no, verified stronger than claimed
+
+The PR offers `git diff --ignore-all-space --ignore-blank-lines` as evidence, which is
+weaker than it looks: `--ignore-all-space` also treats `a b` and `ab` as equal, so a word
+join would pass it. Re-verified per file by hashing the content with **all whitespace
+stripped**, before vs after:
+
+```
+WHITESPACE-ONLY-CONFIRMED  .serena/memories/code_style_conventions.md
+WHITESPACE-ONLY-CONFIRMED  .serena/memories/codebase_structure.md
+WHITESPACE-ONLY-CONFIRMED  .serena/memories/project_overview.md
+WHITESPACE-ONLY-CONFIRMED  .serena/memories/suggested_commands.md
+WHITESPACE-ONLY-CONFIRMED  .serena/memories/task_completion_workflow.md
+WHITESPACE-ONLY-CONFIRMED  docs/ui_review_notes.md
+```
+
+Every changed line is a trailing-space strip or an EOF newline; no token differs. The
+`.serena/memories/*` files are agent-facing, so a smuggled semantic edit there would be
+unusually hard to notice later — it did not happen. Claim holds.
+
+### 5. Is the reason recorded well enough? — one gap, fixed in-review
+
+`CLAUDE.md` is placed directly after the "Code quality" command block, states black-only
+plainly, carries the mechanism diagram, names the four-sprint history, cross-references the
+global rules §6, and says "do not re-add — the lint config is not half-finished, it is
+intentional". That is the right content in the right place, and it does **not** contradict
+global §6 (black = formatter, ruff = linter) — it restates and sources it. The command list
+correctly never mentions `ruff format`.
+
+**Gap (Medium, fixed):** the corollary from finding 1 — that the cycle nets to zero bytes,
+so a tree-diff convergence check is blind and only exit status reveals it — appeared **only
+in the PR description**. PR bodies are not what a future reader of `CLAUDE.md` consults, and
+this is precisely the knowledge that stops someone from later weakening AC 1 into a
+file-diff-only check. Added six lines to the `CLAUDE.md` formatter-policy section stating
+the trap and requiring any convergence test to assert both "0 files modified" and "all hooks
+passed". Re-ran `pre-commit run --all-files` after the edit: all hooks Passed, nothing
+reformatted.
+
+### 6. Consistency sweep — clean
+
+- CI's Lint job runs `uv run ruff check . --config pyproject.toml` and `uv run black
+  --check .` and **never** `ruff format`, so CI matches the new policy with no edit needed.
+- Removing `[tool.ruff.format]` does not affect `ruff check` (lint config is
+  `[tool.ruff.lint]`); `uv run ruff check .` passes.
+- Repo-wide grep for `ruff-format` / `ruff format` finds only the intentional new
+  references plus two historical entries in this file — and one genuinely stale item, below.
+- The PR's two "the issue body was wrong" claims are both correct: `.githooks` does not
+  exist, `git log --all -- .githooks` is empty, `core.hooksPath` is unset, and
+  `.git/hooks/pre-commit` is the pre-commit **framework** hook. Declining to create the
+  rules hook here is the right call — it would begin gating every future commit touching
+  `pyproject.toml` or CI workflows, which is its own change with its own blast radius.
+
+## Findings
+
+| # | Severity | Finding | Disposition |
+|---|---|---|---|
+| F-1 | Medium | The "cycle nets to zero bytes, so a tree-diff convergence check is blind" insight lived only in the PR body, not in the durable `CLAUDE.md` record | **Fixed in-review** — 6 lines added to the formatter-policy section |
+| F-2 | Low | `tests/test_precommit_formatter_policy.py:34` imports `yaml`, but **pyyaml is not declared** in `pyproject.toml` (neither `[project].dependencies` nor `[dependency-groups].dev`). It resolves only transitively via `pre-commit` -> `pyyaml` (confirmed in `uv.lock`). CI is green today because `uv sync --frozen` installs the dev group; if `pre-commit` is ever removed as a dev dep, this module fails at **import**, taking the whole file down | **Deferred** — fix is `uv add --dev pyyaml`, but that rewrites `uv.lock` and trips the repo's dependency-change conventions mid-review. pre-commit will not plausibly drop pyyaml (it parses YAML configs). Flagged for follow-up |
+| F-3 | Low | `test_ruff_lint_hook_survives_with_fix` pins the hook id to the literal `"ruff"`, which pre-commit now reports as **`ruff (legacy alias)`** — upstream's current id is `ruff-check`. A legitimate future migration to `ruff-check` will fail this guard with "expected exactly one 'ruff' lint hook, found 0" even though the linter is correctly present | **Deferred** — the failure is loud and self-limiting (one assertion, obvious fix), not a silent hole. Accepting `{"ruff", "ruff-check"}` would fix it, but out of scope here (version-bump adjacent) |
+| F-4 | Low | `tests/e2e/test_room_id_e2e.py:31` still carries the now-void workaround frozen into a source comment: `# 메시지를 짧게 두어 ruff-format/black 의 줄바꿈 충돌을 피한다.` The issue body cites this exact line as evidence the defect had begun shaping test code, so leaving it means the dead workaround keeps propagating | **Deferred deliberately** — the implementer documented this in the PR body. The file is e2e and under concurrent sprint work; a comment-only edit is not worth a merge conflict. Should be swept together with the ten `issues.md` workaround notes |
+| F-5 | Low | **The guard exercises different binaries than the hooks actually run.** `_tool()` resolves `black`/`ruff` from the venv, governed by the *unbounded* dev pins `black>=25.1.0` / `ruff>=0.12.9`. pre-commit runs its own pinned `rev: 25.1.0` / `rev: v0.12.9` in isolated environments. They coincide today, so the canary is truthful now — but the next `uv lock --upgrade` can drift them, after which the canary describes the behaviour of a formatter the hooks never invoke, while still reporting green | **Deferred** — degrades gracefully (it still tests *a* black/ruff pair) and the fix belongs with a version-bump change, which is out of scope. Recorded as **RL-038** so the next lockfile bump has to confront it |
+| F-6 | Low | `tests/test_precommit_formatter_policy.py:116-117` passes `"--config", str(PYPROJECT)` to `ruff format`, which is a verified no-op — ruff walks up from the target path and finds the same `pyproject.toml` regardless (independently reproduced with `cwd=/private/tmp`, rc=1 either way). It is also internally inconsistent: the sibling `black` invocation passes no `--config` | **Deferred** — harmless, 2 lines, and arguably documents intent. Not worth churning a green PR |
+
+No finding blocks the merge.
+
+## Security Findings
+
+None applicable. The diff contains no product code, no I/O, no network, no auth surface, no
+user input, and no secrets. The only execution added is `subprocess.run` of two local dev
+binaries with a fixed argv (no shell, no interpolation of external input) inside a test.
+
+## Over-Engineering (minimality axis)
+
+The axis question: is 27 lines of `CLAUDE.md` + 139 lines of test proportionate to a
+two-line config deletion? **Yes** — the deletion is trivial precisely *because* the
+knowledge is the deliverable. This defect survived four sprints and was rediscovered five
+times; what failed before was never the edit, it was that nothing recorded why. Both
+artefacts are explicitly required by the issue's In-scope list, so their existence is
+requested work, and the axis only judges bloat.
+
+```
+tests/test_precommit_formatter_policy.py:58-63: delete test_no_ruff_format_hook_is_registered → strictly subsumed by test_black_remains_the_sole_formatter:83, whose other_formatters set already contains "ruff-format"; no input distinguishes them (-8)
+tests/test_precommit_formatter_policy.py:1-25: shrink lines 3-7 and 15-18 restate CLAUDE.md verbatim → keep the layout diagram + the canary warning, point at CLAUDE.md for the rest (-19)
+tests/test_precommit_formatter_policy.py:101-139: shrink 25-line parametrize scaffold over two cases sharing almost nothing (different argv shape, rc, and `why`) → two plain test functions (-12)
+tests/test_precommit_formatter_policy.py:116-117: delete `"--config", str(PYPROJECT)` → verified no-op, and black is invoked without it (F-6) (-2)
+.pre-commit-config.yaml:16-21: shrink 6-line rationale, copy 2 of 4 → 2 lines + pointer to CLAUDE.md "Formatter policy" (-4)
+pyproject.toml:76-80: shrink 5-line rationale, copy 3 of 4 → 2 lines + pointer (-3)
+```
+
+**Net removable: ~46 lines.** The dominant finding is not any single block but that the
+*same rationale is written out in full four times* — `CLAUDE.md`, `.pre-commit-config.yaml`,
+`pyproject.toml`, and the test docstring. Canonically one location should own it and the
+other three should be pointers.
+
+**Recommendation: record, do not cut, and here is the argument for keeping it.** This axis
+never overrides explicitly-requested work, and there is a specific reason the usual
+"one canonical location" rule is weaker than normal here. The failure this issue exists to
+end is that for four sprints the reason was *not present where people were looking* — five
+separate implementers hit the deadlock while editing `.pre-commit-config.yaml` and
+`pyproject.toml`, and each worked around it locally. A pointer is one indirection, and a
+hurried reader mid-deadlock skips indirections; that is empirically what happened. Local
+redundancy at the two config sites is therefore defensive by design, not accident. The
+honest read is that the duplication is *somewhat* more than needed — trimming the two config
+comments to ~2 lines plus a pointer would keep the local signal and recover ~7 lines — but
+this is a judgement call the author made deliberately and defensibly, and churning a green
+PR to relitigate it costs more than the lines are worth.
+
+Two sub-findings I would *not* act on even in a rewrite: the module docstring's canary
+warning (lines 20-24) and the parametrised `why` strings are the highest-value text in the
+file — they tell a future maintainer *which of two hypotheses to check* when the canary
+flips, which is exactly the knowledge that prevents someone from "fixing" the guard by
+killing it.
+
+**Ship as-is.**
+
+## Review lessons
+
+Added **RL-037** — "A convergence check that only diffs the tree is blind to a revert-cycle
+whose period fits inside one run", with the hash trace as evidence and the prevention rule
+(assert artefact equality **and** step exit status; pin with a live canary carrying the
+disputed construct).
+
+Added **RL-038** — "A guard asserting on external-tool behaviour resolves a different build
+of that tool than the thing it guards" (from F-5). Distinct from a canary *dying*, which
+this PR does defend against: here the canary stays alive and green while quietly ceasing to
+describe the production configuration, because both sides are green throughout.
+
+**RL-024** deserves a positive citation for PR #154: the parametrised canary test exists
+precisely because the author asked "what would make this guard decorative?" and answered it
+in code. That is the lesson working as intended, not a violation.
+
+Lessons-escalation sweep: `RL-004` (freq 13), `RL-001` (freq 5) and `RL-018` (freq 4) exceed
+the frequency-3 threshold, but **no entry in `docs/review_lessons.md` carries a `Severity`
+field at all**, so the "Frequency >= 3 AND Severity Critical/High" escalation rule cannot
+evaluate as written. Reported rather than guessed; no preventive issue invented.
+
+## Checkpoints
+
+| phase | exit | result |
+|---|---|---|
+| checkout | 0 | PASS — worktree exists for ISSUE-65 |
+| figma-compliance | 0 | PASS — no Figma data, auto-skipped (`UI: false`) |
+| computed-styles | 0 | PASS — auto-skipped |
+| structural-match | 0 | PASS — auto-skipped |
+| layout | 0 | PASS — auto-skipped |
+| visual-diff | 0 | SKIP — no implementation HTML/URL |
+| ui-review | 0 | PASS — not a UI issue, correctly skipped |
+| **test** | **124** | **FAIL — timeout, NOT a code defect.** See below |
+| test-quality | 0 | PASS — 49 test files have real assertions |
+| debt | 0 | PASS — clean ledger, no `KIT-DEBT` markers |
+| review | — | see commit |
+| push | — | see commit |
+
+All six Figma/UI checkpoints were executed rather than assumed, and each self-reported the
+reason for its skip.
+
+**The `test` checkpoint failure is kit infrastructure, not this PR.**
+`scripts/verify_checkpoint.py:815-828` runs the suite with a hardcoded `timeout=60`. Measured
+ground truth in this worktree with an adequate timeout, using the CI-equivalent command:
+
+```
+uv run pytest -m 'not e2e' --cov=. --cov-report=term-missing --cov-fail-under=60
+1475 passed, 1 skipped, 198 deselected in 114.02s
+Total coverage: 94.35%   EXIT=0
+```
+
+116s wall against a 60s allowance, so exit 124 is guaranteed regardless of code state, and
+the harness prints it as "pytest failed (exit 124)". Two defects compound here: the timeout
+is shorter than the suite, and the phase shells out to bare `python3 -m pytest` rather than
+the project venv. Already escalated by the sprint lead; recorded here so the FAIL row is not
+later misread as an ISSUE-65 regression.
