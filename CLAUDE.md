@@ -57,7 +57,16 @@ ruff format ->  assert cond, (        black ->  assert (
 
 Running both makes the two hooks cycle with period 2, so **both** report "files
 were modified by this hook" on every run and the file can never be committed
-without `SKIP=ruff-format`. That deadlock recurred across four sprints and had
+without `SKIP=ruff-format`.
+
+Note the trap: the hooks run in one pass (`ruff-format`, then `black`), so the
+cycle completes **inside a single `pre-commit` run** and the file ends
+byte-identical to how it started. A "run `--all-files` twice and diff the tree"
+convergence check therefore sees nothing wrong — only the hook **exit status**
+exposes the deadlock. Any convergence test for this must assert *both* "0 files
+modified" and "all hooks passed"; the file check alone is blind here.
+
+That deadlock recurred across four sprints and had
 already started shaping how tests were written (artificially short assert
 messages) before it was fixed.
 

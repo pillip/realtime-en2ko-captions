@@ -354,3 +354,68 @@ Preventable patterns identified during code reviews. Each entry includes when th
   relocating rather than deleting the control — move the assignment behind `setTimeout`/
   `await`, move the check after the boundary is crossed. Deletion-only mutants let
   string-matching guards claim a kill they did not earn.
+
+## [RL-037] A convergence check that only diffs the tree is blind to a revert-cycle whose period fits inside one run
+
+- **Category**: Testing
+- **Frequency**: 1
+- **Observed-In**: PR #154 (ISSUE-65) — `.pre-commit-config.yaml` ran `ruff-format` and then
+  `black` in the same pass. The two disagree on the wrapped `assert <cond>, <long msg>`
+  layout and revert each other, a period-2 cycle. Reproduced by hashing after each step:
+  `cae5f1d -> ruff format -> 5d00805 -> black -> cae5f1d -> ruff format -> 5d00805 -> black -> cae5f1d`.
+  Because both hooks run in one pass, the cycle **completes inside a single `pre-commit`
+  run** and the file ends byte-identical to how it started, while *both* hooks report "files
+  were modified by this hook" and the commit is rejected forever. The natural acceptance test
+  — "run `--all-files` twice, the second run must modify 0 files" — passes on the *broken*
+  config, because 0 files are modified on every run. The defect survived four sprints
+  behind `SKIP=ruff-format` workarounds and had begun shaping how tests were written
+  (artificially short assert messages) before it got an owner
+- **Description**: "Idempotent / converged" is routinely tested by running a pipeline twice
+  and diffing the artefacts. That test silently assumes any non-convergence shows up as a
+  *net* change. When two steps inside one run revert each other, the net change is zero and
+  the file-diff signal is identically zero for the healthy and the broken case. The only
+  channel carrying the failure is the per-step **exit status**, which a tree-diff check
+  discards. The longer the cycle stays hidden, the more the workaround (avoid the syntax,
+  pass `SKIP=`) gets copied into unrelated issue bodies and source comments, so the config
+  defect is progressively re-encoded as a style rule nobody can trace back to a cause
+- **Prevention**: Any convergence or idempotency assertion must check **both** "0 artefacts
+  changed" **and** "every step reported success". Never let artefact equality stand alone as
+  the definition of converged. When two tools in a pipeline can both write the same file,
+  assume a cycle is possible and pin the invariant with a live canary — a real file carrying
+  the disputed construct — rather than a config assertion, so the guard fails if someone
+  neutralises the construct instead of the conflict
+- **Recommended action**: In review, for every "run it twice, nothing changes" test, ask what
+  it does with the exit codes. If it discards them, it cannot distinguish a converged
+  pipeline from one that ping-pongs within a single run. Also ask whether two steps in the
+  pipeline have overlapping write authority over the same paths — that overlap, not the
+  artefact diff, is the thing to design the test around
+
+## [RL-038] A guard asserting on external-tool behaviour resolves a different build of that tool than the thing it guards
+
+- **Category**: Testing
+- **Frequency**: 1
+- **Observed-In**: PR #154 (ISSUE-65) — `tests/test_precommit_formatter_policy.py` pins the
+  formatter policy with a live canary: `black --check` on the file must exit 0 and
+  `ruff format --check` must exit 1. Its `_tool()` helper resolves both binaries from the
+  venv, which is governed by the **unbounded** dev pins `black>=25.1.0` / `ruff>=0.12.9`.
+  The thing being guarded — the pre-commit hooks — runs its own **pinned** `rev: 25.1.0` /
+  `rev: v0.12.9` inside isolated hook environments. The two coincide today, so the canary is
+  truthful at merge; nothing in the test constrains them to keep coinciding, so the next
+  `uv lock --upgrade` can leave the canary describing the behaviour of a formatter the hooks
+  never invoke, while still reporting green
+- **Description**: A test that shells out to a developer tool is implicitly asserting
+  "tool version X behaves like this". When the system under guard runs a *separately pinned*
+  copy of the same tool, the test and the target drift apart on the next upgrade with no
+  signal — the guard stays green because it is still measuring something, just not the thing
+  that matters. This is distinct from the canary dying (which this PR does defend against):
+  the canary stays alive and keeps passing, it merely stops being about the production
+  configuration. Version-pin drift is invisible precisely because both sides are green
+- **Prevention**: When a test asserts on the observable behaviour of an external tool that
+  the system also runs under its own pin, either invoke the pinned build, or add an
+  assertion that the pinned version and the resolved version match. Do not leave the
+  correspondence to coincidence. As a cheaper alternative, bound the dev dependency to the
+  same version the pin names, so a bump has to touch both sites
+- **Recommended action**: In review, for any test invoking a binary via `subprocess`, ask
+  which copy it resolved and whether production resolves the same one. If the answer is
+  "the venv's" while production uses a pinned or containerised copy, the guard's claim is
+  only as durable as the accident that they currently agree
