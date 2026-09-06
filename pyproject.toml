@@ -73,11 +73,11 @@ ignore = [
     "C901",  # too complex
 ]
 
-[tool.ruff.format]
-quote-style = "double"
-indent-style = "space"
-skip-magic-trailing-comma = false
-line-ending = "auto"
+# NOTE: there is deliberately no [tool.ruff.format] table (ISSUE-65). ruff is a
+# linter here; formatting is black's job alone, and no pre-commit hook runs
+# `ruff format`. The removed table was dead config (RL-007) — re-adding it would
+# invite the ruff-format hook back, and the two formatters never converge on the
+# wrapped `assert <cond>, <long msg>` layout. See tests/test_precommit_formatter_policy.py.
 
 [tool.ruff.lint.per-file-ignores]
 "pages/*" = ["E402"]  # Streamlit pages require st.set_page_config before some imports
