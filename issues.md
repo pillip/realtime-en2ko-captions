@@ -1,0 +1,5020 @@
+# Issues
+
+> Single source of truth for all project issues.
+> Format: `### ISSUE-N: Title`
+
+---
+
+### ISSUE-1: 설정 패널에 입력/출력 언어 선택 UI 추가
+
+- Track: feature
+- Type: feat
+- UI: true
+- Manual: false
+- PRD-Ref: FR-001
+- Priority: P1
+- Estimate: 0.5d
+- Status: shipped
+- Owner:
+- Branch:
+- GH-Issue: #13
+- PR: #34
+- Depends-On: none
+
+**Description**
+설정 사이드 패널(`components/webrtc.html`)에 입력 언어와 출력 언어를 선택하는 드롭다운 2개를 추가한다.
+
+**Input 언어 옵션**:
+| 표시명 | 값 |
+|--------|------|
+| 자동 감지 (All) | `auto` |
+| 한국어 | `ko` |
+| 중국어 | `zh` |
+| 영어 | `en` |
+| 베트남어 | `vi` |
+
+**Output 언어 옵션**:
+| 표시명 | 값 |
+|--------|------|
+| 한국어 (기본값) | `ko` |
+| 중국어 | `zh` |
+| 영어 | `en` |
+| 베트남어 | `vi` |
+
+**Acceptance Criteria**:
+- [ ] 설정 패널에 "입력 언어", "출력 언어" 드롭다운이 표시된다
+- [ ] 출력 언어 기본값은 한국어이다
+- [ ] 선택 값이 `localStorage`에 저장되어 새로고침 후에도 유지된다
+- [ ] 입력/출력 동일 언어 선택 시 경고 표시 (auto 제외)
+- [ ] 웰컴 화면의 번역 규칙 텍스트가 선택된 언어에 맞게 동적으로 변경된다
+
+**Files to modify**:
+- `components/webrtc.html` — 설정 패널 HTML + JS 이벤트 핸들러
+
+---
+
+### ISSUE-2: WebSocket 프로토콜에 언어 설정 전달 추가
+
+- Track: feature
+- Type: feat
+- UI: false
+- Manual: false
+- PRD-Ref: FR-002
+- Priority: P1
+- Estimate: 0.5d
+- Status: shipped
+- Owner:
+- Branch:
+- GH-Issue: #14
+- PR: #35
+- Depends-On: ISSUE-1
+
+**Description**
+브라우저에서 선택한 입력/출력 언어를 WebSocket을 통해 서버에 전달하고, 서버가 해당 설정을 번역 파이프라인에 적용하도록 한다.
+
+**프로토콜 변경**:
+1. 클라이언트 `auth` 메시지에 `language_settings` 필드 추가:
+   ```json
+   {
+     "type": "auth",
+     "user": { ... },
+     "language_settings": {
+       "input_lang": "auto",
+       "output_lang": "ko"
+     }
+   }
+   ```
+2. 언어 설정 변경 시 `language_update` 메시지 전송:
+   ```json
+   {
+     "type": "language_update",
+     "input_lang": "en",
+     "output_lang": "ko"
+   }
+   ```
+3. 서버에서 `_handle_transcript`에 언어 설정 적용 — `detect_language()` 대신 사용자 설정 사용 (input이 `auto`일 때만 자동 감지)
+
+**Acceptance Criteria**:
+- [ ] 인증 시 언어 설정이 서버에 전달된다
+- [ ] 실시간 언어 변경이 재연결 없이 반영된다
+- [ ] input이 `auto`이면 기존 `detect_language()` 로직 사용
+- [ ] input이 특정 언어이면 해당 언어를 source로 고정
+
+**Files to modify**:
+- `components/webrtc.html` — WebSocket auth 및 language_update 메시지 전송
+- `websocket_handler.py` — `_authenticate_client()`, `_handle_transcript()` 수정
+
+---
+
+### ISSUE-3: 번역 모듈에 중국어/베트남어 언어 쌍 지원 추가
+
+- Track: feature
+- Type: feat
+- UI: false
+- Manual: false
+- PRD-Ref: FR-003
+- Priority: P1
+- Estimate: 1d
+- Status: shipped
+- Owner:
+- Branch:
+- GH-Issue: #15
+- PR: #39
+- Depends-On: ISSUE-2
+
+**Description**
+현재 `translation.py`는 한국어↔영어만 지원한다. 중국어(`zh`)와 베트남어(`vi`)를 추가하여 모든 입출력 조합을 처리할 수 있도록 확장한다.
+
+**필요한 번역 프롬프트**:
+- `_build_prompt_to_chinese(text, source_lang)` — 중국어 번역용
+- `_build_prompt_to_vietnamese(text, source_lang)` — 베트남어 번역용
+- 기존 `_build_prompt_to_korean`, `_build_prompt_to_english` 함수의 source_lang 파라미터를 중국어/베트남어에도 대응
+
+**`translate_with_llm` 수정**:
+```python
+def translate_with_llm(bedrock_client, text, source_lang, target_lang):
+    if target_lang == "ko":
+        prompt = _build_prompt_to_korean(text, source_lang)
+    elif target_lang == "en":
+        prompt = _build_prompt_to_english(text)
+    elif target_lang == "zh":
+        prompt = _build_prompt_to_chinese(text, source_lang)
+    elif target_lang == "vi":
+        prompt = _build_prompt_to_vietnamese(text, source_lang)
+```
+
+**`SOURCE_LANG_NAMES` 확장**:
+```python
+SOURCE_LANG_NAMES = {
+    "en": "영어",
+    "ja": "일본어",
+    "zh": "중국어",
+    "ko": "한국어",
+    "vi": "베트남어",
+    "es": "스페인어",
+    "fr": "프랑스어",
+    "de": "독일어",
+}
+```
+
+**Acceptance Criteria**:
+- [ ] 중국어 → 한국어/영어/베트남어 번역이 동작한다
+- [ ] 베트남어 → 한국어/영어/중국어 번역이 동작한다
+- [ ] 한국어/영어 → 중국어/베트남어 번역이 동작한다
+- [ ] LLM 실패 시 AWS Translate 폴백이 모든 언어 쌍에서 동작한다
+- [ ] 번역 프롬프트가 각 target 언어에 맞는 자연스러운 자막 스타일을 유도한다
+- [ ] 단위 테스트 최소 1개 추가
+
+**Files to modify**:
+- `translation.py` — 프롬프트 함수 추가, `translate_with_llm` 분기 확장, `SOURCE_LANG_NAMES` 업데이트
+- `tests/` — 번역 함수 단위 테스트
+
+---
+
+### ISSUE-4: 입력 언어 자동 감지(All) 모드 로직 구현
+
+- Track: feature
+- Type: feat
+- UI: false
+- Manual: false
+- PRD-Ref: FR-004
+- Priority: P1
+- Estimate: 0.5d
+- Status: shipped
+- Owner:
+- Branch:
+- GH-Issue: #16
+- PR: #40
+- Depends-On: ISSUE-2
+
+**Description**
+입력 언어가 `auto`(All)로 설정된 경우, 입력 텍스트의 언어를 자동으로 감지하여 적절한 번역 쌍을 결정한다. 기존 `detect_language()`는 한국어/영어만 감지하므로, 중국어와 베트남어도 감지할 수 있도록 확장한다.
+
+**`detect_language` 확장**:
+```python
+def detect_language(text, output_lang="ko"):
+    """입력 텍스트의 언어를 감지하고 번역 쌍을 결정"""
+    # 한국어 감지: 한글 유니코드 범위
+    # 중국어 감지: CJK 통합 한자 범위 (한국어 아닌 경우)
+    # 베트남어 감지: 베트남어 특수 문자 (ă, ơ, ư, đ 등)
+    # 기본값: 영어
+    # output_lang과 동일한 언어가 감지되면 → 영어로 폴백
+```
+
+**Acceptance Criteria**:
+- [ ] 한국어 텍스트 입력 시 `ko`로 감지된다
+- [ ] 중국어 텍스트 입력 시 `zh`로 감지된다
+- [ ] 베트남어 텍스트 입력 시 `vi`로 감지된다
+- [ ] 영어 텍스트 입력 시 `en`으로 감지된다
+- [ ] 감지된 입력 언어와 출력 언어가 같으면 적절히 처리된다 (번역 스킵 또는 영어로 폴백)
+- [ ] `auto` 모드가 아닌 경우 감지 로직을 건너뛴다
+- [ ] 단위 테스트 최소 1개 추가
+
+**Files to modify**:
+- `translation.py` — `detect_language()` 함수 확장
+- `websocket_handler.py` — `_handle_transcript()`에서 auto 모드 분기
+- `tests/` — 언어 감지 단위 테스트
+
+---
+
+<!-- ============================================================ -->
+<!-- IMPROVEMENT ISSUES (ISSUE-5+) — Generated by scan-planner    -->
+<!-- Do NOT modify ISSUE-1 through ISSUE-4 above.                 -->
+<!-- ============================================================ -->
+
+## Board
+
+| Backlog | In Progress | Done |
+|---------|-------------|------|
+| ISSUE-5 | | |
+| ISSUE-6 | | |
+| ISSUE-7 | | |
+| ISSUE-8 | | |
+| ISSUE-9 | | |
+| ISSUE-10 | | |
+| ISSUE-11 | | |
+| ISSUE-12 | | |
+| ISSUE-13 | | |
+| ISSUE-14 | | |
+| ISSUE-15 | | |
+| ISSUE-16 | | |
+| ISSUE-17 | | |
+| ISSUE-18 | | |
+| ISSUE-19 | | |
+| ISSUE-20 | | |
+| ISSUE-21 | | |
+| ISSUE-22 | | |
+| ISSUE-23 | | |
+| ISSUE-24 | | |
+| ISSUE-25 | | |
+| ISSUE-26 | | |
+| ISSUE-27 | | |
+| ISSUE-28 | | |
+| ISSUE-29 | | |
+| ISSUE-30 | | |
+| ISSUE-31 | | |
+| ISSUE-32 | | |
+| ISSUE-33 | | |
+| ISSUE-34 | | |
+| ISSUE-35 | | |
+| | | ISSUE-36 |
+| | | ISSUE-37 |
+| | | ISSUE-38 |
+| | | ISSUE-39 |
+| | | ISSUE-40 |
+| | | ISSUE-41 |
+| | | ISSUE-42 |
+| | | ISSUE-43 |
+| | | ISSUE-44 |
+| | | ISSUE-45 |
+| | | ISSUE-46 |
+| | | ISSUE-47 |
+| | | ISSUE-48 |
+| | | ISSUE-49 |
+| | | ISSUE-50 |
+| ISSUE-51 | | |
+| | | ISSUE-52 |
+| | | ISSUE-53 |
+| | | ISSUE-54 |
+| ISSUE-55 | | |
+| ISSUE-56 | | |
+| ISSUE-57 | | |
+| ISSUE-58 | | |
+| ISSUE-59 | | |
+| ISSUE-60 | | |
+| ISSUE-61 | | |
+| ISSUE-62 | | |
+| ISSUE-63 | | |
+| ISSUE-64 | | |
+| ISSUE-65 | | |
+| ISSUE-66 | | |
+| ISSUE-67 | | |
+| ISSUE-68 | | |
+| ISSUE-69 | | |
+
+---
+
+### ISSUE-5: Validate WebSocket client identity against database in _authenticate_client
+
+- Track: platform
+- Type: security
+- UI: false
+- Manual: false
+- PRD-Ref: FR-033, NFR-010
+- Priority: P0
+- Estimate: 1d
+- Status: shipped
+- Owner:
+- Branch:
+- GH-Issue:
+- PR: #17
+- Depends-On: none
+- Evidence: websocket_handler.py:46-63; docs/architecture.md "Security" section; docs/test_plan.md "Gap 5: WebSocket Security"
+
+#### Goal
+WebSocket client authentication verifies the claimed user_id, username, and role against the database before granting access, preventing impersonation and privilege escalation.
+
+#### Scope (In/Out)
+- In: Add DB lookup in `_authenticate_client` to validate user_info fields; reject connections where claimed identity does not match DB record; reject inactive users
+- Out: Token-based WebSocket auth (future work); rate limiting on connection attempts
+
+#### Acceptance Criteria (DoD)
+- [ ] Given a WebSocket auth message with a `user_id` that does not exist in the database, when `_authenticate_client` processes it, then it returns None and does not send `auth_success`
+- [ ] Given a WebSocket auth message claiming `role="admin"` for a user whose DB role is `"user"`, when `_authenticate_client` processes it, then it returns the DB role (`"user"`) not the claimed role
+- [ ] Given a WebSocket auth message for an inactive user (`is_active=0`), when `_authenticate_client` processes it, then it returns None and sends an error message
+
+#### Implementation Notes
+- Import `get_user_model` in `websocket_handler.py` (already imported)
+- After extracting `user_info` from the auth message, call `get_user_model().get_user_by_id(user_info["id"])` and compare `username`; overwrite `role` from DB record
+- Return None if DB user is None or `is_active` is falsy
+
+#### Tests
+- [ ] Unit test: auth message with non-existent user_id returns None
+- [ ] Unit test: auth message with role="admin" for role="user" DB user returns corrected user_info
+- [ ] Unit test: auth message for inactive user returns None
+
+#### Rollback
+Revert the single commit that modifies `_authenticate_client`. No schema changes involved.
+
+---
+
+### ISSUE-6: Add unit tests for websocket_handler async functions
+
+- Track: platform
+- Type: test
+- UI: false
+- Manual: false
+- PRD-Ref: FR-032, FR-033, FR-034, FR-035, FR-045, FR-046
+- Priority: P0
+- Estimate: 1.5d
+- Status: shipped
+- Owner:
+- Branch:
+- GH-Issue:
+- PR: #20
+- Depends-On: ISSUE-5
+- Evidence: docs/test_plan.md "Gap 1: WebSocket Handler"; docs/test_plan.md Risk Matrix row 1 (High complexity, 1 test)
+
+#### Goal
+All five core async functions in `websocket_handler.py` (`_authenticate_client`, `_handle_transcript`, `_translate_text`, `_record_usage`, `handle_openai_websocket`) have unit test coverage with at least 12 test cases.
+
+#### Scope (In/Out)
+- In: Create `tests/test_websocket_handler.py` with async unit tests covering auth flow, transcript handling, translation delegation, usage recording, and error paths; add `pytest-asyncio` to dev dependencies
+- Out: Full integration test with real WebSocket server; E2E browser-to-server test
+
+#### Acceptance Criteria (DoD)
+- [ ] Given a valid auth message sent within 5 seconds, when `_authenticate_client` is called with a mock websocket, then it returns the user_info dict and sends `auth_success`
+- [ ] Given an auth timeout (websocket.recv raises TimeoutError), when `_authenticate_client` is called, then it returns None
+- [ ] Given a transcript message with empty text, when `_handle_transcript` is called, then no translation or websocket send occurs
+- [ ] Given a transcript where usage limit is exceeded, when `_handle_transcript` is called, then a `usage_exceeded` message is sent
+- [ ] Given Bedrock returns a translation, when `_translate_text` is called, then it returns the translated text with `used_llm=True`
+- [ ] Given both Bedrock and AWS Translate fail, when `_translate_text` is called, then it returns the original text as passthrough
+- [ ] Given `audio_duration=0`, when `_record_usage` is called, then it estimates duration as `max(1, len(transcript)/5.0)`
+
+#### Implementation Notes
+- Add `pytest-asyncio>=0.25` to `[dependency-groups].dev` in `pyproject.toml`; add `asyncio_mode = "auto"` to `[tool.pytest.ini_options]`
+- Use `AsyncMock` for websocket objects; use `unittest.mock.patch` for `get_user_model`, `get_usage_log_model`, `check_usage_limit`, `translate_with_llm`
+- Reuse `db_path`/`DatabaseManager` fixture pattern from `tests/test_database.py`
+
+#### Tests
+- [ ] TC-001 through TC-012 as specified in docs/test_plan.md Gap 1
+
+#### Rollback
+Delete `tests/test_websocket_handler.py` and revert `pyproject.toml` changes.
+
+---
+
+### ISSUE-7: Add unit tests for services.py (create_openai_session, create_aws_session)
+
+- Track: platform
+- Type: test
+- UI: false
+- Manual: false
+- PRD-Ref: FR-027, FR-062, NFR-008
+- Priority: P0
+- Estimate: 1d
+- Status: shipped
+- Owner:
+- Branch:
+- GH-Issue:
+- PR: #18
+- Depends-On: none
+- Evidence: docs/test_plan.md "Gap 2: Services"; docs/test_plan.md Risk Matrix rows 2 and 6
+
+#### Goal
+`create_openai_session` and `create_aws_session` in `services.py` have unit test coverage for success, auth failure, and missing-credential paths.
+
+#### Scope (In/Out)
+- In: Create `tests/test_services.py` with mocked httpx and boto3 clients; cover happy path, 401 error, missing env vars, and STS validation errors
+- Out: Tests for `start_health_server` (dead code, covered by ISSUE-15); real network calls
+
+#### Acceptance Criteria (DoD)
+- [ ] Given `OPENAI_KEY` env var is not set, when `create_openai_session` is called, then it raises an exception containing a message about the missing API key
+- [ ] Given a mocked httpx POST returning 200 with valid session JSON, when `create_openai_session` is called, then it returns a dict with keys `id`, `client_secret`, `expires_at`, `model`
+- [ ] Given `AWS_ACCESS_KEY_ID` env var is not set, when `create_aws_session` is called, then it raises a ValueError
+- [ ] Given a mocked STS `get_caller_identity` that succeeds, when `create_aws_session` is called, then it returns a dict containing `access_key_id`, `region`, and `websocket_url`
+
+#### Implementation Notes
+- Mock `httpx.AsyncClient` using `unittest.mock.patch` or the `respx` library
+- Mock `boto3.client` to return a MagicMock STS client for `create_aws_session`
+- Use `monkeypatch.setenv` / `monkeypatch.delenv` for environment variable control
+
+#### Tests
+- [ ] TC-014 through TC-020 as specified in docs/test_plan.md Gap 2
+
+#### Rollback
+Delete `tests/test_services.py`.
+
+---
+
+### ISSUE-8: Add unit tests for auth.py cookie lifecycle and decorators
+
+- Track: platform
+- Type: test
+- UI: false
+- Manual: false
+- PRD-Ref: FR-003, FR-004, FR-006, FR-007, FR-008, NFR-007
+- Priority: P0
+- Estimate: 1d
+- Status: shipped
+- Owner:
+- Branch:
+- GH-Issue:
+- PR: #19
+- Depends-On: none
+- Evidence: docs/test_plan.md "Gap 3: Auth"; auth.py:62-98 (restore), auth.py:100-123 (login/logout), auth.py:190-226 (decorators)
+
+#### Goal
+The untested 7 public functions in `auth.py` (`restore_session_from_cookie`, `login_user`, `logout_user`, `set_session_cookie`, `require_auth`, `require_admin`, `check_usage_limit` with `user_info=None`) have unit test coverage.
+
+#### Scope (In/Out)
+- In: Extend `tests/test_auth_module.py` with tests for cookie restore (valid, inactive user, malformed, non-existent user), login/logout, and decorator guards
+- Out: Integration test with real Streamlit session; E2E cookie persistence test
+
+#### Acceptance Criteria (DoD)
+- [ ] Given a valid cookie `{user_id}:{username}:{token}` for an active user in the DB, when `restore_session_from_cookie` is called, then `st.session_state.authenticated` is set to True and the function returns True
+- [ ] Given a cookie for an inactive user, when `restore_session_from_cookie` is called, then it returns False and session_state is unchanged
+- [ ] Given valid credentials, when `login_user` is called, then it returns True and `st.session_state.authenticated` is True
+- [ ] Given an unauthenticated session, when a function decorated with `@require_auth` is called, then `st.warning` is invoked and `st.stop` is called
+- [ ] Given an authenticated user with role="user", when a function decorated with `@require_admin` is called, then `st.error` is invoked and `st.stop` is called
+
+#### Implementation Notes
+- Continue the existing mock pattern from `test_auth_module.py` (mock `streamlit` and `extra_streamlit_components` via `monkeypatch.setitem(sys.modules, ...)`)
+- Mock `get_cookie_manager()` to return a MagicMock with `.get()`, `.set()`, `.delete()` methods
+
+#### Tests
+- [ ] TC-023 through TC-033 as specified in docs/test_plan.md Gap 3
+
+#### Rollback
+Revert additions to `tests/test_auth_module.py`.
+
+---
+
+### ISSUE-9: Harden session token generation with cryptographic randomness
+
+- Track: platform
+- Type: security
+- UI: false
+- Manual: false
+- PRD-Ref: FR-005, NFR-007
+- Priority: P0
+- Estimate: 0.5d
+- Status: shipped
+- Owner:
+- Branch:
+- GH-Issue:
+- PR: #21
+- Depends-On: none
+- Evidence: auth.py:30-34; docs/test_plan.md "Edge Cases" item 9 (same-second collision); docs/architecture.md "Security" section
+
+#### Goal
+Session tokens use cryptographically secure random bytes instead of deterministic SHA-256 of predictable inputs, eliminating same-second collisions and making token forgery infeasible.
+
+#### Scope (In/Out)
+- In: Replace `generate_session_token` implementation with `secrets.token_hex(32)`; update existing tests that assert on token format
+- Out: Full HMAC-signed cookie system (separate future issue)
+
+#### Acceptance Criteria (DoD)
+- [ ] Given two calls to `generate_session_token` with the same user_id, username, and within the same second, when tokens are compared, then they are different
+- [ ] Given a generated session token, when its length is checked, then it is 64 hex characters (32 bytes)
+- [ ] Given the token generation function, when inspected, then it uses `secrets.token_hex` or equivalent CSPRNG
+
+#### Implementation Notes
+- Replace body of `generate_session_token` in `auth.py:30-34` with `return secrets.token_hex(32)`
+- The function signature can remain unchanged (user_id and username params kept for interface compatibility or removed if no callers depend on them)
+- Update `tests/test_auth_module.py::TestGenerateSessionToken` to remove determinism assertions and add uniqueness assertions
+
+#### Tests
+- [ ] Unit test: two tokens generated in the same second for the same user are different
+- [ ] Unit test: token is 64 hex characters
+
+#### Rollback
+Revert auth.py change. Existing sessions will need re-login (tokens are not stored server-side).
+
+---
+
+### ISSUE-10: Add HMAC signing to session cookie to prevent forgery
+
+- Track: platform
+- Type: security
+- UI: false
+- Manual: false
+- PRD-Ref: FR-003, FR-004, NFR-007
+- Priority: P0
+- Estimate: 1d
+- Status: shipped
+- Owner:
+- Branch:
+- GH-Issue:
+- PR: #23
+- Depends-On: ISSUE-9
+- Evidence: auth.py:37-43 (set_session_cookie), auth.py:80-97 (restore_session_from_cookie); docs/architecture.md "Security" section: "token field is effectively decorative"
+
+#### Goal
+Session cookies include an HMAC signature verified on restore, so that forged cookies with guessed user_id:username pairs are rejected.
+
+#### Scope (In/Out)
+- In: Add HMAC-SHA256 signature to cookie value using a server-side secret (from `SESSION_SECRET` env var or auto-generated); verify signature in `restore_session_from_cookie`; add `SESSION_SECRET` to `.env.example`
+- Out: Encrypted cookie payload; token rotation/refresh mechanism
+
+#### Acceptance Criteria (DoD)
+- [ ] Given a cookie with a valid HMAC signature, when `restore_session_from_cookie` is called, then the session is restored successfully
+- [ ] Given a cookie with a tampered username but original signature, when `restore_session_from_cookie` is called, then it returns False (signature mismatch)
+- [ ] Given no `SESSION_SECRET` env var, when the application starts, then a random secret is generated and used for the session lifetime (with a warning logged)
+
+#### Implementation Notes
+- Use `hmac.new(secret, cookie_data.encode(), hashlib.sha256).hexdigest()` to sign
+- Cookie format becomes `{user_id}:{username}:{token}:{hmac_signature}`
+- On restore, recompute HMAC and compare with `hmac.compare_digest`
+- Add `SESSION_SECRET` to `.env.example` with a placeholder
+
+#### Tests
+- [ ] Unit test: forged cookie (modified username) fails HMAC verification
+- [ ] Unit test: valid cookie passes HMAC verification and restores session
+- [ ] Unit test: missing SESSION_SECRET auto-generates a secret without crashing
+
+#### Rollback
+Revert auth.py changes. All existing sessions will require re-login.
+
+---
+
+### ISSUE-11: Add pandas to pyproject.toml dependencies
+
+- Track: platform
+- Type: fix
+- UI: false
+- Manual: false
+- PRD-Ref: FR-065
+- Priority: P1
+- Estimate: 0.5d
+- Status: shipped
+- Owner:
+- Branch:
+- GH-Issue:
+- PR: #22
+- Depends-On: none
+- Evidence: admin.py:8 (`import pandas as pd`); pyproject.toml:7-18 (no pandas entry); docs/data_model.md Observations row "pandas is imported...but is not listed"; docs/test_plan.md Gap 4 "Immediate blocker"
+
+#### Goal
+`pandas` is declared as a production dependency in `pyproject.toml` so that clean Docker builds and fresh `uv sync` environments can load the admin dashboard without `ModuleNotFoundError`.
+
+#### Scope (In/Out)
+- In: Add `pandas>=2.0.0` to `[project].dependencies` in `pyproject.toml`; run `uv sync`; regenerate `requirements.txt` via `uv export`
+- Out: Removing pandas usage from admin.py; refactoring admin.py to avoid pandas
+
+#### Acceptance Criteria (DoD)
+- [ ] Given a clean virtual environment after `uv sync`, when `python -c "import admin"` is executed, then no ImportError is raised
+- [ ] Given a Docker build from scratch, when the admin dashboard page is loaded, then it renders without error
+
+#### Implementation Notes
+- Run `uv add pandas` then `uv export -o requirements.txt`
+- Verify `Dockerfile` builds successfully with the updated `requirements.txt`
+
+#### Tests
+- [ ] Verify `uv sync && uv run python -c "import pandas"` succeeds
+- [ ] Verify `docker build` completes without error
+
+#### Rollback
+Run `uv remove pandas` and revert `pyproject.toml`.
+
+---
+
+### ISSUE-12: Enable PRAGMA foreign_keys in SQLite connections
+
+- Track: platform
+- Type: fix
+- UI: false
+- Manual: false
+- PRD-Ref: FR-018
+- Priority: P1
+- Estimate: 0.5d
+- Status: shipped
+- Owner:
+- Branch:
+- GH-Issue:
+- PR: #24
+- Depends-On: none
+- Evidence: database.py:25-33 (get_connection has no PRAGMA); docs/data_model.md Observations row "SQLite foreign key enforcement is disabled"; docs/data_model.md Observations row "Cascade deletion is implemented in application code"
+
+#### Goal
+SQLite foreign key constraints are enforced at runtime, preventing orphaned `usage_logs` rows if a user is deleted through any code path other than `User.delete_user()`.
+
+#### Scope (In/Out)
+- In: Add `conn.execute("PRAGMA foreign_keys = ON")` in `DatabaseManager.get_connection()` after establishing the connection
+- Out: Adding ON DELETE CASCADE to the FK declaration (would require schema migration); removing application-level cascade delete
+
+#### Acceptance Criteria (DoD)
+- [ ] Given a `usage_logs` INSERT with a `user_id` that does not exist in `users`, when the INSERT is executed, then SQLite raises an IntegrityError
+- [ ] Given an existing user with usage_logs, when `User.delete_user()` is called, then logs are deleted first (existing behavior) and the user deletion succeeds
+
+#### Implementation Notes
+- Add `conn.execute("PRAGMA foreign_keys = ON")` immediately after `conn = sqlite3.connect(self.db_path)` in `get_connection()`
+- Verify existing `delete_user` flow still works (it deletes logs before user, so FK won't block it)
+- Run existing `tests/test_database.py` to confirm no regressions
+
+#### Tests
+- [ ] Unit test: INSERT into usage_logs with non-existent user_id raises IntegrityError
+- [ ] Existing test `test_delete_user_cascades_logs` continues to pass
+
+#### Rollback
+Remove the PRAGMA line from `get_connection()`.
+
+---
+
+### ISSUE-13: Add index on usage_logs.user_id and usage_logs.created_at
+
+- Track: platform
+- Type: performance
+- UI: false
+- Manual: false
+- PRD-Ref: FR-021, FR-023, FR-025
+- Priority: P1
+- Estimate: 0.5d
+- Status: shipped
+- Owner:
+- Branch:
+- GH-Issue:
+- PR: #25
+- Depends-On: none
+- Evidence: docs/data_model.md Observations "No index on usage_logs.user_id" and "No index on usage_logs.created_at"; database.py:315,365,391,451-461
+
+#### Goal
+Per-user log queries and date-range statistics queries use indexed lookups instead of full table scans.
+
+#### Scope (In/Out)
+- In: Add `CREATE INDEX IF NOT EXISTS idx_usage_logs_user_id ON usage_logs(user_id)` and `CREATE INDEX IF NOT EXISTS idx_usage_logs_created_at ON usage_logs(created_at)` in `init_database()`
+- Out: Composite indexes; query plan analysis tooling
+
+#### Acceptance Criteria (DoD)
+- [ ] Given a fresh database initialization, when `init_database()` completes, then `PRAGMA index_list('usage_logs')` returns at least two non-PK indexes
+- [ ] Given an existing database without these indexes, when the application restarts and `init_database()` runs, then the indexes are created without error (IF NOT EXISTS)
+
+#### Implementation Notes
+- Add two `CREATE INDEX IF NOT EXISTS` statements after the `CREATE TABLE` for `usage_logs` in `database.py:init_database()`
+- This is idempotent (`IF NOT EXISTS`) so no migration framework is needed
+
+#### Tests
+- [ ] Unit test: after `DatabaseManager(tmp_path)`, query `PRAGMA index_list('usage_logs')` and assert both indexes exist
+- [ ] Existing test suite passes without regression
+
+#### Rollback
+Remove the two `CREATE INDEX` lines. Existing databases retain their indexes (harmless).
+
+---
+
+### ISSUE-14: Add unit tests for admin.py business logic
+
+- Track: platform
+- Type: test
+- UI: false
+- Manual: false
+- PRD-Ref: FR-065, FR-066, FR-069, FR-071
+- Priority: P1
+- Estimate: 1d
+- Status: shipped
+- Owner:
+- Branch:
+- GH-Issue:
+- PR: #26
+- Depends-On: ISSUE-11
+- Evidence: docs/test_plan.md "Gap 4: Admin Dashboard"; docs/test_plan.md Risk Matrix row 4 (436 lines, zero tests)
+
+#### Goal
+Testable business logic in `admin.py` (CSV export, password validation, stats computation) is extracted into pure functions and covered by at least 4 unit tests.
+
+#### Scope (In/Out)
+- In: Extract CSV export logic, password validation, and user-data preparation into testable helper functions; create `tests/test_admin.py` with tests for those functions
+- Out: Testing Streamlit rendering calls; full admin dashboard E2E test
+
+#### Acceptance Criteria (DoD)
+- [ ] Given usage log data and a username, when the CSV export function is called, then the output bytes start with BOM (`\xef\xbb\xbf`) and contain the expected column headers
+- [ ] Given a password shorter than 6 characters, when the password validation function is called, then it returns False with an appropriate error message
+- [ ] Given password and confirmation that do not match, when the password validation function is called, then it returns False
+- [ ] Given 2 users in the database with known usage, when the user-data preparation function is called, then it returns a list of dicts with correct `remaining_minutes` calculations
+
+#### Implementation Notes
+- Extract from `admin.py`: `validate_password(password, confirm) -> (bool, str)`, `prepare_user_table_data(users) -> list[dict]`, `export_user_logs_csv(logs, username) -> bytes`
+- Create `tests/test_admin.py` importing these pure functions
+- Keep Streamlit rendering in `admin.py` as thin wrappers calling the extracted functions
+
+#### Tests
+- [ ] TC-034 through TC-038 as specified in docs/test_plan.md Gap 4
+
+#### Rollback
+Delete `tests/test_admin.py` and revert extraction changes in `admin.py`.
+
+---
+
+### ISSUE-15: Remove dead code: legacy AWS Transcribe path and unused functions
+
+- Track: platform
+- Type: refactor
+- UI: false
+- Manual: false
+- PRD-Ref: NFR-024
+- Priority: P1
+- Estimate: 1d
+- Status: shipped
+- Owner:
+- Branch:
+- GH-Issue:
+- PR: #27
+- Depends-On: none
+- Evidence: components/webrtc.html:1836 ("레거시 - 사용 안함"); services.py:95-135 (create_aws_session never called); services.py:137-161 (start_health_server never called); docs/architecture.md "Tradeoffs" rows on dead code
+
+#### Goal
+Dead code paths (legacy AWS Transcribe browser connection, `create_aws_session()`, `start_health_server()`) are removed, reducing `webrtc.html` by approximately 300 lines and `services.py` by approximately 70 lines.
+
+#### Scope (In/Out)
+- In: Remove `initializeAWSConnection()` and `connectAWSTranscribe()` from `webrtc.html`; remove `BOOT.aws_session` handling; remove `create_aws_session()` and `start_health_server()` from `services.py`; remove corresponding imports in `websocket_handler.py` if applicable
+- Out: Removing the `speechrecognition` unused dependency (separate cleanup)
+
+#### Acceptance Criteria (DoD)
+- [ ] Given the updated `components/webrtc.html`, when searching for "initializeAWSConnection" or "connectAWSTranscribe", then zero matches are found
+- [ ] Given the updated `services.py`, when searching for "create_aws_session" or "start_health_server", then zero matches are found
+- [ ] Given the full test suite, when `uv run pytest -q` is executed, then all existing tests pass
+
+#### Implementation Notes
+- In `webrtc.html`, remove everything from the "레거시 - 사용 안함" comment to the end of the legacy block (approximately lines 1836-2163)
+- In `services.py`, remove `create_aws_session` function and `start_health_server` function
+- Check `websocket_handler.py` imports for `create_aws_session` references
+- Verify no remaining references via grep
+
+#### Tests
+- [ ] Existing test suite passes after removal
+- [ ] Grep confirms zero references to removed function names
+
+#### Rollback
+`git revert` the removal commit.
+
+---
+
+### ISSUE-16: Move or delete root-level legacy test files
+
+- Track: platform
+- Type: refactor
+- UI: false
+- Manual: false
+- PRD-Ref: NFR-023
+- Priority: P1
+- Estimate: 0.5d
+- Status: shipped
+- Owner:
+- Branch:
+- GH-Issue:
+- PR: #28
+- Depends-On: none
+- Evidence: docs/test_plan.md "Current State Assessment" (root-level test files not in testpaths); test_token.py at project root
+
+#### Goal
+Root-level legacy test files (`test_auth.py`, `test_token.py`, `test_transcribe.py`, `test_websocket.py`) are either migrated into `tests/` and passing, or deleted with their test cases absorbed into existing test files.
+
+#### Scope (In/Out)
+- In: Audit each root-level test file for useful test cases; migrate valid tests into `tests/`; delete the root-level files
+- Out: Writing new tests (covered by ISSUE-6, ISSUE-7, ISSUE-8)
+
+#### Acceptance Criteria (DoD)
+- [ ] Given the project root directory, when listing `test_*.py` files, then zero matches are found (excluding `.venv/` and `.claude-kit/`)
+- [ ] Given any useful test cases from the legacy files, when they are migrated to `tests/`, then they pass under `uv run pytest -q`
+
+#### Implementation Notes
+- Check each file for overlap with existing `tests/test_*.py` files
+- If a test case is unique and valid, move it to the appropriate `tests/test_*.py` file
+- If a test case is stale (references old function signatures), delete it
+- Remove the root-level files after migration
+
+#### Tests
+- [ ] `uv run pytest -q` passes with no test count regression (unless stale tests are deleted)
+- [ ] No `test_*.py` files exist at project root
+
+#### Rollback
+`git revert` the commit. Root-level files were not being run anyway, so this is safe.
+
+---
+
+### ISSUE-17: Add GitHub Actions CI pipeline for tests and linting
+
+- Track: platform
+- Type: refactor
+- UI: false
+- Manual: false
+- PRD-Ref: NFR-023, NFR-024
+- Priority: P1
+- Estimate: 1d
+- Status: shipped
+- Owner:
+- Branch:
+- GH-Issue:
+- PR: #30
+- Depends-On: ISSUE-11
+- Evidence: docs/architecture.md "CI/CD: No .github/workflows/ or other CI configuration exists"; docs/test_plan.md "Automation Assessment: Nothing runs automatically"
+
+#### Goal
+A GitHub Actions workflow runs linting (`ruff check`, `black --check`) and unit tests (`pytest -m 'not e2e' --cov`) on every push and PR, with a coverage threshold of 60%.
+
+#### Scope (In/Out)
+- In: Create `.github/workflows/ci.yml` with lint and test stages; add `--cov` and `--cov-fail-under=60` to pytest invocation; add coverage configuration to `pyproject.toml`
+- Out: E2E test stage in CI (requires running Streamlit server); deployment pipeline
+
+#### Acceptance Criteria (DoD)
+- [ ] Given a push to any branch, when the CI workflow triggers, then it runs `ruff check .` and `black --check .` as a lint stage
+- [ ] Given a push to any branch, when the CI workflow triggers, then it runs `uv run pytest -m 'not e2e' --cov=. --cov-fail-under=60` and fails the build if coverage drops below 60%
+- [ ] Given the CI workflow YAML, when validated, then it uses Python 3.11, installs dependencies via `uv sync`, and caches the `.venv` directory
+
+#### Implementation Notes
+- Create `.github/workflows/ci.yml`
+- Use `astral-sh/setup-uv` action for uv installation
+- Add `[tool.coverage.run]` section to `pyproject.toml` with `omit = [".venv/*", "tests/*"]`
+- Two stages: lint (always) and test (always)
+
+#### Tests
+- [ ] Workflow YAML is valid (can be validated with `actionlint`)
+- [ ] Local dry-run: `uv run pytest -m 'not e2e' --cov=. --cov-fail-under=60` passes
+
+#### Rollback
+Delete `.github/workflows/ci.yml`.
+
+---
+
+### ISSUE-18: Add coverage threshold enforcement to pytest configuration
+
+- Track: platform
+- Type: refactor
+- UI: false
+- Manual: false
+- PRD-Ref: NFR-023
+- Priority: P1
+- Estimate: 0.5d
+- Status: shipped
+- Owner:
+- Branch:
+- GH-Issue:
+- PR: #29
+- Depends-On: none
+- Evidence: pyproject.toml:79-85 (no --cov in addopts); docs/test_plan.md "Current State Assessment: Coverage is never collected"
+
+#### Goal
+Running `uv run pytest -q` automatically collects coverage and reports it, with a minimum threshold configured to prevent coverage regression.
+
+#### Scope (In/Out)
+- In: Add `--cov=.`, `--cov-report=term-missing`, `--cov-fail-under=50` to `addopts` in `pyproject.toml`; add `[tool.coverage.run]` with `omit` patterns
+- Out: Raising threshold above 50% (should increase organically as test issues are resolved)
+
+#### Acceptance Criteria (DoD)
+- [ ] Given the default pytest run (`uv run pytest -q`), when tests complete, then a coverage summary is printed to the terminal
+- [ ] Given the current test suite, when coverage is measured, then it meets or exceeds the configured 50% threshold
+
+#### Implementation Notes
+- Modify `pyproject.toml [tool.pytest.ini_options] addopts` to include coverage flags
+- Add `[tool.coverage.run]` with `omit = [".venv/*", "tests/*", "pages/*"]`
+- Start at 50% threshold; increase to 60% after ISSUE-6, ISSUE-7, ISSUE-8 are completed
+
+#### Tests
+- [ ] `uv run pytest -q` shows coverage output
+- [ ] Coverage percentage is at or above threshold
+
+#### Rollback
+Remove coverage flags from `addopts` in `pyproject.toml`.
+
+---
+
+### ISSUE-19: Remove stale IMPROVEMENT_TASKLIST.md
+
+- Track: platform
+- Type: refactor
+- UI: false
+- Manual: false
+- PRD-Ref: NFR-024
+- Priority: P2
+- Estimate: 0.5d
+- Status: shipped
+- Owner:
+- Branch:
+- GH-Issue:
+- PR: #33
+- Depends-On: none
+- Evidence: README.md references IMPROVEMENT_TASKLIST.md; docs/architecture.md notes stale documentation
+
+#### Goal
+The stale `IMPROVEMENT_TASKLIST.md` (which references pre-refactor app.py line numbers that no longer exist) is removed, and any README references to it are updated to point to `issues.md`.
+
+#### Scope (In/Out)
+- In: Delete `IMPROVEMENT_TASKLIST.md`; update README.md to remove or redirect references
+- Out: Creating new documentation
+
+#### Acceptance Criteria (DoD)
+- [ ] Given the repository file listing, when searching for `IMPROVEMENT_TASKLIST.md`, then no file is found
+- [ ] Given the README.md, when searching for "IMPROVEMENT_TASKLIST", then no references exist (or they point to `issues.md`)
+
+#### Implementation Notes
+- `git rm IMPROVEMENT_TASKLIST.md`
+- Search README.md for references and update them
+
+#### Tests
+- [ ] `ls IMPROVEMENT_TASKLIST.md` returns "No such file"
+- [ ] `grep -r IMPROVEMENT_TASKLIST README.md` returns no matches
+
+#### Rollback
+`git revert` the commit.
+
+---
+
+### ISSUE-20: Drop legacy columns users.salt and users.hash_type
+
+- Track: platform
+- Type: refactor
+- UI: false
+- Manual: false
+- PRD-Ref: FR-010
+- Priority: P2
+- Estimate: 0.5d
+- Status: shipped
+- Owner:
+- Branch:
+- GH-Issue:
+- PR: #36
+- Depends-On: none
+- Evidence: database.py:45,54 (salt DEFAULT '', hash_type DEFAULT 'bcrypt'); docs/data_model.md Observations "salt and hash_type columns are legacy artefacts"
+
+#### Goal
+The unused `salt` and `hash_type` columns are removed from the `users` table schema, eliminating dead storage and reducing confusion for future developers.
+
+#### Scope (In/Out)
+- In: Remove `salt` and `hash_type` from `CREATE TABLE` in `database.py`; add a one-time migration function that creates a new table without these columns, copies data, and swaps tables (SQLite does not support DROP COLUMN before 3.35)
+- Out: Adding a full migration framework
+
+#### Acceptance Criteria (DoD)
+- [ ] Given a fresh database, when `init_database()` runs, then `PRAGMA table_info('users')` does not include `salt` or `hash_type` columns
+- [ ] Given an existing database with the old schema, when the migration function runs, then all user data is preserved and the columns are removed
+
+#### Implementation Notes
+- For Python 3.11 with SQLite >= 3.35 (bundled with Python 3.11+), `ALTER TABLE ... DROP COLUMN` is supported. Verify the bundled SQLite version and use it if available; otherwise use the table-rebuild approach.
+- Add a migration helper in `database.py` that checks for column existence before attempting removal
+- Run full test suite after schema change
+
+#### Tests
+- [ ] Unit test: fresh DB has no `salt` or `hash_type` columns
+- [ ] Unit test: migration on legacy DB preserves all user data
+
+#### Rollback
+Revert `database.py` changes. The old schema will be re-created on next fresh init. Existing DBs keep the dropped columns only if migration already ran (SQLite limitation).
+
+---
+
+### ISSUE-21: Add rate limiting to WebSocket transcript handler
+
+- Track: platform
+- Type: performance
+- UI: false
+- Manual: false
+- PRD-Ref: FR-032, NFR-019
+- Priority: P1
+- Estimate: 1d
+- Status: shipped
+- Owner:
+- Branch:
+- GH-Issue:
+- PR: #31
+- Depends-On: none
+- Evidence: websocket_handler.py:326-355 (no rate limiter); docs/requirements.md Risks "No rate limiting on WebSocket handler"; docs/architecture.md "Tradeoffs"
+
+#### Goal
+The WebSocket transcript handler enforces per-connection rate limiting to prevent a single client from exhausting Bedrock/Translate API quotas by flooding transcript messages.
+
+#### Scope (In/Out)
+- In: Add a per-connection rate limiter (e.g., token bucket or sliding window) in `handle_openai_websocket` that limits transcript messages to a configurable maximum (default: 30 messages per minute); send an error message to the client when the rate limit is exceeded
+- Out: Global rate limiting across all connections; IP-based rate limiting
+
+#### Acceptance Criteria (DoD)
+- [ ] Given a client sending more than 30 transcript messages in 60 seconds, when the 31st message arrives, then the handler sends a `{"type": "error", "message": "rate_limit_exceeded"}` response and does not invoke translation
+- [ ] Given a client sending transcript messages at a rate below the limit, when each message arrives, then all are processed normally
+
+#### Implementation Notes
+- Implement a simple token bucket per connection: track message timestamps in a deque, remove entries older than the window, reject if length >= max_rate
+- No external dependency needed; use `collections.deque` and `time.time()`
+- Make the rate configurable via environment variable `WS_RATE_LIMIT_PER_MINUTE` (default 30)
+
+#### Tests
+- [ ] Unit test: 31 rapid-fire messages cause rate_limit_exceeded on the 31st
+- [ ] Unit test: messages spaced over 60 seconds all succeed
+
+#### Rollback
+Remove the rate limiting code from `handle_openai_websocket`.
+
+---
+
+### ISSUE-22: Add unit tests for translation prompt construction functions
+
+- Track: platform
+- Type: test
+- UI: false
+- Manual: false
+- PRD-Ref: FR-043
+- Priority: P1
+- Estimate: 0.5d
+- Status: shipped
+- Owner:
+- Branch:
+- GH-Issue:
+- PR: #32
+- Depends-On: none
+- Evidence: docs/test_plan.md "Gap 6: Translation -- Prompt Construction Functions"; translation.py:_build_prompt_to_korean, _build_prompt_to_english
+
+#### Goal
+The prompt construction functions `_build_prompt_to_korean` and `_build_prompt_to_english` have direct unit tests asserting that prompts contain the source text and correct language labels.
+
+#### Scope (In/Out)
+- In: Add tests to `tests/test_app.py` (or a new `tests/test_translation.py`) for `_build_prompt_to_korean` and `_build_prompt_to_english`
+- Out: Testing actual LLM output quality; testing new languages (covered by ISSUE-3)
+
+#### Acceptance Criteria (DoD)
+- [ ] Given `_build_prompt_to_korean("Hello", "en")`, when the prompt is inspected, then it contains the source text "Hello" and the Korean language instruction
+- [ ] Given `_build_prompt_to_korean("Hello", "ja")`, when the prompt is inspected, then it uses the label for Japanese (not a generic fallback)
+- [ ] Given `_build_prompt_to_english("...")`, when the prompt is inspected, then it contains English translation instructions
+
+#### Implementation Notes
+- Import `_build_prompt_to_korean` and `_build_prompt_to_english` from `translation.py`
+- Assert on substring presence in the returned prompt strings
+- Test with known and unknown source language codes to verify fallback behavior
+
+#### Tests
+- [ ] TC-041 through TC-044 as specified in docs/test_plan.md Gap 6
+
+#### Rollback
+Delete the new test methods.
+
+---
+
+### ISSUE-23: Enable SQLite WAL mode for concurrent write safety
+
+- Track: platform
+- Type: performance
+- UI: false
+- Manual: false
+- PRD-Ref: FR-021
+- Priority: P2
+- Estimate: 0.5d
+- Status: shipped
+- Owner:
+- Branch:
+- GH-Issue:
+- PR: #37
+- Depends-On: ISSUE-12
+- Evidence: database.py:25-33 (no PRAGMA journal_mode); docs/data_model.md Observations "No WAL mode or connection pooling"; docs/requirements.md Risks "SQLite concurrent write access"
+
+#### Goal
+SQLite uses WAL (Write-Ahead Logging) journal mode, allowing concurrent reads during writes and reducing "database is locked" errors under multi-session Streamlit usage.
+
+#### Scope (In/Out)
+- In: Add `conn.execute("PRAGMA journal_mode=WAL")` in `DatabaseManager.get_connection()` or `init_database()`
+- Out: Connection pooling; migrating away from SQLite
+
+#### Acceptance Criteria (DoD)
+- [ ] Given a freshly initialized database, when `PRAGMA journal_mode` is queried, then it returns `wal`
+- [ ] Given two concurrent write transactions (simulated in a test), when both complete, then neither raises a "database is locked" error within a 5-second timeout
+
+#### Implementation Notes
+- WAL mode is persistent per database file; setting it once in `init_database()` is sufficient
+- Add `conn.execute("PRAGMA journal_mode=WAL")` after table creation in `init_database()`
+- WAL mode creates `-wal` and `-shm` sidecar files; update `.gitignore` if `data/` is tracked
+
+#### Tests
+- [ ] Unit test: after init, `PRAGMA journal_mode` returns `wal`
+- [ ] Unit test: concurrent writes from two threads do not raise OperationalError
+
+#### Rollback
+Remove the PRAGMA line. Existing databases retain WAL mode until explicitly changed to DELETE mode.
+
+---
+
+### ISSUE-24: Remove unused speechrecognition dependency
+
+- Track: platform
+- Type: refactor
+- UI: false
+- Manual: false
+- PRD-Ref: NFR-024
+- Priority: P2
+- Estimate: 0.5d
+- Status: shipped
+- Owner:
+- Branch:
+- GH-Issue:
+- PR: #38
+- Depends-On: none
+- Evidence: pyproject.toml:15 (`speechrecognition>=3.14.3`); docs/architecture.md "Tradeoffs" row "speechrecognition listed...but no import found"
+
+#### Goal
+The unused `speechrecognition` package is removed from production dependencies, reducing Docker image size and eliminating a confusing dependency.
+
+#### Scope (In/Out)
+- In: Remove `speechrecognition` from `[project].dependencies` in `pyproject.toml`; run `uv sync`; regenerate `requirements.txt`
+- Out: Removing other potentially unused dependencies
+
+#### Acceptance Criteria (DoD)
+- [ ] Given the updated `pyproject.toml`, when `uv sync` runs, then `speechrecognition` is not installed in the virtual environment
+- [ ] Given the full test suite, when `uv run pytest -q` is run, then all tests pass (confirming no hidden import dependency)
+
+#### Implementation Notes
+- Run `uv remove speechrecognition`
+- Run `uv export -o requirements.txt`
+- Grep the entire codebase for `import speech_recognition` or `from speech_recognition` to confirm no usage
+
+#### Tests
+- [ ] `uv run pytest -q` passes after removal
+- [ ] Grep for `speech_recognition` in `*.py` files returns zero matches
+
+#### Rollback
+Run `uv add speechrecognition>=3.14.3`.
+
+---
+
+<!-- ============================================================ -->
+<!-- MULTI-ROOM FEATURE (ISSUE-25+)                                -->
+<!-- ============================================================ -->
+
+### ISSUE-25: RoomManager 클래스 및 룸별 WebSocket 라우팅
+
+- Track: feature
+- Type: feat
+- UI: false
+- Manual: false
+- PRD-Ref: —
+- Priority: P1
+- Estimate: 1.5d
+- Status: shipped
+- Owner:
+- Branch: feat/issue-25-room-manager
+- GH-Issue: #43
+- PR: #59
+- Depends-On: none
+
+#### Goal
+WebSocket 서버가 룸 ID 기반으로 연결을 격리하여, 여러 오퍼레이터가 동시에 독립적인 자막 세션을 운영할 수 있게 한다.
+
+#### Scope (In/Out)
+- In: `RoomManager` 클래스 (룸 생성/조회/삭제, 연결 등록/해제), `handle_openai_websocket`에서 룸 ID 기반 라우팅, 룸별 독립 번역 클라이언트 및 언어 설정
+- Out: DB 연동 (ISSUE-26), UI (ISSUE-27), 뷰어 브로드캐스트
+
+#### Acceptance Criteria (DoD)
+- [ ] `RoomManager`가 룸을 생성하고 고유 ID를 반환한다
+- [ ] WebSocket auth 메시지에 `room_id` 필드가 포함되면 해당 룸에 연결이 등록된다
+- [ ] 같은 서버에서 2개의 룸이 동시에 동작할 때, 각 룸의 번역 결과가 다른 룸에 전달되지 않는다
+- [ ] 존재하지 않는 룸 ID로 접속 시 에러 메시지가 반환된다
+
+#### Implementation Notes
+- `RoomManager`는 인메모리 dict (`room_id → RoomState`) 관리
+- `RoomState`: `{room_id, connections: set, language_settings, translate_client, bedrock_client, created_at, last_activity}`
+- auth 메시지: `{"type": "auth", "user": {...}, "room_id": "abc123", "language_settings": {...}}`
+- 룸 ID 없이 접속 시 기본 룸("default")에 배정 (하위 호환)
+
+#### Tests
+- [ ] Unit test: RoomManager 룸 CRUD
+- [ ] Unit test: 서로 다른 룸의 메시지 격리
+- [ ] Unit test: 존재하지 않는 룸 접속 시 에러
+
+#### Rollback
+RoomManager 관련 코드 제거, 기존 단일 세션 방식으로 복원.
+
+---
+
+### ISSUE-26: rooms 테이블 및 룸 라이프사이클 관리
+
+- Track: feature
+- Type: feat
+- UI: false
+- Manual: false
+- PRD-Ref: —
+- Priority: P1
+- Estimate: 1d
+- Status: shipped
+- Owner:
+- Branch: feat/issue-26-rooms-table
+- GH-Issue: #44
+- PR: #60
+- Depends-On: ISSUE-25
+
+#### Goal
+룸 정보를 DB에 영속화하고, 상태 전이(생성→활성→비활성→종료) 및 타임아웃 기반 자동 정리를 구현한다.
+
+#### Scope (In/Out)
+- In: `rooms` 테이블 스키마, `Room` 모델 (CRUD, 상태 전이), 타임아웃 감지 및 좀비 룸 정리, 서버 재시작 시 메모리-DB 동기화
+- Out: UI (ISSUE-27, ISSUE-29), 오퍼레이터 배정 로직 (ISSUE-29)
+
+#### Schema
+```sql
+CREATE TABLE rooms (
+    id TEXT PRIMARY KEY,           -- UUID 또는 짧은 고유 ID
+    name TEXT NOT NULL,            -- 표시 이름 (예: "A홀 기조연설")
+    status TEXT DEFAULT 'waiting', -- waiting | active | inactive | closed
+    input_lang TEXT DEFAULT 'auto',
+    output_lang TEXT DEFAULT 'ko',
+    created_by INTEGER NOT NULL,   -- admin user_id (FK → users.id)
+    operator_id INTEGER,           -- 배정된 오퍼레이터 user_id (FK → users.id)
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_activity TIMESTAMP,
+    timeout_minutes INTEGER DEFAULT 30,
+    closed_at TIMESTAMP
+);
+```
+
+#### 상태 전이
+```
+waiting → active     (오퍼레이터가 시작)
+active → inactive    (오퍼레이터가 정지)
+inactive → active    (오퍼레이터가 재시작)
+inactive → closed    (타임아웃 또는 관리자 종료)
+active → closed      (관리자 강제 종료)
+waiting → closed     (관리자 삭제)
+```
+
+#### Acceptance Criteria (DoD)
+- [ ] `rooms` 테이블이 `init_database()`에서 생성된다
+- [ ] 룸 상태 전이가 올바르게 동작한다 (위 다이어그램)
+- [ ] 30분간 `last_activity` 갱신이 없는 비활성 룸이 자동으로 `closed` 처리된다
+- [ ] 서버 재시작 시 DB의 `active`/`inactive` 룸이 RoomManager에 복원된다
+- [ ] `closed` 상태의 룸은 WebSocket 접속이 거부된다
+
+#### Tests
+- [ ] Unit test: 룸 CRUD 및 상태 전이
+- [ ] Unit test: 타임아웃 정리 로직
+- [ ] Unit test: 서버 재시작 복원
+
+#### Rollback
+`rooms` 테이블 DROP, RoomManager에서 DB 연동 코드 제거.
+
+---
+
+### ISSUE-27: 오퍼레이터 UI — 배정된 룸 시작/정지
+
+- Track: feature
+- Type: feat
+- UI: true
+- Manual: false
+- PRD-Ref: —
+- Priority: P1
+- Estimate: 0.5d
+- Status: shipped
+- Owner:
+- Branch: feat/issue-27-operator-room-ui
+- GH-Issue: #45
+- PR: #61
+- Depends-On: ISSUE-25, ISSUE-26
+
+#### Goal
+오퍼레이터가 로그인 후 자신에게 배정된 룸 목록을 확인하고, 선택한 룸에서 자막 파이프라인을 시작/정지할 수 있다.
+
+#### Scope (In/Out)
+- In: 사이드바에 배정된 룸 드롭다운, 룸 상태 표시, 시작/정지 버튼이 선택된 룸에 연결, bootstrap JSON에 `room_id` 포함
+- Out: 룸 생성/삭제 (관리자 전용), 대화 기록 조회 (ISSUE-29)
+
+#### Acceptance Criteria (DoD)
+- [ ] 오퍼레이터 로그인 시 배정된 룸 목록이 사이드바에 표시된다
+- [ ] 룸 선택 후 "시작" 클릭 시 해당 룸의 WebSocket 연결에 `room_id`가 포함된다
+- [ ] 배정된 룸이 없으면 "배정된 룸이 없습니다. 관리자에게 문의하세요" 메시지 표시
+- [ ] 룸 상태(대기/활성/비활성)가 드롭다운 옆에 표시된다
+
+#### Implementation Notes
+- `app.py` 사이드바에서 `Room.get_rooms_by_operator(user_id)` 호출
+- bootstrap JSON에 `room_id` 추가: `payload["room_id"] = selected_room_id`
+- 기존 시작/정지 버튼 로직은 유지, 룸 선택이 추가될 뿐
+
+#### Tests
+- [ ] 배정된 룸이 없는 오퍼레이터 → 안내 메시지
+- [ ] bootstrap JSON에 room_id 포함 확인
+
+#### Rollback
+사이드바 룸 선택 UI 제거, bootstrap JSON에서 room_id 필드 제거.
+
+---
+
+### ISSUE-28: 브라우저 컴포넌트에 룸 ID 전달 및 격리
+
+- Track: feature
+- Type: feat
+- UI: true
+- Manual: false
+- PRD-Ref: —
+- Priority: P1
+- Estimate: 0.5d
+- Status: shipped
+- Owner:
+- Branch: feat/issue-28-webrtc-room-id
+- GH-Issue: #46
+- PR: #62
+- Depends-On: ISSUE-25, ISSUE-27
+
+#### Goal
+브라우저 컴포넌트(`webrtc.html`)가 bootstrap JSON의 `room_id`를 읽어 WebSocket auth 메시지에 포함시키고, 해당 룸의 자막만 표시한다.
+
+#### Scope (In/Out)
+- In: BOOT.room_id 읽기, WebSocket auth에 room_id 포함, 웰컴 화면에 룸 이름 표시
+- Out: 뷰어 전용 모드, 룸 간 전환 UI
+
+#### Acceptance Criteria (DoD)
+- [ ] WebSocket auth 메시지에 `room_id` 필드가 포함된다
+- [ ] BOOT.room_id가 없으면 "default" 룸으로 폴백 (하위 호환)
+- [ ] 웰컴 화면에 현재 룸 이름이 표시된다
+
+#### Implementation Notes
+- `BOOT.room_id`를 전역 변수로 저장
+- WebSocket auth 메시지: `{"type": "auth", "user": {...}, "room_id": BOOT.room_id, ...}`
+- 웰컴 화면: "🎙️ A홀 기조연설 — 실시간 자막"
+
+#### Tests
+- [ ] webrtc.html에 room_id 관련 코드 존재 (string match)
+- [ ] BOOT.room_id 미존재 시 "default" 폴백 로직
+
+#### Rollback
+webrtc.html에서 room_id 관련 코드 제거.
+
+---
+
+### ISSUE-29: 관리자 대시보드 — 룸 관리 및 오퍼레이터 역할 기반 뷰
+
+- Track: feature
+- Type: feat
+- UI: true
+- Manual: false
+- PRD-Ref: —
+- Priority: P1
+- Estimate: 1.5d
+- Status: shipped
+- Owner:
+- Branch: feat/issue-29-admin-room-mgmt
+- GH-Issue: #47
+- PR: #63
+- Depends-On: ISSUE-26
+
+#### Goal
+관리자가 룸을 생성/삭제/배정하고 모니터링할 수 있으며, 오퍼레이터는 자기 룸의 대화 기록을 조회/다운로드할 수 있다.
+
+#### Scope (In/Out)
+- In: 관리자 탭 — 룸 생성(이름, 언어, 타임아웃), 오퍼레이터 배정, 활성 룸 모니터링, 룸 강제 종료; 오퍼레이터 뷰 — 자기 룸 기록 조회, CSV/SRT 다운로드
+- Out: 뷰어 관리, 실시간 자막 미리보기
+
+#### 역할별 뷰
+| 기능 | 관리자 | 오퍼레이터 |
+|------|--------|-----------|
+| 룸 생성/삭제 | O | X |
+| 오퍼레이터 배정 | O | X |
+| 전체 룸 모니터링 | O | X |
+| 룸 강제 종료 | O | X |
+| 자기 룸 기록 조회 | O (전체) | O (자기 룸만) |
+| 대화 기록 다운로드 | O (전체) | O (자기 룸만) |
+
+#### Acceptance Criteria (DoD)
+- [ ] 관리자가 새 룸을 생성하면 rooms 테이블에 저장된다
+- [ ] 관리자가 오퍼레이터를 룸에 배정하면 `operator_id`가 업데이트된다
+- [ ] 관리자 대시보드에 활성 룸 목록과 상태가 실시간 표시된다
+- [ ] 오퍼레이터가 admin 페이지 접속 시 자기 룸만 보인다
+- [ ] 오퍼레이터가 자기 룸의 대화 기록을 CSV로 다운로드할 수 있다
+- [ ] role="user"인 사용자는 admin 페이지 접근이 차단된다 (기존 동작 유지)
+
+#### Implementation Notes
+- `admin.py`에 "룸 관리" 탭 추가
+- 오퍼레이터 접근: `@require_auth` + role in ("admin", "operator") 체크
+- 기존 `@require_admin` 대신 역할 기반 분기 필요
+- `usage_logs`에 `room_id` 컬럼 추가하여 룸별 기록 필터링
+
+#### Tests
+- [ ] Unit test: 관리자 룸 CRUD
+- [ ] Unit test: 오퍼레이터 뷰에서 다른 룸 기록 접근 불가
+- [ ] Unit test: role="user" admin 페이지 접근 차단
+
+#### Rollback
+admin.py 룸 관리 탭 제거, 역할 분기 코드 제거.
+
+---
+
+<!-- ============================================================ -->
+<!-- VIEWER FEATURE (ISSUE-30+)                                    -->
+<!-- ============================================================ -->
+
+### ISSUE-30: 뷰어용 SSE 자막 브로드캐스트 엔드포인트
+
+- Track: feature
+- Type: feat
+- UI: false
+- Manual: false
+- PRD-Ref: —
+- Priority: P1
+- Estimate: 1.5d
+- Status: shipped
+- Owner:
+- Branch: feat/issue-30-sse-broadcast
+- GH-Issue: #48
+- PR: #64
+- Depends-On: ISSUE-25, ISSUE-26
+
+#### Goal
+뷰어가 인증 없이 SSE(Server-Sent Events)로 특정 룸의 자막을 실시간 수신할 수 있는 엔드포인트를 제공한다.
+
+#### Scope (In/Out)
+- In: SSE 엔드포인트 (`/stream/{room_id}?lang=ko`), 룸의 번역 결과를 연결된 SSE 클라이언트에 브로드캐스트, 언어별 채널 분리
+- Out: 뷰어 HTML 페이지 (ISSUE-31), QR 코드 (ISSUE-32)
+
+#### 번역 파이프라인 전략
+```
+음성 인식 완료
+  ├── [즉시] 메인 언어 번역 → 행사장 스크린 + SSE 메인 채널
+  │         (지연: ~2초, 기존과 동일)
+  │
+  └── [후순위] 나머지 언어 비동기 번역 → SSE 해당 언어 채널
+              (지연: ~5-10초, 허용 가능)
+```
+- 메인 언어 번역이 완료된 후 `asyncio.create_task`로 추가 언어 번역
+- 해당 언어 뷰어가 없으면 번역 스킵 (lazy translation)
+
+#### 룸 스키마 영향
+```sql
+-- ISSUE-26의 rooms 테이블에 반영
+primary_output_lang TEXT DEFAULT 'ko'   -- 메인 언어 (행사장)
+output_langs TEXT DEFAULT '["ko"]'      -- 지원 언어 목록 (JSON)
+```
+
+#### Acceptance Criteria (DoD)
+- [ ] `/stream/{room_id}` 엔드포인트가 SSE 스트림을 반환한다
+- [ ] `?lang=ko` 파라미터로 특정 언어 자막만 수신할 수 있다
+- [ ] 인증 없이 접근 가능하다 (비인증 엔드포인트)
+- [ ] 메인 언어 번역이 추가 언어 번역에 의해 블로킹되지 않는다
+- [ ] 존재하지 않는 룸 → 404 응답
+- [ ] closed 상태 룸 → "세션 종료" 이벤트 전송 후 연결 종료
+
+#### Implementation Notes
+- Streamlit은 SSE를 네이티브 지원하지 않으므로, 별도 경로 필요:
+  - 옵션 A: WebSocket 서버에 SSE-like 읽기 전용 모드 추가
+  - 옵션 B: 별도 경량 HTTP 서버 (aiohttp/FastAPI) 스레드
+- SSE 메시지 포맷: `data: {"text": "번역된 자막", "lang": "ko", "timestamp": 1234567890}\n\n`
+
+#### Tests
+- [ ] Unit test: SSE 엔드포인트 응답 형식 검증
+- [ ] Unit test: 메인 언어 번역 후 비동기 추가 번역 실행 확인
+- [ ] Unit test: 존재하지 않는 룸 → 404
+- [ ] Unit test: 뷰어 없는 언어 → 번역 스킵
+
+#### Rollback
+SSE 엔드포인트 및 브로드캐스트 코드 제거.
+
+---
+
+### ISSUE-31: 뷰어 전용 HTML 페이지 (비인증, 언어 선택)
+
+- Track: feature
+- Type: feat
+- UI: true
+- Manual: false
+- PRD-Ref: —
+- Priority: P1
+- Estimate: 1d
+- Status: shipped
+- Owner:
+- Branch: feat/issue-31-viewer-page
+- GH-Issue: #49
+- PR: #65
+- Depends-On: ISSUE-30
+
+#### Goal
+청중이 QR 스캔으로 접속하여 인증 없이 자막을 볼 수 있는 읽기 전용 페이지를 제공한다.
+
+#### Scope (In/Out)
+- In: `/view/{room_id}` 경로의 독립 HTML 페이지, SSE 연결로 자막 수신, 언어 선택 드롭다운, 자막 시작 전 대기 화면, 세션 종료 화면
+- Out: 오퍼레이터 기능 (시작/정지), 설정 패널, 로그인
+
+#### 화면 상태
+```
+[대기]     "잠시 후 자막이 시작됩니다" + 룸 이름
+[활성]     자막 스트림 표시 + 언어 선택 드롭다운
+[종료]     "세션이 종료되었습니다"
+```
+
+#### 언어 선택
+- 룸의 `output_langs` 목록에서 선택 가능
+- 기본값: `primary_output_lang`
+- 언어 변경 시 SSE 연결의 `?lang=` 파라미터 변경 (재연결)
+
+#### Acceptance Criteria (DoD)
+- [ ] `/view/{room_id}` 접속 시 로그인 없이 자막 페이지가 표시된다
+- [ ] 룸의 지원 언어 목록이 드롭다운으로 표시된다
+- [ ] 언어 변경 시 해당 언어 자막으로 전환된다
+- [ ] 자막 시작 전 → 대기 화면, 종료 후 → 종료 화면
+- [ ] 모바일 반응형 (폰에서 QR 스캔 후 바로 사용)
+
+#### Implementation Notes
+- Streamlit 외부 독립 HTML (정적 파일 또는 별도 라우트)
+- EventSource API로 SSE 연결: `new EventSource('/stream/{room_id}?lang=ko')`
+- 크레딧 롤 UI는 `webrtc.html`의 자막 CSS 재활용
+
+#### Tests
+- [ ] 뷰어 페이지에 EventSource 연결 코드 존재 (string match)
+- [ ] 언어 선택 드롭다운 존재
+- [ ] 대기/활성/종료 3개 상태 UI 존재
+
+#### Rollback
+뷰어 HTML 파일 및 라우팅 제거.
+
+---
+
+### ISSUE-32: QR 코드 생성 및 표시
+
+- Track: feature
+- Type: feat
+- UI: true
+- Manual: false
+- PRD-Ref: —
+- Priority: P1
+- Estimate: 0.5d
+- Status: shipped
+- Owner:
+- Branch: feat/issue-32-qr-code
+- GH-Issue: #50
+- PR: #66
+- Depends-On: ISSUE-29, ISSUE-31
+
+#### Goal
+관리자가 룸 생성 시 QR 코드를 다운로드/인쇄할 수 있고, 오퍼레이터 화면에서 시작 전 행사장 스크린에 QR이 표시된다.
+
+#### QR 표시 시점 및 위치
+
+| 시점 | 위치 | 용도 |
+|------|------|------|
+| 룸 생성 직후 | 관리자 대시보드 | 인쇄/사전 배포용 다운로드 |
+| 시작 전 (대기 상태) | 오퍼레이터 메인 화면 | 행사장 스크린에 표시 |
+| 시작 후 | 메인 화면에서 사라짐 | 자막에 집중 |
+| 언제든 | 오퍼레이터 설정 패널 | 필요 시 다시 확인 |
+
+#### 오퍼레이터 화면 흐름
+```
+[시작 전]  QR 코드 + "스캔하여 자막을 확인하세요" 안내 → 프로젝터에 표시
+              ↓ 시작 버튼
+[시작 후]  QR 사라짐 → 자막 전체 화면
+```
+
+#### Acceptance Criteria (DoD)
+- [ ] 관리자 대시보드에서 룸별 QR 코드 이미지 다운로드가 가능하다
+- [ ] 오퍼레이터 화면 대기 상태에서 QR 코드가 크게 표시된다
+- [ ] 시작 버튼 클릭 후 QR 코드가 사라지고 자막 영역이 표시된다
+- [ ] 설정 패널에서 QR 코드를 다시 확인할 수 있다
+- [ ] QR URL 형식: `https://{host}/view/{room_id}`
+
+#### Implementation Notes
+- Python `qrcode` 라이브러리 또는 JS 기반 QR 생성
+- 관리자 대시보드: `st.image(qr_bytes)` + `st.download_button`
+- 오퍼레이터 대기 화면: `webrtc.html` 웰컴 상태에 QR 표시 (BOOT.room_id 기반)
+- 시작 후 기존 웰컴 상태가 자막으로 전환되면 자연스럽게 사라짐
+
+#### Tests
+- [ ] QR 코드 생성 함수가 유효한 URL을 인코딩하는지 확인
+- [ ] 오퍼레이터 대기 화면에 QR 관련 코드 존재
+
+#### Rollback
+QR 생성 코드 및 UI 요소 제거.
+
+---
+
+### ISSUE-33: 뷰어 지표 수집 및 관리자 대시보드 표시
+
+- Track: feature
+- Type: feat
+- UI: true
+- Manual: false
+- PRD-Ref: —
+- Priority: P1
+- Estimate: 1d
+- Status: shipped
+- Owner:
+- Branch: feat/issue-33-viewer-metrics
+- GH-Issue: #51
+- PR: #67
+- Depends-On: ISSUE-30, ISSUE-29
+
+#### Goal
+룸별 뷰어 접속 지표를 수집하고 관리자 대시보드에서 실시간으로 확인할 수 있다.
+
+#### 지표
+
+| 지표 | 수집 방식 | 저장 |
+|------|----------|------|
+| 현재 뷰어 수 | 활성 SSE 커넥션 카운트 | 인메모리 (RoomManager) |
+| 누적 뷰어 수 | SSE 커넥션 생성 시 increment | DB (`rooms.total_viewers`) |
+| 최대 순간 뷰어 수 | 주기적 max 갱신 | DB (`rooms.peak_viewers`) |
+| 언어별 뷰어 수 | 언어 채널별 커넥션 카운트 | 인메모리 |
+
+#### Acceptance Criteria (DoD)
+- [ ] 관리자 대시보드 룸 상세에서 현재/누적/최대 뷰어 수가 표시된다
+- [ ] 언어별 현재 뷰어 수가 표시된다 (예: 한국어 45명, 중국어 12명)
+- [ ] 뷰어 접속/해제 시 카운트가 실시간 갱신된다
+- [ ] 서버 재시작 시 누적/최대 지표가 DB에서 복원된다
+
+#### Implementation Notes
+- RoomManager에 `viewer_count`, `viewer_count_by_lang` 속성 추가
+- SSE 연결 시 `on_connect` → count++, 해제 시 `on_disconnect` → count--
+- 주기적 (10초) 최대값 갱신: `rooms.peak_viewers = max(peak, current)`
+- 관리자 대시보드: `st.metric("현재 뷰어", 57)` 위젯 활용
+
+#### Tests
+- [ ] Unit test: 뷰어 접속/해제 시 카운트 정확성
+- [ ] Unit test: peak_viewers가 올바르게 갱신되는지
+- [ ] Unit test: 서버 재시작 후 DB에서 누적값 복원
+
+#### Rollback
+지표 수집 코드 및 대시보드 위젯 제거.
+
+---
+
+### ISSUE-34: 입력 언어 설정과 실제 발화 언어 불일치 시 번역 차단
+
+- Track: feature
+- Type: fix
+- UI: false
+- Manual: false
+- PRD-Ref: —
+- Priority: P1
+- Estimate: 0.5d
+- Status: shipped
+- Owner:
+- Branch:
+- GH-Issue: #52
+- PR: #55
+- Depends-On: none
+
+#### Goal
+input_lang이 특정 언어로 설정된 경우, `detect_language()`로 실제 발화 언어를 감지하여 설정과 일치할 때만 번역을 진행한다. 불일치 시 번역을 차단하고 클라이언트에 경고를 보낸다.
+
+#### 현재 문제
+`websocket_handler.py:348`에서 input_lang이 특정 언어이면 `detect_language()`를 호출하지 않고 설정된 언어를 무조건 source_lang으로 사용. 예: input_lang="zh"인데 영어로 발화하면 영어 텍스트를 중국어로 간주하여 엉뚱한 번역 발생.
+
+#### 검증 로직
+```
+input_lang이 "auto" → 기존대로 detect_language() 사용 (변경 없음)
+
+input_lang이 특정 언어 →
+  1. detect_language(transcript)로 실제 언어 감지
+  2. 감지 결과 == input_lang → 일치 → 번역 진행
+  3. 감지 결과 != input_lang → 불일치 → 차단, language_mismatch 메시지 전송
+```
+
+**예시:**
+- input_lang="ko" + 한글 텍스트 → 감지 "ko" == 설정 "ko" → 번역 진행
+- input_lang="ko" + 영어 텍스트 → 감지 "en" != 설정 "ko" → 차단
+- input_lang="en" + 영어 텍스트 → 감지 "en" == 설정 "en" → 번역 진행
+- input_lang="en" + 한국어 텍스트 → 감지 "ko" != 설정 "en" → 차단
+- input_lang="zh" + 영어 텍스트 → 감지 "en" != 설정 "zh" → 차단
+
+#### Acceptance Criteria (DoD)
+- [ ] input_lang="ko" + 영어 발화 → `language_mismatch` 메시지 전송, 번역 안 함
+- [ ] input_lang="zh" + 한국어 발화 → `language_mismatch` 메시지 전송, 번역 안 함
+- [ ] input_lang="en" + 한국어 발화 → `language_mismatch` 메시지 전송, 번역 안 함
+- [ ] input_lang="en" + 영어 발화 → 감지 "en" == 설정 "en" → 번역 진행
+- [ ] input_lang="ko" + 한국어 발화 → 감지 "ko" == 설정 "ko" → 번역 진행
+- [ ] input_lang="auto" → 기존 동작 변경 없음
+- [ ] 브라우저에서 `language_mismatch` 메시지 수신 시 사용자에게 경고 표시
+
+#### Implementation Notes
+- `websocket_handler.py` `_handle_transcript()`의 else 분기(line 347-349) 수정
+- `language_mismatch` WebSocket 메시지 포맷: `{"type": "language_mismatch", "expected": "zh", "detected": "ko", "text": "..."}`
+- `components/webrtc.html`에서 `language_mismatch` 메시지 수신 시 토스트 경고 표시
+- `detect_language()`는 output_lang 파라미터 없이 호출하여 순수 감지 결과만 사용
+
+#### Tests
+- [ ] Unit test: input_lang="ko", 영어 텍스트 → language_mismatch
+- [ ] Unit test: input_lang="en", 영어 텍스트 → 정상 번역
+- [ ] Unit test: input_lang="en", 한국어 텍스트 → language_mismatch
+- [ ] Unit test: input_lang="zh", 영어 텍스트 → language_mismatch
+- [ ] Unit test: input_lang="auto" → 기존 동작 유지
+
+#### Rollback
+검증 로직 제거, 기존 무조건 신뢰 방식으로 복원.
+
+---
+
+### ISSUE-35: 웰컴 화면 텍스트를 다국어 지원에 맞게 동적 변경
+
+- Track: feature
+- Type: fix
+- UI: true
+- Manual: false
+- PRD-Ref: —
+- Priority: P2
+- Estimate: 0.5d
+- Status: shipped
+- Owner:
+- Branch:
+- GH-Issue: #53
+- PR: #54
+- Depends-On: none
+
+#### Goal
+웰컴 화면(대기 상태)의 제목, 설명, 번역 규칙 텍스트가 현재 선택된 입력/출력 언어 설정을 반영하여 동적으로 변경된다.
+
+#### 현재 문제
+`components/webrtc.html:849-858`에 "실시간 한영 자막", "한국어와 영어로 말하면..." 등의 텍스트가 하드코딩되어 있음. 4개 언어 지원 및 언어 선택 기능(ISSUE-1)이 추가되었지만 웰컴 화면 텍스트는 여전히 한영 전용으로 표시됨.
+
+번역 규칙 부분은 ISSUE-1에서 동적 변경이 일부 구현됨(line 993-1006)이나, 제목과 설명 텍스트는 미반영.
+
+#### 변경 대상 텍스트
+
+| 위치 | 현재 (하드코딩) | 변경 후 (동적) |
+|------|---------------|---------------|
+| h1 제목 | "실시간 한영 자막" | "실시간 다국어 자막" 또는 언어 설정 반영 |
+| p 설명 | "한국어와 영어로 말하면 실시간 자막과 번역이 나타납니다" | 선택된 입력 언어 반영 (예: "중국어로 말하면...") |
+| 번역 규칙 | "한국어 → 영어 / 영어 → 한국어" | 선택된 input/output 반영 (이미 일부 구현됨) |
+| OpenAI instructions (line 1203) | "실시간 한영 양방향 번역 AI" | 선택된 언어 반영 |
+
+#### Acceptance Criteria (DoD)
+- [ ] 입력 언어가 "auto"이면 제목: "실시간 다국어 자막", 설명: "말하면 실시간 자막과 번역이 나타납니다"
+- [ ] 입력 언어가 특정 언어이면 해당 언어명이 설명에 반영됨 (예: "중국어로 말하면...")
+- [ ] 출력 언어 변경 시 번역 규칙 텍스트가 즉시 갱신됨
+- [ ] 언어 설정 변경 시 페이지 새로고침 없이 웰컴 화면이 갱신됨
+- [ ] 두 번째 웰컴 화면(line 1502-1511)도 동일하게 처리됨
+
+#### Implementation Notes
+- 기존 `updateWelcomeRules()` 함수(line 993-1006) 확장
+- 제목/설명도 DOM에서 동적으로 변경하도록 수정
+- 언어 이름 매핑: `{auto: "다국어", ko: "한국어", en: "영어", zh: "중국어", vi: "베트남어"}`
+- 언어 드롭다운 `onchange` 이벤트에서 `updateWelcomeRules()` 호출 (이미 연결되어 있을 수 있음)
+
+#### Tests
+- [ ] webrtc.html에 "실시간 한영 자막" 하드코딩 문자열이 없음
+- [ ] 동적 텍스트 생성 로직이 존재함
+
+#### Rollback
+텍스트 변경 코드 제거, 기존 하드코딩 복원.
+
+---
+
+### ISSUE-36: webrtc.html 뷰포트 반응형 높이 적용
+
+- Track: platform
+- Type: fix
+- UI: true
+- Manual: false
+- PRD-Ref: FR-058
+- Priority: P1
+- Estimate: 0.5d
+- Status: shipped
+- Owner: pillip
+- Branch: issue/ISSUE-36-viewport-responsive-height
+- GH-Issue: #56
+- PR: #57, #58
+- Depends-On: none
+
+#### Goal
+일반 모드(비전체화면)에서 webrtc.html iframe이 브라우저 뷰포트를 꽉 채우도록 하여, 모든 화면 크기에서 빈 공간이나 잘림 없이 자연스럽게 표시되도록 한다.
+
+#### 현재 문제
+- `app.py:209`에서 `st.components.v1.html(height=900)` 고정 → 뷰포트와 무관하게 항상 900px
+- `webrtc.html:19-20`의 `body { height: 90vh }` → iframe 내부 vh = 900px 기준 = 810px
+- 큰 모니터: 화면 중간까지만 표시, 아래 빈 공간
+- 작은 모니터/노트북: 하단 잘림
+
+#### Scope (In/Out)
+- In: scroll_lock.html에서 iframe 높이를 100vh로 설정, webrtc.html body를 100%로 변경, 미디어쿼리 일관성 수정
+- Out: 전체화면 모드 수정 (영향 없음), app.py의 height=900 파라미터 제거 (CSS가 덮어쓰므로 폴백으로 유지)
+
+#### Acceptance Criteria (DoD)
+- [ ] Given a 1080p display, when the caption viewer is open in normal mode, then the iframe fills the full viewport height with no empty space below
+- [ ] Given a 768px-height laptop display, when the caption viewer is open, then bottom UI components (status chip, "실시간으로" button) are fully visible and not clipped
+- [ ] Given a 1440p/4K monitor, when the caption viewer is open, then there is no empty space between the iframe and the browser bottom edge
+- [ ] Given fullscreen mode is entered and exited, when the viewer returns to normal mode, then the behavior is identical to the pre-fix state
+- [ ] Given the settings panel and FAB button are visible, when the iframe is resized to fill the viewport, then their positions remain correct
+
+#### Implementation Notes
+1. `components/scroll_lock.html` — `.main iframe` 규칙에 `height: 100vh !important;` 추가
+2. `components/webrtc.html` — body의 `height: 90vh !important; max-height: 90vh !important;` → `height: 100% !important; max-height: 100% !important;`
+3. `components/webrtc.html` — 미디어쿼리(@media <=768px, <=600px)에서 `90vh` 참조를 `100%`로 수정
+4. `app.py` — `height=900`은 유지 (CSS !important가 덮어쓰므로 Streamlit API 요구사항 충족용 폴백)
+
+#### Tests
+- [ ] Given the updated webrtc.html, when the file is searched for `90vh` in body and media query contexts, then no matches are found (string match regression test)
+- [ ] Given the existing fullscreen test suite, when `uv run pytest -q` is executed, then all fullscreen tests pass with no regression
+
+#### Rollback
+scroll_lock.html에서 height 규칙 제거, webrtc.html body를 90vh로 복원.
+
+---
+
+<!-- ============================================================ -->
+<!-- STAGE COMPOSITE VIEW (ISSUE-37+)                              -->
+<!-- 발표자료 + 자막을 무대 전면 스크린 하나에 합성해 띄우는 기능.   -->
+<!-- 발표자료 소스는 화면 캡처(getDisplayMedia) — PDF 업로드/페이지  -->
+<!-- 동기화는 명시적 Out of scope. 브랜딩 설정 단위는 룸별.         -->
+<!-- ============================================================ -->
+
+### ISSUE-37: rooms 무대 설정 스키마 — stage_config JSON 컬럼 및 리포지토리 API
+
+- Track: platform
+- Type: feat
+- UI: false
+- Manual: false
+- PRD-Ref: FR-076
+- Priority: P0
+- Estimate: 0.5d
+- Status: shipped
+- Owner: pillip
+- Branch: issue/ISSUE-37-rooms-stage-config-schema
+- GH-Issue: #118
+- PR: #119
+- Depends-On: none
+
+#### Goal
+룸별 무대 브랜딩 설정(행사 타이틀/부제, 자막 컬럼 비율, 로고 그룹)을 `rooms.stage_config` JSON 컬럼에 영속화하고, 기본값 보정과 검증을 거친 dict 로 읽고 쓸 수 있는 리포지토리 API 를 제공한다.
+
+#### 현재 문제
+`rooms` 테이블에는 무대 화면(발표자료 + 자막 합성)에 필요한 어떤 설정도 없다. 행사 타이틀, 주최/주관/후원 로고, 자막 컬럼 비율은 룸마다 다르지만 저장할 곳이 없어 하드코딩 외에는 방법이 없다. 또한 이 프로젝트에는 마이그레이션 프레임워크가 없으므로(`docs/data_model.md` Migrations), 컬럼 추가는 `PRAGMA table_info` 게이팅을 거친 idempotent `ALTER TABLE` 패턴(ISSUE-29/30/33)을 그대로 따라야 한다.
+
+#### Scope (In/Out)
+- In:
+  - `DatabaseManager._migrate_add_room_stage_config()` — idempotent `ALTER TABLE rooms ADD COLUMN stage_config TEXT NOT NULL DEFAULT '{}'`
+  - `Room.get_stage_config(room_id) -> dict` / `Room.update_stage_config(room_id, config) -> bool`
+  - 신규 순수 모듈 `stage_config.py` — `DEFAULT_STAGE_CONFIG`, `normalize_stage_config(raw) -> dict`, `validate_stage_config(cfg) -> tuple[bool, str]`
+- Out:
+  - 로고 파일 업로드/저장/서빙 (ISSUE-38)
+  - 관리자 설정 폼 (ISSUE-39)
+  - 무대 페이지 렌더링/캡처 (ISSUE-40 ~ ISSUE-42)
+  - 전역(비-룸별) 기본 브랜딩 및 룸 간 설정 상속 — 명시적 Out of scope
+  - PDF 업로드 / 슬라이드 페이지 동기화 — 명시적 Out of scope
+
+#### stage_config JSON blob shape
+```json
+{
+  "event_title": "2026 개발자 콘퍼런스",
+  "event_subtitle": "A홀 기조연설",
+  "caption_ratio": "1/4",
+  "logo_groups": [
+    {"label": "주최", "assets": ["host-1.png"]},
+    {"label": "주관", "assets": []},
+    {"label": "후원", "assets": ["sponsor-a.svg", "sponsor-b.png"]}
+  ]
+}
+```
+- `caption_ratio` 허용값: `"1/4"` | `"1/3"` (기본 `"1/4"`)
+- `event_title` / `event_subtitle`: 각각 최대 120자 / 80자, 미설정 시 빈 문자열
+- `logo_groups`: 라벨 3종(주최/주관/후원) 고정 순서, `assets` 는 파일명만 저장(경로 저장 금지 — ISSUE-38 이 룸 디렉터리를 소유)
+
+#### Acceptance Criteria (DoD)
+- [ ] Given `stage_config` 컬럼이 없는 기존 DB 파일, when `DatabaseManager.init_database()` 가 실행되면, then `PRAGMA table_info(rooms)` 에 `stage_config` 가 나타나고 기존 룸 행의 값이 `'{}'` 이다
+- [ ] Given 같은 DB 파일에 `init_database()` 를 두 번 연속 실행할 때, when 두 번째 실행이 끝나면, then `duplicate column name` 예외 없이 완료되고 `rooms` 컬럼 수가 첫 실행 직후와 동일하다
+- [ ] Given `stage_config` 가 `NULL`·빈 문자열·깨진 JSON 인 룸, when `Room.get_stage_config(room_id)` 를 호출하면, then 예외 없이 `DEFAULT_STAGE_CONFIG` 와 동일한 dict 가 반환된다
+- [ ] Given `caption_ratio="1/2"` 인 설정, when `validate_stage_config()` 를 호출하면, then `(False, <사유 메시지>)` 를 반환하고 `Room.update_stage_config()` 는 `False` 를 반환하며 DB 값이 변경되지 않는다
+- [ ] Given `event_title` 이 121자인 설정, when `validate_stage_config()` 를 호출하면, then `(False, ...)` 를 반환한다
+- [ ] Given 유효한 설정 dict, when `update_stage_config()` 후 `get_stage_config()` 를 호출하면, then 한글/이모지가 깨지지 않고 동일한 dict 가 반환된다 (`json.dumps(..., ensure_ascii=False)`)
+- [ ] Given `logo_groups` 에 알 수 없는 라벨이나 dict 가 아닌 원소가 섞인 raw JSON, when `normalize_stage_config()` 를 호출하면, then 알려진 라벨 3종만 고정 순서로 남고 나머지는 폐기된다
+
+#### Implementation Notes
+- `database.py` `init_database()` 마지막에 `self._migrate_add_room_stage_config()` 호출을 추가한다. 구현은 `_migrate_add_room_viewer_metric_columns()`(database.py:171) 를 그대로 복제 — `PRAGMA table_info(rooms)` 로 존재 확인 후 `ALTER TABLE`, 변경 시에만 `commit()` + `print("[Migration] Added rooms columns: stage_config")`.
+- 컬럼 타입은 `TEXT NOT NULL DEFAULT '{}'` — `output_langs`(ISSUE-30) 와 동일한 JSON-in-TEXT 관례.
+- `stage_config.py` 는 **import 시 부수효과가 없어야 한다**(RL-001/RL-005): DB·Streamlit·파일시스템 접근 금지, 순수 dict 변환/검증만. 이 모듈은 ISSUE-39(관리자 폼)와 ISSUE-40(무대 페이지 서버 렌더)에서도 재사용된다.
+- 파싱 실패는 `print(f"[Room] stage_config parse failed (room={room_id}): {e!r}")` 로 서버 로그만 남기고 기본값을 반환한다 (RL-006 — 내부 예외를 호출자/클라이언트로 전파하지 않는다).
+- `Room.get_by_id()` 의 반환 dict 는 raw 문자열을 그대로 담고 있으므로, 무대 페이지 서버 렌더(ISSUE-40)는 반드시 `normalize_stage_config()` 를 통과시킨 뒤 JSON 리터럴로 주입한다.
+
+#### Tests
+- [ ] Given 레거시 스키마로 만든 임시 DB, when `init_database()` 를 두 번 호출하면, then 예외 없이 통과하고 `stage_config` 컬럼이 정확히 1개 존재한다 (`tests/test_migration_idempotency.py` 확장)
+- [ ] Given `normalize_stage_config` 에 `None` / `""` / `"{"` / `"[]"` 를 각각 넘길 때, then 모두 `DEFAULT_STAGE_CONFIG` 와 동등한 dict 를 반환한다
+- [ ] Given `caption_ratio` 가 `"1/4"`, `"1/3"`, `"1/2"`, `""`, `None` 인 5개 케이스, when `validate_stage_config` 를 호출하면, then 앞의 2개만 `True` 이고 나머지는 `False` + 비어 있지 않은 사유 문자열을 반환한다
+- [ ] Given 한글 타이틀과 3개 로고를 담은 설정, when `update_stage_config` → `get_stage_config` 왕복하면, then 원본 dict 와 정확히 동일하다 (RL-004: 값 일치를 단언, 존재 여부만 보지 않는다)
+- [ ] Given 존재하지 않는 room_id, when `update_stage_config` 를 호출하면, then `False` 를 반환하고 예외를 던지지 않는다
+
+#### Rollback
+`init_database()` 에서 `_migrate_add_room_stage_config()` 호출 제거, `stage_config.py` 및 `Room` 의 두 메서드 삭제. 이미 추가된 컬럼은 남아 있어도 기존 코드 경로에 영향이 없으며, 필요 시 `ALTER TABLE rooms DROP COLUMN stage_config` (SQLite ≥ 3.35, Python 3.11 번들) 로 제거한다.
+
+---
+
+### ISSUE-38: 브랜딩 로고 에셋 업로드 저장 및 정적 서빙 라우트
+
+- Track: platform
+- Type: feat
+- UI: false
+- Manual: false
+- PRD-Ref: FR-077, FR-078, NFR-028
+- Priority: P1
+- Estimate: 1d
+- Status: shipped
+- Owner: pillip
+- Branch: issue/ISSUE-38-branding-asset-store
+- GH-Issue: #120
+- PR: #123
+- Depends-On: ISSUE-37
+
+#### Goal
+룸별 주최/주관/후원 로고 파일을 `data/branding/{room_id}/` 에 검증된 형태로 저장·삭제·열거하고, 무대 페이지와 **같은 오리진**(SSE 서버, 기본 8766)에서 `GET /branding/{room_id}/{filename}` 으로 서빙한다.
+
+#### 현재 문제
+Streamlit 은 8501, 뷰어/무대 페이지는 aiohttp SSE 서버(8766)에서 서빙된다. 무대 페이지가 참조할 로고를 Streamlit 쪽에 두면 mixed-origin 이 되어 프록시/HTTPS 환경에서 깨진다. 또한 현재 프로젝트에는 사용자 업로드 파일을 받아 저장하는 경로가 전혀 없어, 확장자·용량·경로 traversal 검증 규칙이 정의되어 있지 않다.
+
+#### Scope (In/Out)
+- In:
+  - 신규 모듈 `branding_assets.py` — `save_asset(room_id, filename, data) -> str`, `list_assets(room_id) -> list[str]`, `delete_asset(room_id, filename) -> bool`, `resolve_asset_path(room_id, filename) -> Path | None`
+  - 검증: 확장자 화이트리스트(`.png`, `.jpg`, `.jpeg`, `.svg`), 파일당 최대 2 MB, 룸당 최대 12개, 내용-확장자 일치 확인(PNG/JPEG 매직바이트, SVG 는 선행 공백 제거 후 `<?xml` 또는 `<svg` 로 시작)
+  - 파일명 sanitize + 경로 traversal 차단
+  - aiohttp 라우트 `GET /branding/{room_id}/{filename}` — Content-Type 매핑, 캐시 헤더, SVG 에 대한 CSP 헤더
+- Out:
+  - 업로드 UI (ISSUE-39)
+  - 무대 페이지에서의 로고 배치/레이아웃 (ISSUE-40)
+  - 이미지 리사이즈/썸네일 생성, CDN 업로드
+  - 로고 파일의 DB 저장 — 파일은 파일시스템, 파일명만 `stage_config` 에 저장
+
+#### Acceptance Criteria (DoD)
+- [ ] Given `filename="../../app.db"`, when `save_asset()` 또는 `resolve_asset_path()` 를 호출하면, then `ValueError` 또는 `None` 으로 거부되고 `data/branding/` 바깥에 어떤 파일도 생성/노출되지 않는다
+- [ ] Given `GET /branding/{room_id}/..%2F..%2Fapp.db`, when 요청을 처리하면, then 404 를 반환하고 응답 본문에 DB 내용이나 내부 절대경로가 포함되지 않는다 (RL-006)
+- [ ] Given 3 MB PNG 데이터, when `save_asset()` 을 호출하면, then `ValueError` 로 거부되고 디스크에 부분 파일조차 생성되지 않는다
+- [ ] Given 확장자는 `.png` 이지만 내용이 PNG 시그니처(`\x89PNG\r\n\x1a\n`)가 아닌 데이터, when `save_asset()` 을 호출하면, then 거부된다
+- [ ] Given 이미 12개 에셋이 저장된 룸, when 13번째 `save_asset()` 을 호출하면, then 거부되고 기존 12개 파일은 그대로 남는다
+- [ ] Given 정상 저장된 `logo.png`, when `GET /branding/{room_id}/logo.png` 를 요청하면, then 200 + `Content-Type: image/png` + 저장한 바이트와 동일한 본문을 반환한다
+- [ ] Given 존재하지 않는 룸 또는 파일, when 브랜딩 라우트를 요청하면, then 404 + 일반 메시지를 반환한다 (내부 경로/예외 미노출)
+- [ ] Given 저장된 `sponsor.svg`, when 서빙하면, then `Content-Type: image/svg+xml` 과 함께 `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'` 헤더가 설정되어 SVG 내부 스크립트가 실행되지 않는다
+- [ ] Given 같은 파일명으로 두 번 업로드, when 두 번째 `save_asset()` 이 완료되면, then 기존 파일을 덮어쓰지 않고 충돌 회피된 새 파일명(예: `logo-2.png`)을 반환한다
+
+#### Implementation Notes
+- 저장 루트는 `BRANDING_DIR` 환경변수, 기본 `data/branding`. `data/` 는 이미 `docker-compose.yml` 의 볼륨(`./data`)에 포함되어 있으므로 컨테이너 재시작 후에도 로고가 보존된다. `DB_PATH` 와 같은 관례로 `os.getenv` 를 모듈 함수 안에서 읽어 import-time 부수효과를 만들지 않는다 (RL-001).
+- traversal 방어는 2단 — (1) 입력 파일명에서 디렉터리 구분자/`..`/제어문자 제거 후 `[a-zA-Z0-9._-]` 만 허용, (2) 최종 `Path.resolve()` 결과가 룸 디렉터리의 `resolve()` 하위인지 `is_relative_to()` 로 재확인. 심볼릭 링크는 `Path.is_symlink()` 로 거부.
+- 라우트 등록은 `sse_broadcast.build_sse_app()` 에 한 줄 추가: `app.router.add_get("/branding/{room_id}/{filename}", _handle_branding_asset)`. 기존 `_handle_view` 와 동일하게 예외는 서버 로그만 남기고 generic 404 를 반환한다.
+- 캐시 헤더는 `Cache-Control: public, max-age=300` — 행사 중 로고 교체가 5분 내 반영되도록 짧게 잡는다.
+- 파일 IO 로직은 aiohttp 없이 단위 테스트 가능하도록 `branding_assets.py` 에 순수하게 분리한다. 라우트 핸들러는 얇은 래퍼만 (RL-001/RL-005: 추출과 동시에 테스트를 함께 넣는다).
+
+#### Tests
+- [ ] Given `"../secret"`, `"/etc/passwd"`, `"a/b.png"`, `"..\\win.png"` 4개 파일명, when `resolve_asset_path()` 를 호출하면, then 모두 `None` 을 반환한다
+- [ ] Given 2 MB + 1 byte 데이터, when `save_asset()` 을 호출하면, then `ValueError` 가 발생하고 룸 디렉터리의 파일 개수가 호출 전과 같다
+- [ ] Given PNG/JPEG/SVG 각각의 정상 샘플과 확장자 불일치 샘플, when `save_asset()` 을 호출하면, then 정상 3건만 저장되고 불일치 3건은 거부된다
+- [ ] Given `build_sse_app()` 으로 만든 테스트 앱, when 저장된 자산을 GET 하면, then 200 + 정확한 Content-Type + 바이트 일치를 확인한다 (`tests/test_sse_broadcast.py` 의 aiohttp 테스트 패턴 재사용)
+- [ ] Given `build_sse_app()` 테스트 앱, when SVG 자산을 GET 하면, then 응답 헤더에 `Content-Security-Policy` 가 존재한다
+- [ ] Given 12개가 찬 룸, when 13번째 저장을 시도하면, then 거부 사유 문자열에 개수 제한이 언급되고 `list_assets()` 결과 길이가 12 이다
+
+#### Rollback
+`build_sse_app()` 에서 브랜딩 라우트 등록 제거, `branding_assets.py` 삭제, `data/branding/` 디렉터리 삭제. `stage_config.logo_groups` 의 파일명은 남아도 무대 페이지가 `<img onerror>` 로 개별 숨김 처리하므로 레이아웃은 깨지지 않는다 (ISSUE-40).
+
+---
+
+### ISSUE-39: 관리자 룸 관리 탭에 무대 설정 폼 추가
+
+- Track: feature
+- Type: feat
+- UI: true
+- Manual: false
+- PRD-Ref: FR-076, FR-077, FR-079
+- Priority: P1
+- Estimate: 1d
+- Status: shipped
+- Owner: pillip
+- Branch: issue/ISSUE-39-admin-stage-config-form
+- GH-Issue: #124
+- PR: #125
+- Depends-On: ISSUE-37, ISSUE-38
+
+#### Goal
+관리자가 룸 관리 탭에서 행사 타이틀/부제, 주최·주관·후원 로고, 자막 컬럼 비율을 룸별로 설정하고, 무대 화면 URL 과 QR 을 확인/배포할 수 있다.
+
+#### 현재 문제
+`admin.py: show_room_management` 에는 룸 생성 / 오퍼레이터 배정 / 강제 종료 / QR / 뷰어 지표 섹션만 있고 무대 화면 관련 설정 UI 가 없다. ISSUE-37 의 `stage_config` 와 ISSUE-38 의 에셋 저장소가 준비되어도 이를 입력할 경로가 없으면 행사 담당자가 값을 넣을 방법이 없다.
+
+#### Scope (In/Out)
+- In:
+  - `admin.py: _render_admin_room_stage_config(room_model, visible_rooms)` 신규 섹션 (관리자 전용)
+  - 룸 선택 → `st.form`: 행사 타이틀, 행사 부제, 자막 컬럼 비율 라디오(`1/4` · `1/3`)
+  - 그룹별(주최/주관/후원) `st.file_uploader(accept_multiple_files=True)` + 현재 로고 미리보기 + 개별 삭제 버튼
+  - 무대 URL(`{VIEWER_BASE_URL}/stage/{room_id}`) 텍스트 표시 + QR PNG 다운로드 버튼
+  - 폼 데이터 ↔ `stage_config` 변환/거부 사유 생성은 순수 함수로 분리
+- Out:
+  - 무대 페이지 자체의 렌더링/캡처 (ISSUE-40 ~ ISSUE-42)
+  - 전역 기본 브랜딩 프리셋, 룸 간 설정 복사/상속 — 명시적 Out of scope
+  - PDF 업로드 / 슬라이드 페이지 동기화 — 명시적 Out of scope
+  - 오퍼레이터 권한으로의 무대 설정 편집 (조회 포함 안 함)
+
+#### Acceptance Criteria (DoD)
+- [ ] Given admin 으로 로그인해 룸 관리 탭을 열었을 때, when 페이지가 렌더되면, then "🎬 무대 화면 설정" 섹션과 룸 선택 드롭다운이 표시된다
+- [ ] Given 행사 타이틀에 "2026 개발자 콘퍼런스" 를 입력하고 저장한 뒤, when 페이지를 새로고침하면, then 같은 값이 폼 입력란에 복원된다 (DB 왕복 확인)
+- [ ] Given 자막 컬럼 비율로 `1/3` 을 선택하고 저장할 때, when `Room.get_stage_config(room_id)` 를 조회하면, then `caption_ratio == "1/3"` 이다
+- [ ] Given 4 MB 로고 파일 업로드를 시도할 때, when 저장 버튼을 누르면, then 파일이 저장되지 않고 "2MB 이하" 를 안내하는 오류가 표시되며 같은 폼에 입력한 행사 타이틀 값은 유실되지 않는다
+- [ ] Given 업로드된 로고의 삭제 버튼을 클릭할 때, when 처리가 끝나면, then 해당 파일이 `data/branding/{room_id}/` 에서 제거되고 `stage_config.logo_groups` 의 `assets` 목록에서도 사라진다
+- [ ] Given role="operator" 사용자가 룸 관리 탭에 접근할 때, when 페이지가 렌더되면, then 무대 설정 섹션이 렌더되지 않는다 (server-side 분기, RL-002)
+- [ ] Given 룸이 선택된 상태, when 무대 URL 섹션이 렌더되면, then `{base}/stage/{room_id}` 문자열과 QR PNG 다운로드 버튼이 표시된다
+- [ ] Given 로고 저장 중 디스크 오류가 발생할 때, when 예외가 처리되면, then 사용자에게는 일반 실패 메시지만 표시되고 상세 예외는 서버 콘솔에만 남는다 (RL-006)
+
+#### Implementation Notes
+- `show_room_management` 의 `if is_role_admin:` 블록(admin.py:649-652)에서 `_render_admin_room_create` 다음에 `_render_admin_room_stage_config(room_model, visible_rooms)` 호출을 추가한다. 섹션 스타일은 기존 `_render_room_qr_section` / `_render_room_viewer_metrics` 와 동일하게 `st.divider()` + `st.subheader()` + `st.caption()` 순서.
+- 폼 → config 변환 및 업로드 거부 사유 생성은 `admin_logic` 계열 순수 함수(`build_stage_config_from_form(...)`, `partition_uploads(...)`)로 분리해 Streamlit 없이 단위 테스트한다 (RL-001/RL-005). 검증 자체는 ISSUE-37 의 `validate_stage_config` 와 ISSUE-38 의 `save_asset` 이 담당 — admin 계층에서 규칙을 재구현하지 말 것.
+- QR/URL 은 `qr_generator.py` 재사용. `build_view_url` 옆에 `build_stage_url(room_id, base_url)` 을 추가하고 `_STAGE_PATH_TEMPLATE = "/stage/{room_id}"` 상수를 둔다 — 라우트 경로 정의를 한 군데로 유지하는 기존 관례를 따른다.
+- base URL 은 `app._resolve_viewer_base_url()` 과 동일 규칙(`VIEWER_BASE_URL` → `http://localhost:{SSE_PORT}` fallback)을 재사용한다. 무대 화면은 행사장 PC 브라우저가 여는 페이지이므로 뷰어와 같은 오리진이어야 한다.
+- a11y (RL-010): 로고 삭제 버튼은 아이콘 전용으로 만들지 말고 `"삭제"` 텍스트 라벨 또는 `help=` 를 포함시킨다. 로고 미리보기 `st.image` 에는 `caption=파일명` 을 지정한다.
+
+#### Tests
+- [ ] Given 유효한 폼 입력 dict, when `build_stage_config_from_form()` 을 호출하면, then `validate_stage_config()` 가 `True` 를 반환하는 config dict 가 나온다
+- [ ] Given 2 MB 초과 파일과 정상 파일이 섞인 업로드 목록, when `partition_uploads()` 를 호출하면, then 수락 1건 / 거부 1건으로 나뉘고 거부 항목에 사람이 읽을 수 있는 사유 문자열이 붙는다
+- [ ] Given `admin.py`, when `_render_admin_room_stage_config` 호출이 `is_role_admin` 분기 안에 있는지 검사하면, then operator 경로에서 호출되지 않는다 (`tests/test_admin_room_mgmt.py` 확장)
+- [ ] Given room_id 와 base_url, when `build_stage_url()` 을 호출하면, then base 의 후행 슬래시 유무와 무관하게 `{base}/stage/{room_id}` 를 반환한다 (`tests/test_qr_generator.py` 확장)
+- [ ] Given 삭제 요청, when 삭제 처리 함수를 호출하면, then `delete_asset` 호출과 `update_stage_config` 호출이 모두 발생한다 (파일만 지우고 config 를 갱신하지 않는 회귀 방지)
+
+#### Rollback
+`show_room_management` 에서 `_render_admin_room_stage_config` 호출과 함수 정의 제거, `qr_generator.build_stage_url` 제거. `stage_config` 데이터와 저장된 로고 파일은 남아도 다른 화면에 영향이 없다.
+
+---
+
+### ISSUE-40: /stage/{room_id} 무대 합성 페이지 레이아웃 구현
+
+- Track: feature
+- Type: feat
+- UI: true
+- Manual: false
+- PRD-Ref: FR-072, FR-073
+- Priority: P1
+- Estimate: 1.5d
+- Status: shipped
+- Owner: pillip
+- Branch: issue/ISSUE-40-stage-composite-page
+- GH-Issue: #121
+- PR: #122
+- Depends-On: ISSUE-37
+
+#### Goal
+`/stage/{room_id}` 가 상단 행사 타이틀 바 + 좌측 발표 영역(16:9 레터박스) + 하단 로고 바 + 우측 자막 컬럼의 합성 레이아웃을 임의 해상도에서 비율 왜곡 없이 렌더한다.
+
+#### 현재 문제
+현재 청중용 화면은 `/view/{room_id}` 뿐이고 화면 전체가 자막이다. 행사장에서는 발표자료와 번역 자막을 무대 전면 스크린 **하나**에 함께 띄우고 싶다는 요구가 있다. 좌측을 발표자료에 쓰면 16:9 소스가 세로로 긴 영역에 들어가 비율이 깨지므로, 남는 세로 공간을 상단 타이틀 바와 하단 로고 바가 흡수해야 한다.
+
+#### 목표 레이아웃
+```
+┌──────────────────────────────────────┬────────┐
+│  행사 타이틀 (헤더 바)               │        │
+├──────────────────────────────────────┤ 자막   │
+│                                      │ 컬럼   │
+│   [getDisplayMedia 캡처 video]       │        │
+│         16:9 레터박스 유지           │ 1/4~   │
+│                                      │ 1/3    │
+├──────────────────────────────────────┤        │
+│  주최 / 주관 / 후원 로고 바          │        │
+└──────────────────────────────────────┴────────┘
+```
+
+#### Scope (In/Out)
+- In:
+  - 신규 `components/stage.html` (viewer.html 의 minimal-dark 톤 계승)
+  - `sse_broadcast.py` 에 `GET /stage/{room_id}` 라우트 + `_render_stage_html()` — `_handle_view` / `_render_viewer_html` 과 동일한 escape·치환 패턴
+  - 템플릿 플레이스홀더: `{{ROOM_ID}}`, `{{ROOM_NAME}}`, `{{OUTPUT_LANGS_JSON}}`, `{{PRIMARY_LANG}}`, `{{INITIAL_STATE}}`, `{{STAGE_CONFIG_JSON}}`
+  - CSS Grid 2열(발표 영역 / 자막 컬럼) × 좌열 3행(헤더 / 스테이지 / 로고 바), 자막 컬럼 폭은 CSS 변수로 `25%` 또는 `33.333%`
+  - 발표 영역: `aspect-ratio: 16 / 9` 컨테이너 + `object-fit: contain` — 캡처 소스가 없을 때는 타이틀 카드(행사 타이틀 + 부제 + 로고) 표시
+  - 로고 바: 그룹 라벨 + `<img>` 목록, 자산 없는 그룹은 숨김, 전 그룹이 비면 바 자체가 접힘
+  - 404 / closed 룸 분기는 `_handle_view` 와 동일
+- Out:
+  - SSE 자막 구독·렌더 로직 (ISSUE-41)
+  - 화면 캡처 연결 및 트랙 수명주기 (ISSUE-42)
+  - PDF 업로드 / 슬라이드 페이지 동기화 — 명시적 Out of scope
+  - 무대 화면 내 설정 편집 UI (설정은 관리자 화면에서만, ISSUE-39)
+
+#### Acceptance Criteria (DoD)
+- [ ] Given 존재하지 않는 room_id, when `GET /stage/{room_id}` 를 요청하면, then 404 와 `_NOT_FOUND_HTML` 과 동일한 친화 페이지가 반환되고 내부 예외 문자열이 노출되지 않는다 (RL-006)
+- [ ] Given `caption_ratio="1/4"` 인 룸, when 무대 페이지가 렌더되면, then 자막 컬럼 폭 CSS 변수가 `25%` 이고, `"1/3"` 인 룸에서는 `33.333%` 이다
+- [ ] Given 1920×1080 과 3440×1440 두 뷰포트, when 16:9 소스가 발표 영역에 표시되면, then 영상이 잘리거나 늘어나지 않고 레터박스 여백으로 처리된다 (`aspect-ratio: 16 / 9` + `object-fit: contain`)
+- [ ] Given `stage_config.event_title` 이 빈 문자열인 룸, when 페이지가 렌더되면, then 헤더 바가 룸 이름을 대신 표시하고 헤더 높이가 유지되어 좌측 컬럼 레이아웃이 변하지 않는다
+- [ ] Given `logo_groups` 의 세 그룹이 모두 비어 있는 룸, when 페이지가 렌더되면, then 로고 바가 0 높이로 접히고 그 공간을 발표 영역이 차지한다
+- [ ] Given 룸 이름 또는 행사 타이틀에 `<script>alert(1)</script>` 가 포함될 때, when 페이지가 렌더되면, then 스크립트가 실행되지 않고 이스케이프된 텍스트로 표시된다
+- [ ] Given `event_title` 이 `</script><script>alert(1)</script>` 인 룸, when `stage_config` 가 인라인 `<script>` 블록 안에 JSON 리터럴로 주입되면, then 스크립트 블록이 조기 종료되지 않고 스크립트도 실행되지 않는다 — `json.dumps` 는 `<` 와 `/` 를 이스케이프하지 않으므로 주입 직전에 `<`/`>`/`&` 를 이스케이프하거나 `</` 를 `<\/` 로 치환해야 한다 (ISSUE-37 리뷰 F-2 / RL-016 인계 사항)
+- [ ] Given `status="closed"` 인 룸, when 페이지가 렌더되면, then `initial_state="closed"` 로 부트스트랩되어 자막 영역이 종료 상태를 표시하고 EventSource 를 열지 않는다
+- [ ] Given `stage_config` 가 깨진 JSON 인 룸, when 페이지가 렌더되면, then 서버가 기본값으로 정규화해 렌더하고 500 이 발생하지 않는다
+
+#### Implementation Notes
+- `_render_stage_html()` 은 `_render_viewer_html()`(sse_broadcast.py:337) 과 같은 규칙 — 텍스트 필드는 `html.escape(..., quote=True)`, 리스트/dict 는 `json.dumps(..., ensure_ascii=False)` 로 JS 리터럴 주입. `stage_config` 는 반드시 ISSUE-37 의 `normalize_stage_config()` 를 통과시킨 뒤 주입한다.
+- 라우트 등록은 `build_sse_app()` 에 `app.router.add_get("/stage/{room_id}", _handle_stage)` 한 줄. 룸 조회 실패/미존재 처리는 `_handle_view` 의 3분기 구조를 그대로 따른다.
+- RL-011: 전체 높이 요소는 `height: 100vh;` 다음 줄에 `height: 100dvh;` 를 반드시 함께 선언한다. RL-012: `height: 100%`/`100vh` 요소에 세로 `margin` 을 주지 말고 `padding` 으로 처리한다.
+- 로고 이미지 URL 은 `/branding/{room_id}/{filename}` (ISSUE-38). 라우트가 아직 없거나 파일이 없으면 `<img onerror>` 핸들러로 **해당 이미지만** 숨겨 로고 바 레이아웃이 깨지지 않게 한다 (RL-008: 선택적 리소스는 항상 degrade 경로를 둔다).
+- 무대 페이지에는 조작 UI 를 두지 않는다. 자막 언어는 URL 쿼리 `?lang=` 로만 지정한다 — 폼 요소를 늘리면 프레젠터 리모컨 키 입력을 가로챌 위험이 생기므로 ISSUE-42 의 비간섭 제약과 일관되게 유지한다.
+- 좌측 컬럼은 `grid-template-rows: auto minmax(0, 1fr) auto` 로 두고 발표 영역에 `min-height: 0` 을 주어야 Grid 자식이 넘치지 않는다. 헤더/로고 바에 `min-height` 를 주어 16:9 초과 세로 공간을 흡수한다.
+
+#### Tests
+- [ ] Given `build_sse_app()` 테스트 앱, when 존재하지 않는 룸으로 `/stage/{id}` 를 GET 하면, then 404 이고 본문에 `"룸을 찾을 수 없습니다"` 가 포함된다
+- [ ] Given `caption_ratio` 가 `"1/4"` / `"1/3"` 인 두 룸, when 각각 `/stage/{id}` 를 GET 하면, then 응답 HTML 에 각각 `25%` / `33.333%` 문자열이 나타난다
+- [ ] Given 룸 이름이 `<script>alert(1)</script>` 인 룸, when `/stage/{id}` 를 GET 하면, then 응답 본문에 원본 `<script>` 태그가 없고 `&lt;script&gt;` 가 있다
+- [ ] Given `components/stage.html`, when 파일 내용을 검사하면, then `aspect-ratio`, `object-fit: contain`, `100dvh` 문자열이 모두 존재한다 (`tests/test_stage_page.py` 신규, `tests/test_viewer_page.py` 스타일)
+- [ ] Given `stage_config` 컬럼 값이 `"{"` 인 룸, when `/stage/{id}` 를 GET 하면, then 200 이고 기본 `caption_ratio` 인 `25%` 로 렌더된다
+
+#### Rollback
+`build_sse_app()` 에서 `/stage/{room_id}` 라우트 등록 제거, `components/stage.html` 및 `_render_stage_html`/`_handle_stage` 삭제. 기존 `/view/{room_id}` 뷰어 경로는 영향받지 않는다.
+
+---
+
+### ISSUE-41: 무대 자막 컬럼 — SSE 구독 및 좁은 컬럼 타이포 튜닝
+
+- Track: feature
+- Type: feat
+- UI: true
+- Manual: false
+- PRD-Ref: FR-080
+- Priority: P1
+- Estimate: 1d
+- Status: shipped
+- Owner: pillip
+- Branch: issue/ISSUE-41-stage-caption-column
+- GH-Issue: #126
+- PR: #127
+- Depends-On: ISSUE-40
+
+#### Goal
+무대 페이지 우측 컬럼이 `viewer.html` 과 동일한 SSE 구독·부분 자막·타자기 스무딩 동작으로 자막을 표시하되, 폭이 좁고 세로로 긴 컬럼에 맞게 타이포그래피·줄바꿈·자동 스크롤이 튜닝된다.
+
+#### 현재 문제
+`viewer.html` 의 자막 로직은 폭 1040px 의 넓은 중앙 컬럼을 전제로 한다(`font-size: clamp(24px, 3.4vw, 38px)`, `max-width: 1040px`, `MAX_LINES = 200`). 무대 화면의 자막 컬럼은 전체 폭의 1/4~1/3 밖에 안 되므로 같은 값을 쓰면 한 줄에 두세 어절만 들어가고 스크롤이 과도해진다. 또한 무대 화면에는 조작자가 없으므로 "실시간으로" 되돌리기 같은 사용자 스크롤 제어가 불필요하다.
+
+#### Scope (In/Out)
+- In:
+  - `viewer.html` 의 `connect(lang)` / `updatePartialCaption` / `finalizeCaption` / `_ensureCurrentLine` / `_twStart` / `_twStop` / `_scrollIfBottom` / `setState` 를 `stage.html` 로 이식 (동작 동등성 유지)
+  - 좁은 컬럼용 타이포: `font-size: clamp(20px, 1.4vw + 8px, 32px)`, `line-height: 1.45`, `word-break: keep-all`, `overflow-wrap: anywhere`
+  - 자동 스크롤은 항상 하단 고정 (사용자 스크롤 감지 / "실시간으로" 버튼 제외)
+  - DOM 상한 `MAX_LINES = 60`
+  - 상태 전환: waiting / active / ended — 자막 컬럼 내부에서만 전환되고 좌측 발표 영역에 영향 없음
+  - `conn-error` 배너를 자막 컬럼 하단에 배치 (발표 영역을 가리지 않음)
+  - 언어는 `?lang=` 쿼리로 고정, 없으면 `primary_output_lang`
+- Out:
+  - 화면 캡처 (ISSUE-42)
+  - 무대 화면 내 언어 전환 드롭다운 — 프레젠터 키 입력 간섭 위험 때문에 두지 않는다 (ISSUE-40 결정)
+  - 자막 폰트 크기 실시간 조절 UI
+
+#### Acceptance Criteria (DoD)
+- [x] Given SSE 가 `{"text": "...", "partial": true}` 를 연속 전송할 때, when 자막 컬럼이 이를 처리하면, then 텍스트가 청크 단위로 튀지 않고 점진적으로 드러난다 (타자기 스무딩 활성)
+- [x] Given partial 청크들 뒤에 `partial` 플래그가 없는 최종 메시지가 도착할 때, when 처리가 끝나면, then 해당 라인이 최종 텍스트로 고정되고 그다음 메시지는 새 라인으로 시작한다
+- [x] Given 자막 라인이 61개째 추가될 때, when DOM 을 검사하면, then `.caption-line` 노드 수가 60을 넘지 않는다
+- [x] Given 컬럼 폭보다 긴 단일 토큰(예: 긴 URL)이 포함된 자막, when 렌더되면, then 가로 스크롤바가 생기지 않고 줄바꿈된다
+- [x] Given `session_end` 이벤트를 수신할 때, when 처리가 끝나면, then 자막 컬럼이 종료 상태로 전환되고 타자기 타이머가 정지되며 좌측 발표 영역의 표시는 그대로 유지된다
+- [x] Given `/stage/{room_id}?lang=en` 으로 접속할 때, when EventSource 가 열리면, then 요청 URL 이 `/stream/{room_id}?lang=en` 이다
+- [x] Given `?lang=` 없이 접속할 때, when EventSource 가 열리면, then 룸의 `primary_output_lang` 이 사용된다
+- [x] Given SSE 연결이 끊어졌을 때, when 배너가 표시되면, then 자막 컬럼 하단에만 나타나 발표 영역을 덮지 않으며, EventSource 자동 재연결 성공 시 사라진다
+- [x] Given ISSUE-40 이 `#caption-container` 에 `aria-live="polite"` 를 붙인 채로 셸을 출하했을 때, when 이 이슈가 같은 노드에 프레임 단위 타자기 애니메이션을 얹으면, then 라이브 리전을 **라인 확정 시에만** 갱신되는 전용 announcer 요소로 옮기거나(또는 애니메이션 노드를 `aria-hidden` 처리하여) 스크린리더가 프레임마다 텍스트로 범람하지 않는다 — 그리고 애니메이션 노드 자신이 라이브 리전이 아님을 단언하는 테스트가 존재한다 (RL-019)
+
+#### Implementation Notes
+- 타자기 스무딩 타이머는 `viewer.html` 의 `setInterval(..., 28)`(viewer.html:444) 대신 `requestAnimationFrame` 루프로 구현한다. 무대 페이지에서는 캡처 `<video>` 의 프레임 렌더와 자막 애니메이션이 같은 메인 스레드를 공유하므로, rAF 로 브라우저의 렌더 스케줄에 맞춰야 캡처가 버벅이지 않는다 (NFR-025).
+- `document.hidden` 상태에서는 rAF 가 정지하므로, `visibilitychange` 리스너에서 숨김 전환 시 현재 라인을 즉시 최종 텍스트로 스냅하고 타이머를 멈춘다 — 복귀 시 자막이 밀려서 몰아치지 않게 한다.
+- 프레임당 공개 문자 수는 남은 글자수 비례(`Math.max(2, Math.ceil(gap / 6))`)를 유지하되, 프레임 예산 초과를 막기 위해 한 프레임 최대 공개량에 상한을 둔다.
+- 스크롤은 `viewer` 컨테이너의 `scrollTop = scrollHeight` 를 rAF 안에서 직접 설정한다. 무대 화면에는 사용자 입력이 없으므로 `isUserAtBottom()` 분기는 제거해도 되지만, 제거할 경우 매 프레임 `scrollHeight` 를 읽어 강제 레이아웃이 발생하지 않도록 값 변화 시에만 설정한다.
+- 상태 문구는 `viewer.html` 의 `WAITING_MSG` 언어별 맵을 재사용한다.
+- a11y (RL-010): 자막 영역에 `aria-live="polite"` 를 부여하되, 타자기 애니메이션이 매 프레임 읽히지 않도록 라인 확정 시에만 갱신되는 별도 `aria-live` 요소를 쓰거나 애니메이션 노드는 `aria-hidden` 처리한다.
+- **라이브 리전 소유권은 이 이슈에 있다 (RL-019)**. ISSUE-40 은 "레이아웃 셸" 범위였음에도 `components/stage.html:368` 의 `#caption-container` 에 `aria-live="polite"` 를 붙인 채로 출하됐다(PR #122 UI 리뷰 UI-6). 그 노드는 이 이슈가 `.caption-line` 을 append 하고 마지막 라인의 `textContent` 를 매 `requestAnimationFrame` 마다 바꾸며 `MAX_LINES` 로 트리밍하는 바로 그 노드다 — 그대로 두면 모든 공개 프레임과 모든 트리밍이 라이브 리전 변경이 되어 스크린리더가 범람한다. 즉 **이 이슈는 셸이 붙여 둔 속성을 걷어내야 하고, 그 작업은 리뷰에서 "a11y 후퇴" 처럼 보여 조용히 누락되기 쉽다**. 그래서 위 AC 에 소유자를 명시했다. 권장 형태는 UI-6 이 제시한 구조 — `#caption-container` 는 `aria-hidden="true"`, 그 옆에 `.sr-only` clip 패턴의 `#caption-announcer`(`aria-live="polite" aria-atomic="true"`)를 두고 `finalizeCaption` 에서만 쓴다.
+
+#### Tests
+- [x] Given `components/stage.html`, when 파일 내용을 검사하면, then `requestAnimationFrame` 이 존재하고 `setInterval` 기반 타자기 타이머가 없다
+- [x] Given `components/stage.html`, when 검사하면, then `MAX_LINES` 값이 60 이고 `overflow-wrap` / `word-break: keep-all` 이 자막 라인 규칙에 존재한다
+- [x] Given e2e 로 띄운 무대 페이지, when 합성 SSE `message` 이벤트 61건을 주입하면, then `.caption-line` 개수가 60 이다 (`tests/e2e/test_stage_e2e.py`, marker `e2e`)
+- [x] Given e2e 무대 페이지, when partial 3건 후 final 1건을 주입하면, then 최종적으로 라인 1개이며 텍스트가 final 값과 정확히 일치한다 (RL-004: 개수와 값 모두 단언)
+- [x] Given e2e 무대 페이지, when `session_end` 를 주입하면, then 종료 문구가 표시되고 좌측 발표 영역 DOM 이 제거되지 않는다
+- [x] Given `components/stage.html`, when 타자기 애니메이션이 변경하는 노드를 검사하면, then 그 노드에 `aria-live` 가 없고(또는 `aria-hidden="true"` 이고) 라인 확정 시에만 갱신되는 별도 announcer 요소가 `aria-live` 를 소유한다 (RL-019 회귀 가드 — ISSUE-40 이 남긴 `#caption-container` 의 `aria-live` 가 그대로 살아 있으면 실패한다)
+
+#### Rollback
+`stage.html` 의 자막 컬럼 스크립트/스타일 제거 → 우측 컬럼을 빈 영역으로 두고 ISSUE-40 의 정적 레이아웃만 남긴다. `/view/{room_id}` 뷰어 동작에는 영향 없음.
+
+---
+
+### ISSUE-42: 발표자료 화면 캡처 연결 — 프레젠터 조작 비간섭 및 복구 처리
+
+- Track: feature
+- Type: feat
+- UI: true
+- Manual: false
+- PRD-Ref: FR-074, FR-075, FR-081, NFR-025, NFR-026, NFR-027
+- Priority: P1
+- Estimate: 1.5d
+- Status: shipped
+- Owner: pillip
+- Branch: issue/ISSUE-42-stage-display-capture
+- GH-Issue: #128
+- PR: #129
+- Depends-On: ISSUE-40
+
+#### Goal
+무대 페이지 좌측 발표 영역이 `getDisplayMedia()` 로 선택한 화면/창을 **프레젠터 조작을 전혀 방해하지 않으면서** 부드럽게 표시하고, 트랙 종료·자기 캡처·화면 절전 상황에서 검은 화면 없이 복구된다.
+
+#### 현재 문제
+발표자료를 무대 화면에 합성하려면 브라우저가 다른 앱의 화면을 캡처해야 한다. 그런데 캡처 페이지가 키보드 포커스를 잡고 있으면 프레젠터 리모컨이 보내는 방향키/PageUp/PageDown/Space 가 발표 앱 대신 브라우저로 흘러가 슬라이드가 넘어가지 않는다. 또 캡처 프레임 렌더와 자막 애니메이션이 경쟁하면 영상이 버벅인다. 사용자 요구사항은 명확하다 — **"비디오 캡쳐 형태로 가더라도 버벅인다거나 프레젠터로 조작이 안되거나 해서는 안된다"**. 이는 nice-to-have 가 아니라 인수 조건이다.
+
+#### Scope (In/Out)
+- In:
+  - 초기 상태: 타이틀 카드 + "발표자료 연결" 버튼 (브라우저 정책상 사용자 제스처 1회 필요)
+  - `getDisplayMedia({ video: { frameRate: { ideal: 30 } }, audio: false, selfBrowserSurface: "exclude", surfaceSwitching: "exclude", systemAudio: "exclude" })`
+  - `<video autoplay muted playsinline>` + `object-fit: contain`
+  - 소스 재선택 액션 (연결 후에도 접근 가능하되 평소에는 시각적으로 최소화)
+  - 트랙 `ended` → 타이틀 카드 폴백 + "발표자료 다시 연결" 액션
+  - 자기 캡처(무한 거울) 감지 및 경고 배너
+  - Screen Wake Lock 요청 + 가시성 복귀 시 재요청 (실패해도 무해하게 degrade)
+  - 키보드 비간섭 보장: 전역 keydown 핸들러 부재, 캡처 시작 후 포커스 해제
+  - 포커스 핸드오프 안내: 캡처 연결 성공 직후 "발표 앱을 클릭해 포커스를 넘기세요" 1회 표시 후 자동 소멸
+  - 클릭 표면 최소화: `cursor: none`, 연결 후 버튼 숨김, 재선택은 명시적 제스처로만 복귀
+  - `?debug=1` 리허설 진단 오버레이: `document.hasFocus()` 실시간 표시 + keydown 카운터
+- Out:
+  - PDF 업로드 / 슬라이드 페이지 동기화 — 명시적 Out of scope (소스는 화면 캡처만)
+  - 발표자료 원격 제어, 슬라이드 넘김 트리거
+  - 캡처 녹화/저장, 오디오 캡처
+  - 다중 캡처 소스 동시 표시(PiP)
+
+#### Acceptance Criteria (DoD)
+**프레젠터 조작 비간섭 (하드 제약)**
+- [ ] Given 무대 페이지가 로드되어 캡처가 진행 중일 때, when 방향키/PageUp/PageDown/Space 가 눌리면, then 무대 페이지는 어떤 keydown 핸들러에서도 `preventDefault()` 를 호출하지 않는다. 기본(비 debug) 경로에는 `document`/`window` 레벨 keydown 리스너가 아예 등록되지 않으며, `?debug=1` 진단 카운터만이 유일한 예외로서 `{ passive: true }` 수동 계수 전용이다
+- [ ] Given 캡처가 막 시작된 직후, when 사용자가 발표 앱(Keynote/PowerPoint) 창을 클릭해 포커스를 옮기면, then 무대 페이지가 포커스를 되찾지 않는다 (자동 `focus()` / `requestFullscreen()` 재호출 없음) 그리고 캡처 영상은 계속 갱신된다
+- [ ] Given 무대 브라우저 창이 비포커스이지만 별도 디스플레이에서 계속 보이는 상태, when 30초가 경과하면, then `<video>` 의 `currentTime` 이 계속 증가한다 (프레임 갱신이 멈추지 않는다)
+- [ ] Given ISSUE-40 이 출하한 `tests/test_stage_page.py::test_no_presenter_keyboard_interference`(`"keydown" not in stage_html`)와 `test_no_interactive_controls`(`"<button" not in stage_html`), when 이 이슈가 `?debug=1` keydown 카운터와 "발표자료 연결" 버튼을 추가해 두 가드를 필연적으로 깨뜨리면, then 두 테스트는 **삭제되지 않고 더 엄격한 형태로 대체**된다 — 대체본은 (a) 방향키/PageDown/Space 를 디스패치해 `event.defaultPrevented === false`, `document.activeElement === document.body`, `document.fullscreenElement === null` 을 단언하는 행위 기반 e2e, (b) 유일한 `keydown` 등록이 `?debug=1` 분기 안의 `{ passive: true }` 카운터임을 확인하고 keydown 문맥의 `preventDefault()` 가 0건임을 확인하는 정적 단언 — 두 가지를 모두 포함한다. 가드 수가 줄거나 단언이 약해지면 이 AC 는 미충족이다
+
+**포커스 핸드오프 및 클릭 표면 최소화**
+- [ ] Given 캡처가 방금 연결되어 브라우저가 포커스를 쥐고 있는 상태, when 연결이 성공하면, then "발표 앱을 클릭해 포커스를 넘기세요" 안내가 1회 표시되고 일정 시간 후 자동으로 사라진다 (무대 화면에 영구적으로 남지 않는다)
+- [ ] Given 캡처가 연결된 정상 상태, when 무대 화면 위로 마우스를 움직이면, then 커서가 표시되지 않는다 (`cursor: none`) 그리고 클릭 가능한 가시 요소가 존재하지 않는다
+- [ ] Given 캡처가 연결된 상태에서 소스를 바꾸고 싶을 때, when 명시적 제스처(지정된 코너 더블클릭)를 하면, then 재선택 컨트롤이 다시 나타나고 커서가 복원된다
+
+**리허설 진단 (`?debug=1`)**
+- [ ] Given `?debug=1` 없이 무대 페이지를 열었을 때, when 화면을 확인하면, then 진단 오버레이가 어디에도 표시되지 않는다 (본 행사 화면 오염 방지)
+- [ ] Given `?debug=1` 로 무대 페이지를 열었을 때, when 오버레이를 확인하면, then `document.hasFocus()` 결과가 "이 창 포커스 있음/없음" 으로 실시간 표시되고 focus/blur 시 즉시 갱신된다
+- [ ] Given `?debug=1` 오버레이가 켜지고 발표 앱이 포커스를 가진 상태, when 프레젠터 리모컨을 20회 누르면, then keydown 카운터가 0 을 유지한다 (카운터가 올라가면 브라우저가 키를 먹고 있다는 뜻이며 세팅이 잘못된 것이다)
+
+**캡처 부드러움 (하드 제약)**
+- [ ] Given `getDisplayMedia()` 호출, when 제약 객체를 검사하면, then `video.frameRate.ideal === 30` 과 `selfBrowserSurface: "exclude"` 가 포함된다
+- [ ] Given 캡처 `<video>` 가 표시될 때, when 스타일을 검사하면, then `object-fit: contain` 이 적용되어 소스 비율이 유지된다 (잘림/왜곡 없음)
+- [ ] Given 30분 동안 자막이 계속 흐르는 세션, when 종료 시점에 페이지를 검사하면, then `.caption-line` 노드 수가 상한(60) 이하이고 활성 타자기 애니메이션 루프가 1개 이하다 (프레임 부하 누적 없음)
+
+**복구 및 안전장치**
+- [ ] Given 캡처 소스 선택 다이얼로그에서 무대 화면 자신이 선택되었을 때, when 감지되면, then "무대 화면이 캡처되었습니다. 발표자료 창을 선택하세요" 경고 배너가 표시되고 재선택 액션이 노출된다
+- [ ] Given 사용자가 브라우저의 "공유 중지" 를 눌러 캡처 트랙이 `ended` 될 때, when 처리가 끝나면, then 좌측 영역이 검은 화면이 아니라 행사 타이틀 + 부제 + 로고 타이틀 카드로 전환되고 "발표자료 다시 연결" 액션이 표시되며 우측 자막 컬럼은 끊김 없이 계속 흐른다
+- [ ] Given Screen Wake Lock 을 지원하는 브라우저, when 캡처가 시작되면, then `navigator.wakeLock.request("screen")` 이 호출되고, 미지원 또는 거부 브라우저에서는 예외 없이 나머지 기능이 정상 동작한다 (RL-008: capability guard)
+- [ ] Given `getDisplayMedia()` 가 `NotAllowedError` 로 거부될 때, when 처리가 끝나면, then 타이틀 카드 상태가 유지되고 일반 안내 문구만 표시된다 (내부 예외 메시지 미노출, RL-006)
+
+#### Implementation Notes
+- **ISSUE-40 이 남긴 두 개의 파일 전역 substring 가드는 이 이슈의 필수 작업이 반드시 밟는다 — 반드시 TIGHTEN 하고 절대 삭제하지 않는다.** PR #122 가 `tests/test_stage_page.py` 에 출하한 두 테스트다.
+  - `test_no_presenter_keyboard_interference` 는 `assert "keydown" not in stage_html` 로 파일 전체에서 `keydown` 문자열을 금지한다. 그런데 `docs/requirements.md:326`(NFR-025)은 `?debug=1` 의 `{ passive: true }` keydown 카운터를 **명시적으로 승인**하고 있으므로, **완전히 규격을 지킨 구현이 이 가드를 깨뜨린다.**
+  - `test_no_interactive_controls` 는 `assert "<button" not in stage_html` 을 단언한다. 이 이슈의 필수 요소인 "발표자료 연결" 캡처 버튼이 첫날 이를 깨뜨린다.
+  - 두 가드는 ISSUE-40 의 "JS 상호작용 0" 상태에서는 유효한 트립와이어였지만, 실제 불변식은 어휘적이 아니라 **행위적**이다 — *프레젠터 키가 소비되지 않고, 페이지가 포커스를 쥐지 않는다*. 대체본은 위 AC 에 적힌 두 가지(행위 e2e + 범위를 좁힌 정적 단언)여야 하며, `preventDefault` / `requestFullscreen` 처럼 이 이슈를 지나도 의도가 그대로인 항목의 문자열 가드는 **그대로 남긴다**. 코드리뷰어와 UI 리뷰어가 각각 독립적으로 같은 결론에 도달했다(`docs/review_notes.md` "Scope discipline", `docs/ui_review_notes.md` § "NFR-025 guard test — real or theatre?"). 삭제하고 넘어가면 다음 스프린트에 프레젠터 리모컨 회귀를 잡을 그물이 하나도 남지 않는다.
+- **키보드**: `stage.html` 의 기본 경로에는 `document.addEventListener("keydown", ...)` 를 절대 추가하지 않는다. 상호작용 요소는 "발표자료 연결" / "다시 연결" 버튼뿐이며, 캡처 시작 성공 직후 `document.activeElement?.blur()` 로 포커스를 문서 본문으로 되돌린다. 버튼 자체에는 `:focus-visible` 스타일을 유지해 키보드 접근성을 해치지 않는다 (RL-010).
+- **포커스가 1차 방어선, keydown 부재가 2차**: 브라우저는 다른 앱에 키를 주입할 수 없으므로 `preventDefault()` 를 생략한다고 해서 키가 발표 앱으로 전달되지는 않는다. 실제 요구사항은 **발표 중 무대 창이 OS 포커스를 갖지 않는 것**이고, keydown 리스너 부재는 그 전제가 깨졌을 때 피해를 줄이는 2차 방어선이다. 구현·리뷰 시 이 우선순위를 뒤집지 말 것.
+- **포커스 강탈 경로는 유한하다** — 키 입력은 포커스를 옮기지 않는다. 옮기는 것은 ① 무대 창 클릭 ② 페이지의 `requestFullscreen()`/`window.focus()` 자동 호출 ③ 캡처 권한 다이얼로그 ④ Alt+Tab/Cmd+Tab ⑤ 디스플레이 구성 변경 뿐이다. ①②③ 만 코드로 통제 가능하므로 각각 클릭 표면 제거 / 자동 호출 금지 / 발표 중 재연결 회피로 막는다.
+- **핸드오프 안내**: 캡처 연결 성공 직후에는 필연적으로 브라우저가 포커스를 쥐고 있다(권한 다이얼로그를 브라우저에서 조작했으므로). 이 상태로 발표를 시작하면 첫 슬라이드부터 넘어가지 않으므로, 연결 성공 시 안내 배너를 띄우고 약 8초 후 또는 `blur` 이벤트 수신 시(= 사용자가 발표 앱으로 넘어간 시점) 제거한다. `blur` 수신은 핸드오프 성공 신호이므로 그때 즉시 감추는 편이 자연스럽다.
+- **커서/클릭 표면**: 무대 화면 루트에 `cursor: none` 을 적용한다. 캡처 연결 후에는 컨트롤을 `display: none` 으로 DOM 에서 배제한다 — `pointer-events: none` 만으로는 **창이 포커스를 가져가는 것 자체를 막지 못한다**(OS 레벨). 재선택 복귀는 지정된 코너 더블클릭으로만 하고, 복귀 시 `cursor: default` 를 되돌린다.
+- **`surfaceSwitching`**: Chrome 이 "다른 탭 공유" 전환 위젯을 띄우면 무대 화면 위에 클릭 가능한 표면이 하나 늘어난다. 클릭 표면 최소화 원칙과 충돌하므로 `surfaceSwitching: "exclude"` 로 두고, 소스 변경은 우리 재선택 경로로만 처리한다.
+- **`?debug=1` 진단 오버레이**: 쿼리 파라미터가 있을 때만 오버레이 DOM 과 리스너를 생성한다(없으면 코드 경로 자체에 진입하지 않는다). 표시 항목은 두 가지 — (a) `document.hasFocus()` 를 `focus`/`blur` 이벤트로 갱신한 포커스 상태, (b) `document.addEventListener("keydown", ..., { passive: true })` 로 세는 누적 카운터. 카운터 리스너는 계수만 하고 `preventDefault()`/`stopPropagation()` 를 절대 호출하지 않는다. 리허설 판정 기준은 **"발표 앱 포커스 상태에서 리모컨 20회 → 카운터 0"** 이며, 카운터가 오르면 무대 창이 포커스를 쥐고 있다는 뜻이다.
+- **자기 캡처 감지**: `selfBrowserSurface: "exclude"` 는 Chromium 계열에서만 보장되므로 폴백 휴리스틱을 함께 둔다 — `track.getSettings().displaySurface === "browser"` 이고 캡처 영상 해상도가 현재 창 크기와 일치하면 경고 배너를 띄운다. 배너는 캡처를 강제로 끊지 않고 사용자가 재선택하도록 안내만 한다.
+- **트랙 수명주기**: `stream.getVideoTracks()[0].addEventListener("ended", onCaptureEnded)` 로 등록하고, `onCaptureEnded` 는 `<video>` srcObject 해제 → 타이틀 카드 표시 → 재연결 버튼 노출까지 한 함수에서 처리한다. 벤더 프리픽스나 중복 리스너를 만들지 말 것 (RL-009).
+- **Wake Lock**: `if (!("wakeLock" in navigator)) return;` 로 먼저 가드한 뒤 `await navigator.wakeLock.request("screen")` 을 try/catch 로 감싼다. `visibilitychange` 에서 `document.visibilityState === "visible"` 일 때만 재요청한다 (RL-008).
+- **부드러움**: 자막 타자기 애니메이션은 ISSUE-41 에서 rAF 로 전환된다. 이 이슈에서는 추가로 캡처 `<video>` 컨테이너에 `will-change: transform` 같은 불필요한 합성 레이어 힌트를 넣지 않고, 자막 컬럼과 발표 영역이 서로 리페인트를 유발하지 않도록 `contain: layout paint` 를 자막 컬럼에 적용한다.
+- **전체화면**: 무대 화면은 보통 브라우저 전체화면으로 띄운다. 전체화면 진입은 사용자가 F11 또는 브라우저 UI 로 직접 하도록 두고 페이지가 자동으로 `requestFullscreen()` 을 호출하지 않는다 — 자동 호출은 포커스를 무대 창으로 되돌려 프레젠터 조작을 방해한다.
+- 브라우저 타깃은 Chrome/Edge 최신 (NFR-011). Safari 는 `selfBrowserSurface`/`surfaceSwitching` 미지원이므로 휴리스틱 경고 경로로 degrade 된다.
+
+#### Tests
+- [ ] Given `components/stage.html`, when 문자열을 검사하면, then 전역 keydown 등록은 `?debug=1` 가드 블록 안의 `{ passive: true }` 카운터 하나뿐이고 그 밖의 `addEventListener("keydown"` / `onkeydown` 등록은 존재하지 않으며, 파일 전체에 keydown 문맥의 `preventDefault()` 가 없다 (회귀 방지 — 이 테스트가 깨지면 프레젠터 조작이 막힌 것이다)
+- [ ] Given `?debug=1` 없이 연 e2e 무대 페이지, when `ArrowRight` / `PageDown` / `Space` 를 document 에 디스패치하면, then 각 이벤트의 `defaultPrevented` 가 모두 `false` 이고 `document.activeElement === document.body` 이며 `document.fullscreenElement === null` 이다 (ISSUE-40 의 `test_no_presenter_keyboard_interference` 를 대체하는 **행위 기반** 가드 — 삭제가 아니라 강화다)
+- [ ] Given `tests/test_stage_page.py`, when 이 이슈의 변경 후 파일을 검사하면, then `test_no_interactive_controls` 가 삭제되지 않고 "캡처 연결 전에는 버튼이 1개(발표자료 연결)뿐이고 `<select>` / `<input>` / `<a href>` 는 0개" 라는 더 구체적인 단언으로 대체되어 있다
+- [ ] Given `components/stage.html`, when 문자열을 검사하면, then `cursor: none` 과 `surfaceSwitching` 의 값이 `"exclude"` 로 존재한다
+- [ ] Given `components/stage.html`, when 검사하면, then `frameRate`, `ideal: 30`(또는 동등 표기), `selfBrowserSurface`, `object-fit: contain` 문자열이 모두 존재한다
+- [ ] Given `components/stage.html`, when 검사하면, then `navigator.wakeLock` 접근이 존재 여부 가드(`"wakeLock" in navigator` 또는 옵셔널 체이닝) 안에 있다 (RL-008)
+- [ ] Given `components/stage.html`, when 검사하면, then `requestFullscreen()` 자동 호출이 없다
+- [ ] Given fake capture stream 으로 스텁한 e2e 무대 페이지, when 트랙을 `stop()` 하면, then 타이틀 카드 DOM 이 나타나고 "발표자료 다시 연결" 버튼이 보이며 자막 컬럼 DOM 은 그대로 존재한다 (`tests/e2e/test_stage_capture_e2e.py`, marker `e2e`)
+- [ ] Given e2e 무대 페이지, when 캡처 시작 직후 `document.activeElement` 를 평가하면, then `document.body` 이다 (버튼이 포커스를 붙잡고 있지 않다)
+- [ ] Given e2e 무대 페이지에서 캡처가 연결된 뒤, when 가시 요소를 세면, then 클릭 가능한 가시 요소(`button`, `a`, `input`, `[tabindex]` 중 화면에 보이는 것)가 0개이고 핸드오프 안내는 자동 소멸 후 사라져 있다
+- [ ] Given `?debug=1` 없이 연 e2e 무대 페이지, when 진단 오버레이 셀렉터를 조회하면, then 해당 노드가 존재하지 않는다
+- [ ] Given `?debug=1` 로 연 e2e 무대 페이지, when 합성 keydown 3회를 디스패치하면, then 카운터가 3 으로 표시되고 각 이벤트의 `defaultPrevented` 가 모두 `false` 이다
+- [ ] Given e2e 무대 페이지, when `getDisplayMedia` 를 `NotAllowedError` 를 던지도록 스텁하고 연결 버튼을 누르면, then 예외 문자열이 DOM 에 나타나지 않고 일반 안내 문구만 표시된다
+
+#### Rollback
+`stage.html` 에서 캡처 스크립트와 연결/재연결 버튼을 제거하고 좌측 영역을 정적 타이틀 카드로 고정한다. 자막 컬럼(ISSUE-41)과 레이아웃(ISSUE-40)은 그대로 동작하므로 무대 화면 자체는 계속 사용 가능하다.
+
+---
+
+### ISSUE-43: 보안 가드 뮤테이션 점검 도입 — 가드별 킬 테스트 지정 및 CI 게이트
+
+- Track: platform
+- Type: test
+- UI: false
+- Manual: false
+- PRD-Ref: NFR-028, RL-004
+- Priority: P2
+- Estimate: 1.5d
+- Status: shipped
+- Owner: pillip
+- Branch: issue/ISSUE-43-guard-mutation-check
+- GH-Issue: #139
+- PR: #142
+- Depends-On: none
+
+#### Goal
+보안 크리티컬 가드(경로 봉인·업로드 검증·역할 판정)를 삭제하거나 무력화했을 때 **반드시 이름을 특정할 수 있는 테스트가 실패**한다는 사실을, 한 명령으로 재현 가능하게 검증하고 CI 에서 게이트한다.
+
+#### 현재 문제
+`docs/review_lessons.md` 의 **[RL-004] Weak test assertions that pass trivially** 가 Frequency 4(PR #8, #12, #119, #122)를 지나 ISSUE-38 리뷰(PR #123)에서 다섯 번째로, 이번에는 **High** 영향으로 재발했다.
+
+- `branding_assets.resolve_asset_path` 의 `if candidate.is_symlink(): return None` — NFR-028 이 명시한 보안 통제이자 이 코드베이스 **최초의 사용자 업로드 경로**를 지키는 가드 — 를 지워도 테스트가 한 건도 깨지지 않았다. 심볼릭 링크 테스트 3건이 모두 링크 대상을 룸 디렉터리 **바깥**으로 두었기 때문에, 404 를 만든 것은 심볼릭 링크 가드가 아니라 `is_relative_to()` containment 검사였다.
+- `_reject_path_signatures` 의 `".." in value` 거부도 같은 문제였다 — 지워도 스위트가 초록색이었다.
+- `except ValueError` 분기 2곳이 미검증이라, 이를 로그를 남기는 `except Exception` 으로 합쳐 **미인증 공개 라우트의 잘못된 요청이 매번 서버 로그를 쓰게 만드는**(로그 플러딩) 변경도 스위트에 보이지 않았다.
+
+세 건 모두 리뷰어가 **소스 뮤테이션 22건을 수작업으로 적용**해 생존 여부를 관찰(18 killed / 4 survived)했기 때문에만 발견됐다. 그 수작업은 재현 가능하지도, 강제되지도, 어떤 게이트에도 들어 있지도 않다. 두 모듈의 **라인 커버리지는 이미 100%** 였고 아무것도 잡지 못했다 — "커버리지는 있으나 변별력 있는 단언이 없다" 는 RL-004 의 전형이다. RL-004 의 Prevention 문구("check that assertions would fail if the function under test did nothing")는 이미 기법을 처방하고 있다. 없는 것은 **그 기법을 강제하는 장치**다.
+
+#### Scope (In/Out)
+- In:
+  - 접근 방식 평가 및 결정 기록 — 오프더셸프 뮤테이션 테스터(`mutmut` / `cosmic-ray`) 대 선언형 자체 스크립트, 허용 목록에 실측 후 트레이드오프를 문서에 남긴다
+  - 채택안 구현 — `scripts/guard_mutations.py` + 선언 카탈로그(`scripts/guard_mutations.toml`), 또는 동등한 오프더셸프 설정
+  - **허용 목록(allowlist) 한정**: `branding_assets.py`, `branding_routes.py`, `auth.py` 의 역할 판정 3종, `admin_logic.filter_rooms_for_role`
+  - retro-apply — 아래 카탈로그의 모든 가드에 대해 살아남는 뮤턴트가 0이 되도록 **변별력 있는 네거티브 테스트**를 보강
+  - 네거티브 보안 테스트 명명 규약 — 각 테스트가 자신이 검증하는 가드를 `Guard: <모듈>.<함수>#<가드명>` 으로 명시
+  - CI 에 별도 `mutation` job 추가 (기존 `lint`/`test`/`e2e` job 의 커맨드는 불변)
+- Out:
+  - **전 저장소 뮤테이션 테스트 — 명시적 Out of scope.** 936건 스위트를 뮤턴트마다 재실행하는 비용은 실재한다. 허용 목록 밖 모듈은 대상이 아니며, 확대는 카탈로그 파일의 명시적 편집으로만 가능하다
+  - 커버리지 임계치(`--cov-fail-under`) 상향
+  - JS/HTML(`components/*.html`) 뮤테이션 — 파이썬 소스만
+  - 기존 e2e 스위트 변경
+  - 프로덕션 코드 동작 변경 — 산출물은 스크립트와 테스트다. 살아남은 뮤턴트가 실제 결함(가드 부재)으로 밝혀지면 별도 이슈로 분리한다
+
+#### 초기 뮤테이션 카탈로그 (허용 목록)
+
+| 가드 ID | 대상 표현식 | 뮤테이션 |
+|---|---|---|
+| `branding_assets._reject_path_signatures#separator` | `"/" in value or "\\" in value` | 분기 삭제 |
+| `branding_assets._reject_path_signatures#dotdot` | `".." in value` | 분기 삭제 |
+| `branding_assets._reject_path_signatures#control` | 제어문자 `ord(ch) < 32` 검사 | 분기 삭제 |
+| `branding_assets._sanitize_filename#extension` | `suffix not in ALLOWED_EXTENSIONS` | 분기 삭제 |
+| `branding_assets._sanitize_room_id#charclass` | `_DISALLOWED_CHARS.search(value)` | 분기 삭제 |
+| `branding_assets._contained_room_dir#containment` | `room_dir.is_relative_to(root)` | 항상 `True` |
+| `branding_assets.resolve_asset_path#symlink` | `candidate.is_symlink()` | 분기 삭제 |
+| `branding_assets.resolve_asset_path#containment` | `resolved.is_relative_to(room_dir)` | 항상 `True` |
+| `branding_assets.resolve_asset_path#quiet_reject` | `except ValueError: return None` | `except Exception` + `print(...)` |
+| `branding_assets.list_assets#symlink` | `entry.is_symlink()` 스킵 | 조건 삭제 |
+| `branding_assets.save_asset#size_cap` | `len(data) > MAX_ASSET_BYTES` | 분기 삭제 / `>=` 로 변경 |
+| `branding_assets.save_asset#magic_bytes` | `_content_matches_extension(...)` | 항상 `True` |
+| `branding_assets.save_asset#count_cap` | `len(existing) >= MAX_ASSETS_PER_ROOM` | `>` (off-by-one) |
+| `branding_assets._write_without_overwriting#exclusive_create` | `open(candidate, "xb")` | `"wb"` |
+| `branding_assets.build_asset_headers#svg_csp` | SVG 분기의 CSP 헤더 | 헤더 미설정 |
+| `branding_routes.handle_branding_asset#not_found` | `if path is None: return 404` | 404 대신 200 반환 |
+| `auth.is_admin#role` | `user.get("role") == "admin"` | 항상 `True` |
+| `auth.is_operator#role` | `user.get("role") == "operator"` | 항상 `True` |
+| `auth.is_admin_or_operator#role` | `role in ("admin", "operator")` | 항상 `True` |
+| `admin_logic.filter_rooms_for_role#scope` | 역할별 필터링 | 입력 목록을 그대로 반환 |
+
+#### Acceptance Criteria (DoD)
+**접근 방식 결정**
+- [ ] Given 후보 두 가지(오프더셸프 `mutmut`/`cosmic-ray` 와 선언형 자체 스크립트), when 위 카탈로그 대상에 각각 시범 적용해 실행 시간과 사람이 판정해야 하는 미분류 생존 뮤턴트 수를 측정하면, then 채택안·탈락 사유·두 안의 **실측 실행 시간**이 `docs/architecture.md` 의 Tradeoffs 표에 1행으로 기록된다
+
+**러너 계약**
+- [ ] Given 카탈로그의 모든 항목이 대응 테스트를 가진 정상 상태, when `uv run python scripts/guard_mutations.py`(또는 채택된 동등 명령)를 실행하면, then 항목마다 `<가드 ID> killed by <테스트 노드 ID>` 가 출력되고 종료 코드가 0 이다
+- [ ] Given 어떤 테스트도 실패시키지 못하는 뮤테이션이 카탈로그에 있을 때, when 러너를 실행하면, then 종료 코드가 0 이 아니고 살아남은 가드 ID 와 원본 파일·행 위치가 출력된다
+- [ ] Given 러너가 정상 종료했거나 예외/인터럽트로 중단되었을 때, when 작업 트리를 확인하면, then 허용 목록의 모든 소스 파일이 실행 전과 바이트 단위로 동일하다 (`git diff --quiet` 가 0)
+- [ ] Given 대상 파일 안에서 `find` 스니펫이 정확히 1회 등장하지 않는 카탈로그 항목, when 러너를 실행하면, then 그 항목은 적용되지 않고 "정확히 1회여야 한다" 취지의 오류와 함께 비정상 종료한다
+
+**retro-apply**
+- [ ] Given 카탈로그의 `branding_assets` 항목 15건, when 각 뮤테이션을 적용하고 지정된 테스트만 실행하면, then 15건 모두 최소 1개의 테스트를 실패시키고 생존 뮤턴트가 0건이다
+- [ ] Given `resolve_asset_path` 의 `except ValueError` 분기, when 이를 서버 로그를 남기는 `except Exception` 으로 바꾸는 뮤테이션을 적용하면, then 잘못된 요청이 stdout 에 아무것도 쓰지 않음을 `capsys` 로 단언하는 테스트가 실패한다
+- [ ] Given `auth.is_admin` / `is_operator` / `is_admin_or_operator` 와 `admin_logic.filter_rooms_for_role`, when 각 역할 비교를 항상 통과시키는 뮤테이션을 적용하면, then 권한 없는 역할에 대한 네거티브 테스트가 실패한다
+
+**명명 규약 (근본 원인 차단)**
+- [ ] Given 카탈로그가 지목한 네거티브 보안 테스트 1건, when 그 테스트의 docstring 을 읽으면, then `Guard: <모듈>.<함수>#<가드명>` 한 줄로 검증 대상 가드가 명시되어 있다
+- [ ] Given 카탈로그에 선언되었지만 어떤 테스트도 `Guard:` 로 지목하지 않은 가드, when 러너를 실행하면, then 그 가드가 `unnamed` 로 보고되고 종료 코드가 0 이 아니다
+
+**비용 상한**
+- [ ] Given CI 워크플로, when `mutation` job 이 실행되면, then 기존 `test` job 의 커맨드(`uv run pytest -m 'not e2e' --cov=. ...`)는 변경되지 않고, `mutation` job 은 카탈로그에 적힌 테스트 노드만 실행하며 job 총 소요가 5분 이내다
+- [ ] Given 허용 목록 밖 경로를 가리키는 카탈로그 항목, when 러너를 실행하면, then 그 항목은 거부되고 해당 파일은 수정되지 않는다
+
+#### Implementation Notes
+- **두 후보의 성질 차이(결정보다 기록이 중요하다)**: `mutmut`/`cosmic-ray` 는 뮤턴트를 **자동 생성**해 커버리지 공백을 넓게 훑지만, (a) 뮤턴트마다 스위트를 재실행하므로 936건 규모에서 비용이 선형으로 폭발하고, (b) 우리가 지키려는 대상은 "이 가드"라는 **이름 있는 통제**인데 자동 뮤턴트는 통제 이름을 모른다 — 생존 뮤턴트가 NFR-028 항목인지 무해한 로그 문자열인지 사람이 매번 판정해야 한다. 선언형 스크립트는 훑는 폭이 좁은 대신 **가드 ID ↔ 킬 테스트 노드 ID** 대응표를 산출물로 남긴다. 이 이슈의 목적이 후자이므로 선언형을 기본안으로 두되, AC-1 에서 실측한 뒤 결정을 남긴다. 다음 사람이 재평가할 수 있어야 한다.
+- **카탈로그 형식(제안)**: `[[mutation]]` 항목마다 `guard`(가드 ID), `file`, `find`(원본 스니펫), `replace`, `tests`(pytest 노드 ID 목록). `find` 는 대상 파일에 **정확히 1회** 등장해야 하며 0회/2회 이상이면 즉시 실패한다 — RL-004 가 PR #122 에서 지적한 "`object-fit: contain` 이 파일에 3번 나와서 통과" 실패 모드를 카탈로그 자신이 반복하지 않게 하는 장치다.
+- **워크트리 오염이 유일한 치명적 실패 모드**: 원본 바이트를 메모리에 보관하고 `try/finally` 로 되돌린다. `KeyboardInterrupt`/`SystemExit` 를 포함한 모든 종료 경로에서 복구되어야 하며, 복구에 실패하면 `git checkout -- <file>` 안내를 출력하고 비정상 종료한다.
+- **부분 실행 오탐 차단**: 뮤턴트 검증은 `tests` 에 적힌 노드만 `uv run pytest <node-id> --no-cov -p no:cacheprovider` 로 돌린다. `--no-cov` 는 필수다 — `pyproject.toml` 의 `addopts` 에 `--cov-fail-under=50` 이 있어 부분 실행이 커버리지 미달로 실패하면 **뮤턴트를 죽인 것처럼 보인다**. 그 오탐이야말로 RL-004 의 재발이다.
+- **`Guard:` 표기 파싱**: 테스트 docstring 안에 `Guard: branding_assets.resolve_asset_path#symlink` 한 줄을 둔다. 러너는 `pytest --collect-only` 로 수집 부작용을 만들지 말고 `ast` 로 파일을 읽어 함수/메서드의 docstring 에서 표기를 추출한다.
+- **이미 있는 모범 사례부터 시작한다**: `tests/test_branding_assets.py::test_resolve_rejects_symlink_that_points_inside_the_room` 은 PR #123 리뷰에서 추가된, **가드를 단독으로 겨냥한**(대상이 룸 안인 링크 = 두 방어가 갈라지는 유일한 입력) 테스트다. 카탈로그 첫 항목을 이 테스트로 채우고 나머지 가드를 같은 형태로 만든다. 반대로 `test_resolve_rejects_symlink` / `test_resolve_rejects_symlink_to_sibling_room` 은 containment 로도 통과하므로 `#symlink` 가드의 킬 테스트로 지정하면 안 된다.
+- **허용 목록 근거**: `branding_assets.py`(유일한 사용자 업로드 경로), `branding_routes.py`(미인증 공개 라우트), `auth.py` + `admin_logic.filter_rooms_for_role`(역할 판정, RL-002 재발 지점). `translation.py`·`webrtc.html` 등은 명시적으로 제외한다.
+- **CI 배치**: `mutation` job 을 `needs: test` 로 두고 `e2e` 와 병렬로 돌린다. 기존 job 의 커맨드는 건드리지 않는다 — 게이트 추가가 기존 게이트를 약화시켜서는 안 된다 (RL-014 와 같은 원칙).
+- **범위 이탈 방지**: 러너가 찾아낸 생존 뮤턴트가 "테스트가 약한 것" 이 아니라 "가드가 실제로 없는 것" 이면, 이 이슈에서 프로덕션 코드를 고치지 말고 별도 이슈로 올린 뒤 카탈로그 항목에 `TODO(ISSUE-NN)` 를 달아 둔다.
+
+#### Tests
+- [ ] Given 카탈로그 전체와 보강된 테스트, when 러너를 서브프로세스로 호출하면, then 종료 코드가 0 이고 출력에 `survived` 항목이 0건이다 (`tests/test_guard_mutations.py`)
+- [ ] Given 어떤 테스트도 실패시키지 못하는 무해한 뮤테이션(주석 문자열 치환)을 담은 임시 카탈로그, when 러너를 실행하면, then 해당 항목이 `survived` 로 보고되고 종료 코드가 0 이 아니다 (러너 자신이 RL-004 를 반복하지 않음을 증명한다)
+- [ ] Given `find` 스니펫이 대상 파일에 2회 등장하는 임시 카탈로그 항목, when 러너를 실행하면, then 비정상 종료하고 대상 파일 내용이 원본과 동일하다
+- [ ] Given 뮤테이션 적용 직후 예외를 발생시키도록 패치한 러너, when 프로세스가 끝나면, then 대상 파일 내용이 원본과 바이트 단위로 동일하다
+- [ ] Given 카탈로그의 모든 가드 ID, when `ast` 로 `tests/` 의 `Guard:` 표기를 수집해 대조하면, then 대응 테스트가 없는 가드가 0개이고 카탈로그에 없는 `Guard:` 표기도 0개다
+- [ ] Given 허용 목록 밖 파일(예: `translation.py`)을 가리키는 임시 카탈로그 항목, when 러너를 실행하면, then 거부 메시지와 함께 비정상 종료하고 그 파일은 수정되지 않는다
+- [ ] Given `branding_assets.resolve_asset_path` 에 널바이트 파일명을 넘길 때, when 호출하면, then `None` 을 반환하고 `capsys` 로 캡처한 stdout 이 비어 있다 (`#quiet_reject` 가드의 킬 테스트)
+
+#### Rollback
+`scripts/guard_mutations.py` 와 카탈로그, `tests/test_guard_mutations.py`, CI 의 `mutation` job 을 삭제한다. 이때 **보강된 네거티브 테스트와 docstring 의 `Guard:` 표기는 남긴다** — 러너가 없어도 그 자체로 가드를 단독 검증하는 회귀 테스트이며 이 이슈의 실질적 가치다. 프로덕션 코드는 변경하지 않으므로 런타임 롤백 대상이 없다.
+
+---
+
+### ISSUE-44: 뷰어 렌더러 스크립트 컨텍스트 이스케이프 파리티
+
+- Track: platform
+- Type: security
+- UI: false
+- Manual: false
+- PRD-Ref: NFR-028, RL-016, RL-020, RL-021
+- Priority: P1
+- Estimate: 0.5d
+- Status: shipped
+- Owner: pillip
+- Branch: issue/ISSUE-44-viewer-script-escaping-parity
+- GH-Issue: #131
+- PR: #132
+- Depends-On: none
+
+#### Goal
+`_render_viewer_html` 이 `_render_stage_html` 과 동일한 규칙을 따른다 — `<script>` 안으로 들어가는 값은 전부 `_json_for_script` 가 만든 완결된 JS 리터럴이고, 템플릿 치환은 단일 패스라 어떤 값도 다른 플레이스홀더를 팽창시킬 수 없다.
+
+#### 현재 문제
+ISSUE-40(PR #122)은 `_render_stage_html` 만 손보고 `_render_viewer_html` 은 **의도적으로** 그대로 두었다 — ISSUE-38 과의 머지 충돌 면적을 최소로 유지하기 위한 판단이었다(`docs/review_notes.md` ISSUE-40 § "Merge-conflict surface: minimal", 라우터 편집 1줄). 그 대가로, ISSUE-40 리뷰가 찾아내 무대 쪽에서 고친 결함 **두 가지가 뷰어 쪽에 그대로 남아 있다.** `/view/{room_id}` 는 이미 출하되어 청중이 QR 로 접속하는 공개 경로다.
+
+**결함 1 — 마크업 이스케이퍼를 스크립트 컨텍스트에 쓰고 있다 (RL-020).**
+`sse_broadcast.py:387-398` 은 `{{ROOM_ID}}` / `{{ROOM_NAME}}` / `{{PRIMARY_LANG}}` / `{{INITIAL_STATE}}` 를 `html.escape(..., quote=True)` 로 처리하는데, 이 값들은 `components/viewer.html:318-322` 의 인라인 `<script>` 안 **JS 문자열 리터럴** 자리에 들어간다. `<script>` 는 raw text 라 HTML 엔티티가 디코드되지 않으므로 두 가지가 동시에 일어난다.
+- **조용한 값 손상**: `room_id = 'a"b'` 가 JS 문자열 `"a&quot;b"` 가 된다. 이 값은 `viewer.html:530` 에서 `/stream/${encodeURIComponent(CONFIG.room_id)}` URL 조립에 쓰인다 — 안전한 게 아니라 **틀린 값**이다.
+- **부트스트랩 사망**: `html.escape` 는 `\` 를 건드리지 않는다. 백슬래시로 끝나는 값은 닫는 따옴표를 탈출시켜 `SyntaxError: Invalid or unexpected token` 으로 스크립트 블록 전체가 죽는다. 무대 페이지에서 동일 결함이 실측 확인됐다 — `GET /stage/bs%5C` → 200 인데 `typeof CONFIG === "undefined"`, 자막 폭 미적용, `closed` 분기 미실행.
+고칠 도구는 이미 이 파일 안에 있다 — ISSUE-40 이 추가한 `sse_broadcast.py:342` 의 `_json_for_script` 는 **완결된 JSON 문자열 리터럴**을 내므로, 템플릿에서 감싸는 따옴표를 없애고 그대로 꽂으면 된다.
+
+**결함 2 — 연쇄 `str.replace` 가 앞 값으로 뒤 플레이스홀더를 팽창시킨다 (RL-021).**
+`_render_viewer_html` 은 `.replace()` 를 다섯 번 이어 붙인다. 룸 **이름**이 `{{OUTPUT_LANGS_JSON}}` 이면 이름이 먼저 치환된 뒤 뒤따르는 replace 가 그 안에서 플레이스홀더를 다시 확장해 `["ko", "en"]` 이 렌더된다. 룸 이름은 운영자 자유 입력이다. ISSUE-40 은 템플릿 전체를 단일 패스 `re.sub` 로 바꿔 이 성질을 **구조적**으로 만들었다 — 그 구현을 이식한다.
+
+**부수 결함 (같은 수정으로 함께 해소) — 뷰어의 이중 이스케이프.** `room_name` 을 HTML 이스케이프해 JS 문자열 리터럴에 넣고, `viewer.html:341` 이 그것을 `textContent` 로 쓴다. `textContent` 는 엔티티를 디코드하지 않으므로 `A홀 & B홀` 인 룸이 대기 화면에 `A홀 &amp; B홀` 로 보인다(`docs/sprint_state.md` ISSUE-40 implement Low 항목). `_json_for_script` 로 옮기면 부작용으로 해결된다.
+
+#### Scope (In/Out)
+- In:
+  - `sse_broadcast.py::_render_viewer_html` — `<script>` 컨텍스트로 들어가는 `room_id` / `room_name` / `primary_lang` / `initial_state` 를 `_json_for_script` 로 전환
+  - `components/viewer.html:318-322` — `_json_for_script` 가 따옴표까지 만들어 주므로 템플릿의 감싸는 `"` 제거
+  - 스크립트용 룸 이름 플레이스홀더를 별도 이름(`{{ROOM_NAME_JSON}}` 등)으로 분리 — 아래 Implementation Notes 참조
+  - 연쇄 `str.replace` → 단일 패스 `re.sub(r"\{\{(\w+)\}\}", lambda m: mapping[m.group(1)], template)`
+  - 위 두 결함에 대한 회귀 테스트 (`tests/test_viewer_page.py`, 필요 시 `tests/e2e/test_viewer_page_e2e.py`)
+- Out:
+  - `viewer.html:6` / `:277` 의 **마크업** 컨텍스트 `{{ROOM_NAME}}` 은 `html.escape` 를 그대로 유지한다 — 이스케이퍼는 sink 로 고른다(RL-020). 스크립트 자리만 옮긴다
+  - `_render_stage_html` (ISSUE-40 에서 이미 완료, 출하됨 — 건드리지 않는다)
+  - 뷰어 페이지의 시각/동작 변경, CSP·헤더 도입, `<html lang>` 동적화 (각각 별건)
+  - `.pre-commit-config.yaml` 의 이중 포매터 정리 (아래 트랩 노트에만 기록, 이 이슈의 산출물 아님)
+
+#### Acceptance Criteria (DoD)
+- [ ] Given `room_id` 가 `q"b\` 인 룸(따옴표 + 끝 백슬래시), when `/view/{room_id}` 를 요청하면, then 200 이고 응답 본문의 스크립트 블록에 `&quot;` 가 없으며 `room_id` 리터럴을 `json.loads` 로 파싱한 결과가 원본 `q"b\` 와 **정확히** 일치한다
+- [ ] Given 같은 룸을 실제 브라우저로 열었을 때, when 페이지 로드가 끝나면, then JS 오류가 0건이고 `typeof CONFIG !== "undefined"` 이며 언어 셀렉터·상태 전환이 정상 동작한다 (현재는 `SyntaxError` 로 부트스트랩 전체가 죽는다)
+- [ ] Given 룸 이름이 `{{OUTPUT_LANGS_JSON}}` 인 룸, when `/view/{room_id}` 를 요청하면, then `<title>` 과 `#room-name` 에 그 문자열이 **리터럴 그대로** 남고 `["ko", …]` 같은 다른 플레이스홀더 값으로 팽창하지 않는다
+- [ ] Given 룸 이름이 `A홀 & B홀` 인 룸, when 뷰어 대기 화면이 렌더되면, then 룸 이름이 `A홀 &amp; B홀` 이 아니라 `A홀 & B홀` 로 표시된다 (스크립트 컨텍스트 이중 이스케이프 해소)
+- [ ] Given 룸 이름이 `<script>alert(1)</script>` 인 룸, when `/view/{room_id}` 를 요청하면, then 마크업 자리(`viewer.html:6`, `:277`)에는 여전히 `&lt;script&gt;` 가 렌더되고 스크립트는 실행되지 않는다 (마크업 이스케이프 회귀 없음)
+- [ ] Given 수정된 `_render_viewer_html`, when 구현을 읽으면, then 치환이 단일 패스 `re.sub` + 람다이고, `<script>` 로 들어가는 값은 모두 `_json_for_script` 를 통과하며, 템플릿에는 그 값을 감싸는 따옴표가 남아 있지 않다
+
+#### Implementation Notes
+- **참고 구현은 같은 파일 안에 있다** — `_render_stage_html`(`sse_broadcast.py:463-505`)의 `mapping` dict + 단일 패스 치환 구조를 그대로 옮긴다. 새 헬퍼를 만들 필요가 없다.
+- **`{{ROOM_NAME}}` 은 이름을 쪼개야 한다 (무대 템플릿과 다른 점, 여기서 시간을 잃기 쉽다).** 무대에서는 `{{ROOM_NAME}}` 이 마크업에만 있었지만 뷰어에서는 마크업(`viewer.html:6`, `:277`)과 스크립트(`:319`) **양쪽**에 나온다. 단일 매핑으로는 한 이름에 두 이스케이프를 줄 수 없으므로, 스크립트 자리를 `{{ROOM_NAME_JSON}}` 같은 별도 플레이스홀더로 바꾸고 매핑에 두 항목(`ROOM_NAME` → `html.escape`, `ROOM_NAME_JSON` → `_json_for_script`)을 둔다. 하나로 합치면 반드시 한쪽이 깨진다.
+- 단일 패스 치환에서 매핑에 없는 키가 나오면 조용히 통과시키지 말고 `KeyError` 로 즉시 실패하게 둔다 — 템플릿에 오타 난 플레이스홀더가 페이지에 그대로 새어 나가는 것을 막는다. `re.sub` 의 치환 문자열 자리에 값을 직접 주지 말고 **반드시 람다**를 쓴다(치환 문자열은 `\` 와 역참조를 해석해 같은 문제를 재도입한다).
+- `_json_for_script`(`sse_broadcast.py:342`)는 `json.dumps` 후 `<` / `>` / `&` / U+2028 / U+2029 를 `\uXXXX` 로 바꾼다. 출력은 여전히 유효한 JSON 이므로 테스트에서 `json.loads` 로 round-trip 단언을 걸 수 있다.
+- 뷰어 페이지 전용 FR 은 `docs/requirements.md` 에 없다. 이 작업의 근거는 RL-016 의 인계 규칙(“나중 이슈가 렌더할 필드는 그 이슈의 AC 에 이스케이프 의무를 적어 둔다”)과 RL-020 / RL-021 이며, 무대에서 이미 공격·검증이 끝난 헬퍼를 재사용하는 **파리티 작업**이다. 새 설계 판단이 필요 없다.
+- **로컬 트랩 (미리 알고 시작할 것)**: `.pre-commit-config.yaml` 이 `ruff-format` 과 `black` 을 **둘 다** 켜 두고 있는데, 두 포매터는 `assert cond, (msg)` 레이아웃에 대해 서로 다른 결과를 요구한다 — 그 구문이 든 파일은 두 훅을 동시에 만족시킬 수 없어 커밋이 무한 왕복한다. ISSUE-40 구현자가 assert 문을 다시 써서 우회했다(`docs/sprint_state.md` 기록). 이 이슈에서 포매터를 정리하지는 말고, 새 테스트를 쓸 때 `assert cond, (msg)` 형태를 피해서 시간을 잃지 않는다.
+
+#### Tests
+- [ ] Given 룸 id 가 `q"b\` 인 룸, when `/view/…` 를 GET 하면, then 본문에 `&quot;` 가 없고 `room_id:` 리터럴이 `json.loads` 로 원본과 일치한다 (`tests/test_viewer_page.py` — `tests/test_stage_page.py::test_script_scalars_survive_backslashes_and_quotes` 를 그대로 미러링)
+- [ ] Given 룸 이름이 `{{OUTPUT_LANGS_JSON}}` / `{{ROOM_NAME_JSON}}` 인 두 케이스, when `/view/…` 를 GET 하면, then `<title>` 과 `#room-name` 에 리터럴 문자열이 그대로 남는다 (`tests/test_stage_page.py::test_room_name_cannot_expand_another_placeholder` 미러링, parametrize)
+- [ ] Given 룸 이름이 `A홀 & B홀` 인 룸, when `/view/…` 를 GET 하면, then 스크립트 블록의 `room_name` 리터럴을 `json.loads` 한 값이 `A홀 & B홀` 이고 `&amp;` 가 아니다
+- [ ] Given 룸 이름이 `<script>alert(1)</script>` 인 룸, when `/view/…` 를 GET 하면, then 본문에 원본 `<script>alert(1)` 이 없고 마크업 자리에 `&lt;script&gt;` 가 있다 (마크업 경로 회귀 가드)
+- [ ] Given 백슬래시로 끝나는 room_id 로 연 e2e 뷰어 페이지, when 로드가 끝나면, then `pageerror` 가 0건이고 `typeof CONFIG !== "undefined"` 이다 (`tests/e2e/test_viewer_page_e2e.py`, marker `e2e`)
+
+#### Rollback
+`sse_broadcast.py::_render_viewer_html` 와 `components/viewer.html:318-322` 의 커밋을 되돌린다(단일 커밋 권장). 두 파일 모두 순수 렌더 경로라 마이그레이션·데이터 영향이 없고, `/stage/{room_id}` 와 `_render_stage_html` 은 손대지 않으므로 무대 화면은 영향받지 않는다.
+
+---
+
+### ISSUE-45: 뷰어 페이지 WCAG AA 보정 — 저대비 텍스트 및 자막 라이브 리전 부재
+
+- Track: platform
+- Type: fix
+- UI: true
+- Manual: false
+- PRD-Ref: RL-018
+- Priority: P1
+- Estimate: 1d
+- Status: shipped
+- Owner: pillip
+- Branch: issue/ISSUE-45-viewer-contrast-aa
+- GH-Issue: #134
+- PR: #135
+- Depends-On: ISSUE-46
+
+#### Goal
+`components/viewer.html` 의 모든 텍스트 색이, 각 `clamp()` 가 만들어 낼 수 있는 **가장 작은 렌더 크기**에서 일반 텍스트 기준 4.5:1(WCAG 2.1 AA, 1.4.3)을 넘긴다. 그리고 자막 스택이 스크린리더에 도달한다 — 애니메이션 노드는 `aria-hidden` 이고, 라인이 확정될 때만 갱신되는 전용 `#caption-announcer` 가 라이브 리전을 소유한다 (RL-019).
+
+#### 현재 문제
+ISSUE-40 의 UI 리뷰는 무대 페이지의 dim-on-dark 텍스트 대비를 **수치로** 계산해 WCAG 1.4.3 실패 3건을 찾았고, 실패한 알파 값들은 전부 `components/viewer.html` 에서 복사해 온 것이었다(RL-018 — “먼저 출하된 페이지의 값이 근거 없는 준수 추정을 얻는다”). **무대는 고쳐졌다. 뷰어는 이미 출하되어 `/view/{room_id}` 로 누구나 접근 가능한데 실패 값을 그대로 서빙 중이다.** 대표 사례가 `viewer.html:213` 의 `.caption-empty` — `rgba(255,255,255,0.32)`, `#0b0b0c` 위에서 **2.81:1**. ISSUE-40 은 무대에서 같은 값을 0.5 / **5.34:1** 로 올렸다.
+
+**실측 바닥값 (이 이슈의 판단 근거 숫자 — 눈대중 금지)**
+
+| 캔버스 | 흰색 알파 → 대비 |
+|---|---|
+| `#0b0b0c` | 0.42 → 4.04:1 · 0.44 → 4.34:1 · **0.45 → 4.52:1 (AA 하한)** · 0.5 → 5.34:1 |
+| 순수 `#000000` | 하한이 **더 높다** — 0.45 → 4.43:1 (미달) · **0.46 → 4.56:1** |
+
+**이 실패를 만든 함정**: `clamp()` 는 텍스트를 24px(large-text 임계) 아래로 떨어뜨릴 수 있다. ISSUE-40 은 `clamp(20px, 1.4vw + 8px, 32px)` 가 뷰포트 폭 **≤857px 에서 20px 로 고정**되고 **~1143px 이 되어서야 24px 를 넘긴다**는 것을 실측했다 — 따라서 “large text 라 3:1 이면 된다” 는 논거가 성립하지 않았다. 판정은 데스크톱 크기가 아니라 **각 `clamp()` 가 만들 수 있는 최소 크기**에서 해야 한다.
+
+#### Scope (In/Out)
+- In:
+  - `components/viewer.html` 의 **모든** 텍스트 색 규칙 감사 — 합성 후 대비를 각 규칙의 `clamp()` 최소 크기 기준으로 계산
+  - `components/scroll_lock.html` 도 같은 기준으로 확인 (현재 텍스트 색 규칙이 없어 보이지만 확인 자체를 결과로 남긴다)
+  - 4.5:1 미달 규칙의 알파 상향 (`#0b0b0c` 위 ≥ 0.45, `#000000` 위 ≥ 0.46, 권장 0.5)
+  - 대비를 수치로 단언하는 단위 테스트 추가 — ISSUE-40 이 `tests/test_stage_page.py::test_dim_text_meets_wcag_aa_contrast` 로 이미 만들어 둔 형태를 미러링
+  - `components/viewer.html` 자막 스택의 라이브 리전 도입 — `#captionContainer`(`:294`) `aria-hidden="true"`, 형제 `.sr-only` `#caption-announcer`(`aria-live="polite" aria-atomic="true"`), `.sr-only` CSS 규칙(`clip-path: inset(50%)` + `margin: 0`), 라인 확정 시점 단일 쓰기 경로, active 상태 `#caption-empty` 대기 문구의 접근성 대체 (ISSUE-41 FU-3 흡수)
+- Out:
+  - 리스타일링 / 레이아웃 / 타이포 스케일 변경 — 시각적 변경은 **알파 숫자만**이다. 추가로 들어오는 것은 시각적으로 렌더되지 않는 a11y 마크업(`aria-hidden`, `.sr-only` announcer)뿐이며 화면 픽셀을 바꾸지 않는다
+  - 자막 파이프라인 동작 수정(연속 final 유실·빈 final 공백화·줄어드는 partial·`innerHTML` 리셋) — ISSUE-46
+  - 디자인 토큰 파일 추출(`docs/design_system.md` 신설) — UI 리뷰가 design-auditor 앞으로 남긴 별건
+  - 무대 페이지 (`components/stage.html`) — ISSUE-40 에서 이미 완료, 출하됨
+  - 비텍스트 대비(1.4.11): 구분선·스피너·리스닝 점 등 장식 요소는 대상 아님
+
+#### Acceptance Criteria (DoD)
+- [ ] Given 감사 대상 파일의 모든 텍스트 색 규칙, when 각 규칙이 실제로 칠해지는 배경 위에서 알파 합성 후 대비를 **그 규칙의 `clamp()` 가 만들 수 있는 가장 작은 폰트 크기** 기준으로 계산하면, then 전부 4.5:1 이상이다 (large-text 3:1 완화를 근거로 통과시키지 않는다)
+- [ ] Given `viewer.html:213` 의 `.caption-empty`, when 값을 확인하면, then `rgba(255,255,255,0.32)`(2.81:1)가 아니라 4.5:1 을 넘기는 알파(권장 0.5 → 5.34:1)이다
+- [ ] Given `#0b0b0c` 위에 칠해지는 텍스트, when 알파를 확인하면, then 0.45 이상이고, `#000000` 위에 칠해지는 텍스트는 0.46 이상이다
+- [ ] Given 상향 조정 후의 자막 영역, when 과거 라인과 현재 라인을 비교하면, then 과거 라인이 여전히 순백(`#ffffff`) 현재 라인보다 시각적으로 흐리다 — 시각적 위계 역전이 없다
+- [ ] Given 추가된 대비 단위 테스트, when 알파를 수정 전 값으로 되돌리면, then 그 테스트가 **실패한다** (RL-004 — do-nothing 구현에서 통과하는 단언이면 안 된다)
+
+- [ ] Given `components/viewer.html` 의 자막 스택, when 접근성 트리를 확인하면, then `#captionContainer`(`:294`) 는 `aria-hidden="true"` 이고 그 **형제**로 `.sr-only` `#caption-announcer`(`aria-live="polite" aria-atomic="true"`)가 존재한다 — announcer 는 `#captionContainer` 의 자손이 아니다(`aria-hidden` 은 서브트리 전체를 접근성 트리에서 제거하며 자손이 되돌릴 수 없다)
+- [ ] Given 스크린리더로 `/view/{room_id}` 에 접속한 청중, when 자막 라인이 확정되면, then `#caption-announcer` 의 `textContent` 가 그 라인의 **최종 텍스트와 정확히 일치**한다 (현재 뷰어는 라이브 리전이 아예 없어 자막 텍스트를 한 글자도 낭독하지 않는다)
+- [ ] Given 타자기가 한 라인을 28ms 인터벌(`viewer.html:444`)로 드러내는 중, when 공개 도중 `#caption-announcer` 를 관찰하면, then 그 값이 인터벌 틱마다 바뀌지 않는다 — 라이브 리전에 쓰는 경로는 **라인 확정 지점 하나뿐**이다 (RL-019: 프레임/틱 단위 갱신은 스크린리더 범람이다)
+- [ ] Given `.sr-only` 규칙, when CSS 를 확인하면, then `clip-path: inset(50%)` + `margin: 0` 형태이고 `display: none` / `visibility: hidden` / 음수 세로 margin 을 쓰지 않는다 (`display:none` 계열은 접근성 트리에서도 사라지고, 음수 세로 margin 은 이 프로젝트의 RL-012 규칙과 충돌한다)
+- [ ] Given active 상태에서 자막 스택이 비어 있어 `#caption-empty`(`:295`) 대기 문구만 보이는 경우(언어 전환 직후 `clearCaptions()` 가 재생성하는 경로 포함), when 접근성 출력을 확인하면, then 그 대기 문구가 스크린리더에 전달된다 — `#caption-empty` 는 `aria-hidden` 이 된 `#captionContainer` **안**에 있으므로 그대로 두면 무음이 된다 (무대 페이지가 같은 함정에 빠져 `setCaptionState()` 가 상태 문구를 대신 들도록 고친 사례 — UI-7. 뷰어에서 반복하지 않는다)
+- [ ] Given 라이브 리전 도입 후의 뷰어, when 자막 **텍스트**를 쓰는 경로를 세면, then 정확히 1개다 — `#state-waiting`(`:286`) / `#state-ended`(`:303`) 의 기존 `aria-live="polite"` 섹션과 `#conn-error`(`role="status"`)는 자막 텍스트를 받지 않으므로 이중 낭독이 발생하지 않는다
+#### Implementation Notes
+- **테스트는 새로 설계하지 말고 미러링한다.** `tests/test_stage_page.py` 에 이미 `_srgb_to_linear` / `_relative_luminance` / `_composite` / `_contrast_ratio` / `_rule_rgba` 헬퍼와 `test_dim_text_meets_wcag_aa_contrast`(셀렉터 × 배경 parametrize)가 있다. `tests/test_viewer_page.py` 에 같은 형태를 만든다. **복사-붙여넣기 대신** 헬퍼를 `tests/wcag.py` 같은 부작용 없는 모듈로 뽑아 양쪽에서 import 하는 편이 낫다 (RL-001 — 복사본은 원본과 갈라진다). 순수 함수라 Streamlit import 부작용 문제가 없다.
+- **감사 후보 목록** (`components/viewer.html`, 배경은 `#0b0b0c` 캔버스): `:82` `.room-name` 0.42 @13px, `:92` `.lang-control label`(아이콘, 텍스트 아님) 0.5, `:141` `.state-message` 0.8, `:149` `.state-room` 0.35 @13px, `:161` `#state-ended .state-message` 0.6, `:199` `.caption-line` 0.42 @`clamp(24px, 3.4vw, 38px)`, `:213` `.caption-empty` 0.32 @`clamp(15px, 2vw, 18px)`, `:259` `.conn-error` 0.65. `.conn-error` 는 `rgba(255,255,255,0.07)` 알약 위에 얹히므로 **캔버스가 아니라 합성된 알약 배경**을 배경값으로 써야 한다 — 밝아진 배경은 밝은 글자의 대비를 **낮춘다**. 이 목록은 출발점이며, 감사 범위는 “파일 안의 모든 텍스트 색 규칙”이다.
+- `.caption-line` 의 `clamp()` 하한은 정확히 24px 라 large-text 로 볼 여지가 있지만, 위 AC 는 **일반 텍스트 기준**으로 판정하도록 못 박았다. 무대 페이지도 같은 기준으로 0.45 이상으로 올려 출하됐으므로 두 페이지가 같은 값을 갖게 된다 — 이번 작업의 절반은 그 파리티를 되찾는 일이다.
+- 알파를 올릴 때 `.caption-line`(과거) 과 `:last-child`(현재, `#ffffff`) 의 간격이 좁아진다. 0.45~0.5 에서는 여전히 명확히 구분되지만, 상향 후 실제 화면에서 한 번 눈으로 확인하고 위계가 유지되는지 본다.
+- 값을 정하기 전에 **계산부터 한다**. 이 파일에서 “보기에 은은하다”는 판단으로 알파를 고른 것이 애초의 실패 원인이다(RL-018). 헬퍼 함수로 숫자를 뽑고, 그 숫자를 그대로 테스트 parametrize 목록에 남긴다.
+
+- **이 이슈는 대비 외에 두 번째, 독립적인 a11y 결함을 함께 닫는다 — `viewer.html` 의 자막 스택에는 라이브 리전이 아예 없다.** `#captionContainer`(`:294`)에도, 그 부모 `#state-active`(`:292`)에도 `aria-live` 가 없고 별도 announcer 요소도 없다. `#state-waiting`(`:286`)과 `#state-ended`(`:303`)만 `aria-live="polite"` 를 갖고 있어, 스크린리더 청중은 **"잠시 후 시작됩니다" 와 "세션이 종료되었습니다" 는 듣지만 그 사이의 자막 본문은 한 글자도 듣지 못한다.** 이 페이지의 존재 이유가 바로 그 본문이다. ISSUE-41 리뷰가 FU-3(P2, a11y)로 이 이슈에 접으라고 넘긴 항목이며(`docs/review_notes.md` ISSUE-41 § Follow-ups), 그 결과 **ISSUE-41 이후 무대 페이지가 자기가 복사해 온 뷰어 페이지보다 접근성이 엄격히 낫다.**
+- **패턴은 이미 `components/stage.html`(머지 커밋 `cc0681f`)에 있다 — 새로 설계하지 않는다.** ① 애니메이션 노드 `#caption-container` 는 `aria-hidden="true"`(`stage.html:712`, 되돌리지 말라는 주석이 그 위 `:704-711` 에 붙어 있다). ② **형제**로 `<p class="sr-only" id="caption-announcer" aria-live="polite" aria-atomic="true"></p>`(`stage.html:717`). ③ `.sr-only` 는 `position: absolute; width: 1px; height: 1px; margin: 0; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0;`(`stage.html:277-287`) — 흔히 복사되는 구식 `margin: -1px` + `clip: rect(...)` 패턴을 **쓰지 않는다**(RL-012: 이 프로젝트는 세로 margin 을 금지한다. 잘라내는 일은 `clip-path` 가 한다). ④ `announce()` 는 라인 확정 경로에서만 호출된다(`stage.html:423-425`, 유일한 호출자 `_lockLine()` `:429-436`).
+- **뷰어는 rAF 가 아니라 `setInterval(..., 28)`(`viewer.html:444`)로 애니메이션한다** — "프레임마다 낭독하지 않는다" 규칙은 여기서 **인터벌 틱마다 낭독하지 않는다** 로 읽는다. 인터벌 콜백 안의 `currentLine.textContent = twTarget.slice(0, twShown)`(`:454`) 옆에 `announce()` 를 붙이면 28ms 마다 라이브 리전이 갱신되어 스크린리더가 범람한다. 쓰기 지점은 `:458-462` 의 `twFinalize` 확정 분기 **하나뿐**이어야 한다.
+- **대기 문구 함정을 그대로 반복하지 말 것.** 무대 페이지에서는 `#caption-empty` 가 `aria-hidden` 컨테이너 **안**에 있어 `aria-hidden` 을 켜는 순간 대기 상태가 무음이 됐고, 그래서 `setCaptionState()` 가 상태 문구 낭독을 **직접 소유**하도록 고쳤다(`stage.html:544-558`, UI-7). 뷰어는 waiting/ended 를 별도 `<section aria-live="polite">` 로 두고 있어 그 두 상태는 공짜로 얻지만, **active 상태 안의 `#caption-empty`(`:295`)는 예외다** — `clearCaptions()`(`:502-511`)가 언어 전환 시(`:592`) 이 문구를 재생성하는데 그때 페이지는 active 이고 컨테이너는 `aria-hidden` 이므로 무음이 된다. 대기 문구를 announcer 가 대신 들고, 자막이 흐르기 시작하면 비우는 방식으로 처리한다. 자막 **텍스트** 쓰기 경로는 여전히 확정 지점 하나여야 한다(RL-019).
+- **종료 문구는 announcer 에 되풀이하지 않는다.** `#state-ended`(`:303`)가 이미 `aria-live="polite"` 로 직접 알리므로, 무대 페이지와 같은 이유로 이중 낭독이 된다.
+- **`.sr-only` 는 대비 감사 대상이 아니다.** 시각적으로 렌더되지 않으므로 이 이슈의 4.5:1 판정 목록에 넣지 않는다 — 색 규칙을 아예 두지 않는 편이 감사 스크립트와 충돌하지 않는다.
+- **순서: `components/viewer.html` 을 ISSUE-46 과 함께 노리고 있다.** ISSUE-46(자막 파이프라인 파리티)이 라인 확정 경로를 `_lockLine()` 로 추출하는데, `announce()` 를 꽂아야 할 자리가 정확히 그 함수다. **ISSUE-46 을 먼저 머지하고 이 이슈를 그 위에 얹는다.** 반대 순서면 ISSUE-46 의 `finalizeCaption` 재작성이 여기서 넣은 `announce()` 호출을 조용히 덮어 지우고, 그 손실은 리뷰에서 "a11y 후퇴" 로도 보이지 않는다 — RL-019 가 경고한 실종 형태 그대로다. 대비(알파) 절반은 `<style>` 블록만 건드리므로 ISSUE-44/46 과 충돌하지 않고 언제든 병렬 진행 가능하다.
+#### Tests
+- [ ] Given `components/viewer.html` 의 텍스트 색 규칙 전부, when 셀렉터 × 배경으로 parametrize 한 대비 테스트를 실행하면, then 모든 케이스가 4.5:1 이상이다 (`tests/test_viewer_page.py`, `tests/test_stage_page.py::test_dim_text_meets_wcag_aa_contrast` 미러링)
+- [ ] Given `.caption-empty` 의 알파를 `0.32` 로 되돌린 상태, when 위 테스트를 실행하면, then `2.81:1` 을 보고하며 실패한다 (RED 확인 — 단언이 do-nothing 구현을 통과하지 않음을 증명)
+- [ ] Given `components/viewer.html` 전체, when 텍스트 색 규칙의 흰색 알파를 훑으면, then `#0b0b0c` 위 규칙에 0.45 미만, `#000000` 위 규칙에 0.46 미만이 하나도 남아 있지 않다 (알파를 다른 페이지에서 복사해 오는 재발을 막는 가드)
+- [ ] Given `components/scroll_lock.html`, when 텍스트 색 규칙을 조회하면, then 대상이 0건이거나 모든 규칙이 4.5:1 이상이다 (감사 완료 사실 자체를 테스트로 고정)
+
+- [ ] Given `components/viewer.html`, when `#captionContainer` 여는 태그를 정규식으로 뽑으면, then `aria-live` 가 없고 `aria-hidden="true"` 가 있으며, 별도의 `#caption-announcer` 태그가 `aria-live="polite"` 와 `aria-atomic="true"` 를 모두 갖는다 (`tests/test_stage_page.py:487` `test_animated_node_is_not_the_live_region` 미러링 — 수정 전 파일에 대해 실패함을 확인한다)
+- [ ] Given `components/viewer.html` 의 마크업, when `#caption-announcer` 의 위치를 확인하면, then `#captionContainer` 의 여는/닫는 태그 **바깥**에 있다 (자손으로 넣는 흔한 실수를 잡는 구조 단언 — 문자열 존재 확인만으로는 통과한다)
+- [ ] Given e2e 뷰어 페이지에 partial 3건 + final 1건을 주입할 때, when 정착 후 `#caption-announcer` 를 읽으면, then 값이 final 텍스트와 **정확히 일치**하고, 공개 도중(예: 60ms 시점, `.caption-line` 텍스트 길이가 final 길이보다 짧은 순간)에 샘플한 announcer 값은 그 final 텍스트가 아니다 — 즉 인터벌 틱마다 갱신되지 않았음을 값으로 단언한다 (`tests/e2e/test_stage_page_e2e.py:407` `test_only_finalised_lines_reach_the_live_region` 미러링, marker `e2e`)
+- [ ] Given `announce()` 호출부를 라인 확정 지점이 아니라 인터벌 틱 안으로 옮긴 변이(mutation), when 위 e2e 를 실행하면, then **실패한다** (RL-004 / ISSUE-43 — do-nothing 및 오배치 구현을 모두 통과하지 않음을 증명)
+- [ ] Given e2e 뷰어 페이지에서 자막 3건을 받은 뒤 언어 셀렉터로 언어를 바꿀 때, when `clearCaptions()` 가 대기 문구를 재생성한 직후 접근성 출력을 확인하면, then 새 언어의 대기 문구가 스크린리더에 전달된다 (`aria-hidden` 안에 갇힌 `#caption-empty` 함정 회귀 가드 — `tests/e2e/test_stage_page_e2e.py:879` `test_waiting_state_is_announced_to_screen_readers` 미러링)
+- [ ] Given `components/viewer.html` 의 `.sr-only` 규칙, when 선언을 검사하면, then `clip-path: inset(50%)` 와 `margin: 0` 이 있고 `display: none` / `visibility: hidden` / 음수 세로 margin 이 없다
+#### Rollback
+색상 리터럴만 바뀌므로 `components/viewer.html` 의 해당 커밋을 되돌리면 즉시 원복된다(레이아웃·동작 변경 없음). 함께 추가한 대비 테스트도 같은 커밋에 있으므로 되돌릴 때 함께 사라진다 — 다만 되돌리는 순간 뷰어가 다시 WCAG 1.4.3 미준수 상태가 된다는 점을 PR 설명에 남긴다.
+
+---
+
+### ISSUE-46: 뷰어 자막 파이프라인 결함 파리티 — 연속 final 유실·빈 final 공백화·innerHTML 리셋
+
+- Track: bug
+- Type: fix
+- UI: true
+- Manual: false
+- PRD-Ref: —
+- Priority: P1
+- Estimate: 0.5d
+- Status: shipped
+- Owner: pillip
+- Branch: issue/ISSUE-46-viewer-caption-pipeline-parity
+- GH-Issue: #130
+- PR: #133
+- Depends-On: none
+
+#### Goal
+`components/viewer.html` 의 자막 파이프라인이 `components/stage.html`(`cc0681f` 머지) 과 동일한 동작을 갖는다 — 연속 final 이 유실되지 않고, 빈 final 이 자막 컬럼을 공백화하지 않으며, 줄어드는 partial 이 화면에 잔상을 남기지 않고, DOM 리셋·트리밍이 `innerHTML` / `firstChild` 대신 `replaceChildren()` / `firstElementChild` 를 쓴다.
+
+#### 현재 문제
+ISSUE-41(PR #127)은 `viewer.html` 의 SSE·타자기 로직을 `stage.html` 로 복사해 옮기면서, 리뷰가 찾아낸 결함 네 건을 **복사본에서만** 고쳤다. 원본은 그대로다 — 그리고 원본은 이미 출하되어 청중이 QR 로 접속하는 공개 경로 `/view/{room_id}` 다. ISSUE-41 리뷰는 이 넷을 FU-1 / FU-2 로 명시적으로 이월했다(`docs/review_notes.md` ISSUE-41 § Follow-ups).
+
+**결함 1 — 연속 final 이 앞 자막을 유실시킨다 (이 이슈의 헤드라인, 데이터 손실).**
+`viewer.html:495` 의 `finalizeCaption()` 에는 stage 가 갖게 된 "앞 라인을 먼저 확정하는" 분기가 없다.
+```
+finalizeCaption(text) {
+  _ensureCurrentLine();          // currentLine 이 살아 있으면 그대로 재사용한다
+  twTarget = text || twTarget || "";
+  twFinalize = true;
+  _twStart();                    // twTimer 가 돌고 있으면 즉시 return
+}
+```
+final A 가 도착해 라인 1이 열리고 28ms 인터벌이 A 를 드러내는 도중 final B 가 도착하면, `_ensureCurrentLine()` 은 `currentLine` 이 non-null 이라 그냥 반환하고 `twTarget` 만 B 로 덮인다. `_twStart()` 도 이미 타이머가 있어 조기 반환한다. 결과적으로 라인 1은 B 로 확정되고 **A 는 화면에 단 한 글자도 남기지 못한 채 사라진다.** ISSUE-41 리뷰어가 `/view/{room_id}` 에서 브라우저로 재현했다(F-9: "two back-to-back finals render only the second"). SSE 가 몰아치는 실제 행사에서 그대로 발생하는 자막 누락이다.
+`stage.html:498-502` 는 `if (currentLine && twFinalize) _lockLine();` 한 줄로 이를 막는다 — 그 줄을 이식한다.
+
+**결함 2 — 빈 final 이 자막 컬럼을 되돌릴 수 없이 공백화한다 (Medium).**
+`finalizeCaption("")` 이 들어오면 `_ensureCurrentLine()`(`viewer.html:470`)이 먼저 대기 문구 `#caption-empty`(`:295`)를 제거하고 빈 `.caption-line` 을 append 한다. 그 라인은 빈 문자열로 확정되어 남는다 — 대기 문구는 사라지고 빈 줄이 쌓이며 `MAX_LINES` 슬롯까지 잡아먹는다. 프로덕션에서 도달 가능하다: `sse_broadcast.py:750` 의 `broadcast_translation_for_room` 은 `{"text": primary_translated}` 를 비어있음 가드 없이 publish 하고, AWS Translate 는 문장부호만 있는 입력에 `""` 를 돌려준다(ISSUE-41 F-2, Chromium 재현 확인).
+`stage.html:503-509` 는 `_ensureCurrentLine()` **이전에** 빠져나가되, "빈 final 은 진행 중인 partial 을 확정하라는 신호" 라는 폴백은 유지한다 — 그 형태를 그대로 이식한다.
+
+**결함 3 — 줄어드는 partial 이 더 긴 옛 문자열을 화면에 남긴다 (Low).**
+`viewer.html:449` 는 `if (twShown > twTarget.length) twShown = twTarget.length;` 로 클램프만 하고 끝난다. 클램프 직후 `gap` 이 0 이 되어 아래 `currentLine.textContent = ...` 쓰기 분기를 건너뛰므로, 번역 후처리가 문자열을 깎은 경우 화면에는 **더 긴 이전 문자열이 그대로 남는다.** `stage.html:441-447` 은 클램프 분기 안에서 즉시 리페인트한다.
+
+**결함 4 — `innerHTML` 리셋과 텍스트 노드를 세는 DOM 상한 (Low).**
+`viewer.html:505` 의 `clearCaptions()` 는 `captionContainer.innerHTML = ""` 로 자막 스택을 비운다(언어 전환 시 `:592` 에서 호출). `stage.html` 은 이 sink 를 파일 전역에서 금지하고, `tests/test_stage_page.py:345` 가 `innerHTML` / `outerHTML` / `insertAdjacentHTML` / `document.write` 를 문자열 단위로 막는다. 두 템플릿이 같은 규칙에 대해 지금 서로 다른 답을 갖고 있다.
+같은 자리의 `:477-478` 은 `captionContainer.children.length > MAX_LINES` 로 **요소 수**를 세면서 `captionContainer.firstChild` 로 **노드**를 지운다 — `firstChild` 는 템플릿 들여쓰기가 남긴 공백 텍스트 노드부터 걷어낸다. 오늘은 여분 반복이 자가 교정하지만 주석 노드 하나만 들어와도 깨진다(ISSUE-41 F-7). `stage.html:480` 은 `firstElementChild` 를 쓴다.
+
+#### Scope (In/Out)
+- In:
+  - `components/viewer.html:495` `finalizeCaption()` — `stage.html:497-514` 형태로 이식: (a) 대기 중인 라인 선확정 분기, (b) 빈 final 조기 반환 + in-flight partial 확정 폴백
+  - 라인 확정 경로를 `_lockLine()` 로 추출 (`stage.html:429-436` 미러링) — 확정 시 `twTarget` 자체를 쓰고 `currentLine = null` + `_twStop()` 까지 한 함수에서 처리
+  - `components/viewer.html:449` — 클램프 분기 안에서 즉시 리페인트
+  - `components/viewer.html:505` `innerHTML = ""` → `replaceChildren()`, `:363` `langSelect.innerHTML = ""` → `langSelect.replaceChildren()`
+  - `components/viewer.html:478` `firstChild` → `firstElementChild`
+  - `tests/test_viewer_page.py` 에 `innerHTML` / `outerHTML` / `insertAdjacentHTML` / `document.write` 파일 전역 금지 가드 추가 (`tests/test_stage_page.py:345` 미러링)
+  - 네 결함 각각의 회귀 테스트 (`tests/test_viewer_page.py`, `tests/e2e/test_viewer_page_e2e.py`)
+- Out:
+  - **공유 모듈 추출 — 하지 않는다.** ISSUE-41 리뷰가 FU-4(P3)로 **세 번째 소비자가 나타날 때까지** 명시적으로 유예했다. 이 이슈는 파리티 포팅이지 리팩터가 아니다
+  - `components/stage.html` (이미 출하 — 건드리지 않는다)
+  - 대비/색상 (ISSUE-45), 스크립트 컨텍스트 이스케이프 (ISSUE-44), 화면 캡처 (ISSUE-42)
+  - 라이브 리전 / `#caption-announcer` / `aria-hidden` (ISSUE-45 가 흡수 — 아래 Implementation Notes 의 순서 결정 참조)
+  - `MAX_LINES` 값 변경 — 뷰어는 넓은 중앙 컬럼이라 200 이 맞다. stage 의 60 으로 맞추지 않는다
+  - `setInterval` → `requestAnimationFrame` 전환 — 뷰어에는 캡처 `<video>` 와의 프레임 경쟁(NFR-025)이 없으므로 stage 의 rAF 전환 근거가 성립하지 않는다. 이 이슈는 타이머 방식을 바꾸지 않는다
+  - **RL-022 / ISSUE-41 F-1 (`session_end` 가 상태 머신을 무장한 채로 둔다) — 이 이슈 범위 밖.** `viewer.html:567-578` 의 `session_end` 핸들러도 stage 와 동일하게 종료 플래그 없이 `currentLine` 만 비우므로, 늦게 도착한 `message` 한 건이 종료된 세션을 되살릴 수 있다. 오늘의 서버 경로로는 도달하지 않아 Low 이며, 어느 이슈도 아직 담고 있지 않다는 사실만 여기 기록해 둔다
+
+#### Acceptance Criteria (DoD)
+- [ ] Given 자막이 흐르는 뷰어 페이지, when `{"text": "첫 문장"}` 과 `{"text": "둘째 문장"}` 두 final 이 타자기가 첫 문장을 다 드러내기 전에 연달아 도착하면, then `.caption-line` 노드가 **정확히 2개**이고 첫 노드의 `textContent` 가 `"첫 문장"`, 둘째 노드가 `"둘째 문장"` 이다 (현재는 노드 1개에 `"둘째 문장"` 만 남고 첫 자막이 유실된다)
+- [ ] Given partial 청크가 진행 중인 라인, when final 이 도착해 그 라인이 확정된 뒤 곧바로 다음 final 이 도착하면, then 새 라인이 열려 두 자막이 합쳐지지 않는다
+- [ ] Given 대기 문구 `#caption-empty` 가 보이는 초기 상태, when `{"text": ""}` final 이 3건 연속 도착하면, then `.caption-line` 노드가 **0개**이고 `#caption-empty` 가 DOM 에 그대로 남아 대기 문구를 표시한다
+- [ ] Given partial 로 진행 중인 라인이 있는 상태, when `{"text": ""}` final 이 도착하면, then 그 라인이 마지막 partial 텍스트로 **확정되고**(빈 final = "지금 라인을 닫아라" 신호), 그다음 메시지는 새 라인으로 시작한다
+- [ ] Given `{"text": "안녕하세요 반갑습니다", "partial": true}` 로 화면에 긴 문자열이 드러난 상태, when 더 짧은 `{"text": "안녕하세요", "partial": true}` 가 도착하면, then 현재 라인의 `textContent` 가 `"안녕하세요"` 로 **즉시 줄어들고** 이전의 더 긴 문자열이 잔상으로 남지 않는다
+- [ ] Given `components/viewer.html` 전체, when 파일을 검사하면, then `innerHTML` / `outerHTML` / `insertAdjacentHTML` / `document.write` 문자열이 **0건**이고, 자막 스택 리셋은 `replaceChildren()` 으로, 언어 셀렉터 리셋도 `replaceChildren()` 으로 이루어진다
+- [ ] Given 자막 라인이 `MAX_LINES`(200)를 넘겨 트리밍되는 상황, when 트리밍 구현을 확인하면, then 요소 수(`children.length`)로 세고 요소(`firstElementChild`)를 제거해 공백 텍스트 노드가 카운트·삭제 대상에 섞이지 않는다
+- [ ] Given 언어 셀렉터로 언어를 바꿀 때, when `clearCaptions()` 가 실행되면, then 자막 스택이 비워지고 새 언어의 대기 문구를 담은 `#caption-empty` 가 정확히 1개 존재한다 (`replaceChildren()` 전환 후에도 기존 동작 회귀 없음)
+
+#### Implementation Notes
+- **참고 구현은 `components/stage.html`(머지 커밋 `cc0681f`) 하나뿐이고, 네 결함 모두 거기서 이미 검증됐다.** 대응 지점: `finalizeCaption` → `stage.html:497-514`, `_lockLine` → `:429-436`, 줄어드는 partial 리페인트 → `:441-447`, `firstElementChild` → `:476-481`. 새 설계 판단이 필요 없다.
+- **이 이슈가 존재하는 이유가 RL-001 그 자체다.** ISSUE-41 은 `viewer.html` 의 SSE·타자기 로직을 `stage.html` 로 복사했고(번들러도 정적 JS 라우트도 없는 `read_text()` + 치환 템플릿 두 벌이라는 방어 가능한 기계적 근거가 있었다), **복사본에서만 버그를 고쳤다** — RL-001 이 예측하는 드리프트가 복사본을 만든 바로 그 PR 안에서 실현된 것이다(`docs/review_lessons.md` RL-001 Observed-In: PR #127). 그렇다고 여기서 공유 모듈로 추출하지는 않는다: ISSUE-41 리뷰가 FU-4(P3)로 **세 번째 소비자가 생길 때까지** 추출을 의도적으로 유예했고, 그 형태(`components/_caption_stream.js` 를 양쪽 렌더러의 플레이스홀더로 인라인)까지 이미 적어 두었다. **이 이슈는 파리티 포팅이다 — 추출하지 말 것.** 대신 옮긴 각 지점에 "stage.html:NNN 과 동일" 주석을 남겨 다음 드리프트가 눈에 띄게 한다.
+- **`components/viewer.html` 은 지금 세 이슈가 동시에 노리고 있다 — 순서를 먼저 정하고 시작할 것.** 충돌 면적을 보이게 적어 둔다.
+  | 이슈 | 건드리는 부분 | 대략 위치 |
+  |---|---|---|
+  | ISSUE-44 (스크립트 컨텍스트 이스케이프) | `<title>` / `#room-name` 마크업 + 부트스트랩 `CONFIG` 리터럴 + `sse_broadcast.py::_render_viewer_html` | `viewer.html:6`, `:277`, `:318-322` |
+  | ISSUE-45 (WCAG 대비 + a11y) | `<style>` 블록의 색상 리터럴 (`:82` `:92` `:141` `:149` `:161` `:199` `:213` `:259`) + (FU-3 흡수 시) `#captionContainer`(`:294`) 의 `aria-hidden`, 새 `.sr-only` / `#caption-announcer`, 라인 확정 시점의 `announce()` 호출 | `<style>` 전역 + `:294` + 확정 경로 |
+  | ISSUE-46 (이 이슈) | 자막 파이프라인 스크립트 (`:363`, `:409-511`) | `_twStart` / `_ensureCurrentLine` / `updatePartialCaption` / `finalizeCaption` / `clearCaptions` |
+  ISSUE-44 와 ISSUE-46 은 텍스트 구간이 겹치지 않으므로 병렬로 진행해도 안전하다. 위험한 조합은 **ISSUE-45 ↔ ISSUE-46** 이다 — ISSUE-45 가 FU-3(라이브 리전)을 흡수하면 `announce()` 를 "라인이 확정되는 지점" 에 꽂아야 하는데, 그 지점이 바로 이 이슈가 새로 만드는 `_lockLine()` 이다. **권장: 이 이슈를 먼저 머지하고 ISSUE-45 에 `Depends-On: ISSUE-46` 을 건다.** 그러면 ISSUE-45 는 이미 존재하는 단일 확정 경로에 한 줄 추가하면 되고, 반대 순서로 가면 ISSUE-45 가 만든 announce 호출을 이 이슈가 `finalizeCaption` 재작성으로 덮어 조용히 지워 버릴 수 있다(리뷰에서 "a11y 후퇴" 로 보이지도 않는다 — RL-019 가 경고한 바로 그 실종 형태다).
+- **뷰어 전용 FR 이 없다.** `docs/requirements.md` 에는 `/view/{room_id}` 페이지를 다루는 FR 이 하나도 없다 — FR-072~081 은 전부 무대(`/stage/{room_id}`)와 브랜딩이고, 뷰어는 FR-080 에 "the viewer's partial-chunk + typewriter smoothing behaviour" 로 **참조만** 된다. 그래서 `PRD-Ref: —` 다(ISSUE-44 와 동일한 처리). 근거는 ISSUE-41 리뷰의 FU-1 / FU-2 와 RL-001 / RL-004 이며, 이 공백 자체를 doc-sync 때 뷰어 FR 로 메우는 것이 옳다 — 이미 출하된 공개 화면에 요구사항 근거가 없는 상태다.
+- **`_lockLine()` 은 slice 가 아니라 `twTarget` 을 쓴다.** 번역 후처리가 문자열을 깎는 경우가 있어 마지막 슬라이스가 최종본이 아닐 수 있다(`stage.html:427-431` 주석). 결함 3 과 같은 뿌리이므로 함께 처리한다.
+- **빈 final 폴백의 순서에 주의.** `stage.html:502-509` 는 ① 대기 중 라인 선확정(`if (currentLine && twFinalize) _lockLine();`) → ② `const next = text || (currentLine ? twTarget : "")` → ③ `if (!next) return;` 순이다. ①이 `currentLine` 을 null 로 만들기 때문에 ②의 `currentLine` 은 **확정 대기가 아닌 in-flight partial** 만 가리킨다. 순서를 바꾸면 빈 final 이 partial 을 확정하는 폴백이 사라진다.
+- **`replaceChildren()` 브라우저 지원**: Chrome/Edge 86+, Safari 14+ (2020). `docs/architecture.md` 의 타깃(Chrome/Edge/Safari 최신, NFR-011)을 충족하므로 capability guard 는 불필요하다 (RL-008 판단: 이건 optional API 가 아니라 베이스라인).
+- **로컬 트랩**: `.pre-commit-config.yaml` 이 `ruff-format` 과 `black` 을 둘 다 켜 두고 있어 `assert cond, (msg)` 레이아웃에서 두 훅이 서로를 되돌린다. 새 테스트에서 그 구문을 피한다(ISSUE-40 구현자가 같은 데서 시간을 잃었다 — `docs/sprint_state.md`).
+- e2e 는 `tests/e2e/test_viewer_page_e2e.py` 에 이미 있는 하네스를 그대로 쓴다. stage 쪽 대응 테스트는 `tests/e2e/test_stage_page_e2e.py:380` / `:721` / `:833` 이므로 셋업을 새로 설계할 필요가 없다.
+
+#### Tests
+- [ ] Given e2e 뷰어 페이지에 final `"첫 문장"` 과 `"둘째 문장"` 을 타자기가 첫 문장을 다 드러내기 전에 연속 주입할 때, when 정착 후 DOM 을 읽으면, then `.caption-line` 개수가 **정확히 2** 이고 `[l.textContent for l in lines] == ["첫 문장", "둘째 문장"]` 이다 — **개수만 세거나 "라인이 존재한다" 로 끝내지 않는다. 두 값을 모두 정확히 단언해야 현재 구현(라인 1개 + `"둘째 문장"`)에서 실패한다** (RL-004, `tests/e2e/test_viewer_page_e2e.py`, marker `e2e`)
+- [ ] Given 위 테스트에서 `finalizeCaption` 의 선확정 분기를 다시 제거한 상태, when 같은 테스트를 실행하면, then **실패한다** (RED 확인 — do-nothing 구현을 통과하지 않음을 증명, RL-004 / ISSUE-43)
+- [ ] Given e2e 뷰어 페이지 초기 상태, when `{"text": ""}` final 을 3건 주입하면, then `.caption-line` 개수가 **0** 이고 `#caption-empty` 가 존재하며 그 `textContent` 가 현재 언어의 대기 문구와 **정확히 일치**한다 (`tests/e2e/test_stage_page_e2e.py:833` `test_empty_final_does_not_blank_the_column` 미러링)
+- [ ] Given e2e 뷰어 페이지에 partial `"안녕하세요 반갑"` 을 주입한 뒤, when `{"text": ""}` final 을 주입하면, then `.caption-line` 개수가 **1** 이고 그 텍스트가 `"안녕하세요 반갑"` 으로 확정되며, 이어지는 final `"다음"` 이 **2번째** 라인으로 열린다 (빈 final 폴백이 살아 있음을 값으로 단언)
+- [ ] Given e2e 뷰어 페이지에 partial `"안녕하세요 반갑습니다"` 를 주입해 화면에 드러난 뒤, when 더 짧은 partial `"안녕하세요"` 를 주입하면, then 현재 라인의 `textContent` 가 **정확히** `"안녕하세요"` 이다 — `startswith` / 길이 비교가 아니라 완전 일치로 단언해야 잔상(`"안녕하세요 반갑습니다"`)에서 실패한다 (`tests/e2e/test_stage_page_e2e.py:721` 미러링)
+- [ ] Given `components/viewer.html` 전체, when 파일 내용을 검사하면, then `innerHTML` / `outerHTML` / `insertAdjacentHTML` / `document.write` 가 각각 **0건**이다 (`tests/test_stage_page.py:345` 미러링 — 이 가드가 없으면 두 템플릿이 같은 규칙에 대해 계속 다른 답을 갖는다)
+- [ ] Given `components/viewer.html` 의 트리밍 루프, when 소스를 검사하면, then `firstElementChild` 를 쓰고 `firstChild` 는 자막 컨테이너 조작 문맥에 존재하지 않는다
+- [ ] Given e2e 뷰어 페이지에서 final 을 `MAX_LINES + 1`(201)건 주입할 때, when DOM 을 읽으면, then `.caption-line` 개수가 **정확히 200** 이고 첫 노드의 텍스트가 **2번째로 주입한 자막**과 일치한다 (가장 오래된 요소가 지워졌음을 값으로 확인 — 공백 텍스트 노드가 지워졌다면 이 단언이 깨진다)
+- [ ] Given e2e 뷰어 페이지에서 자막 3건을 받은 뒤, when 언어 셀렉터로 다른 언어를 선택하면, then `.caption-line` 개수가 **0**, `#caption-empty` 개수가 **정확히 1** 이고 그 텍스트가 새 언어의 대기 문구와 일치한다 (`replaceChildren()` 전환 회귀 가드)
+
+#### Rollback
+`components/viewer.html` 한 파일의 단일 커밋을 되돌리면 즉시 원복된다 — 서버 코드·템플릿 플레이스홀더·마이그레이션·의존성 변경이 없고 `_render_viewer_html` 을 건드리지 않으므로 렌더 경로도 그대로다. `components/stage.html` 과 `/stage/{room_id}` 는 손대지 않으므로 무대 화면은 영향받지 않는다. 함께 추가한 회귀 테스트도 같은 커밋에 있어 되돌릴 때 함께 사라진다 — 다만 되돌리는 순간 공개 뷰어가 다시 **연속 final 에서 자막을 유실하는 상태**로 돌아간다는 점을 PR 설명에 남긴다.
+
+### ISSUE-47: 오퍼레이터 화면에 무대 모드 선택 및 무대 화면 열기 액션 추가
+
+- Track: feature
+- Type: feat
+- UI: true
+- Manual: false
+- PRD-Ref: FR-082, FR-072
+- Priority: P1
+- Estimate: 1d
+- Status: shipped
+- Owner: pillip
+- Branch: issue/ISSUE-47-operator-stage-mode
+- GH-Issue: #136
+- PR: #137
+- Depends-On: none
+
+#### Goal
+`localhost:8501` 오퍼레이터 화면에서 룸을 고를 때 **표시 모드**(일반 자막 / 무대 화면)도 함께 고를 수 있고, 무대 화면 모드에서는 "무대 화면 열기" 버튼이 `:8501` 탭의 파이프라인을 그대로 둔 채 `:8766/stage/{room_id}` 를 새 최상위 브라우저 창으로 연다.
+
+#### 현재 문제
+오늘 무대 화면(`/stage/{room_id}`, ISSUE-40~42)을 실제로 운영하려면 오퍼레이터가 `:8501` 을 열어 마이크·번역 파이프라인을 시작한 **다음**, 별도로 `:8766/stage/{room_id}` 를 또 열어야 한다 — 로그인도 시작도 두 번이다. `/stage/{room_id}` 는 순수 SSE 소비자(자막 구독 + 화면 캡처)일 뿐 파이프라인을 스스로 시작할 수 없고, 캡션 파이프라인(마이크 → OpenAI WebRTC → WS 8765 → Bedrock → SSE)은 오직 `:8501` 탭에서만 동작하기 때문이다. 사용자 요청은 "일반 번역기능과 동일한 플로우로 stage 화면에서도 번역을 시작 할 수 있게" — 즉 로그인 한 번, 룸 선택 한 번으로 무대 운영까지 끝나야 한다.
+
+**왜 iframe 임베드가 아니라 새 창인가.** 이 문단은 2026-08-30 에 **개정**되었다. 원래 근거는 "Streamlit 컴포넌트 iframe 이 `display-capture` 권한을 못 받는다" 였는데, 구현 1단계 실측에서 **반증**되었다. 측정 결과(동일 브라우저·동일 플래그, 컨텍스트만 변경, 음성 대조군으로 계측기 보정):
+
+| 컨텍스트 | `document.featurePolicy.allowsFeature("display-capture")` |
+|---|---|
+| 최상위 (대조군) | `true` |
+| Streamlit 컴포넌트 iframe | **`true`** |
+| 음성 대조군 `allow="display-capture 'none'"` | `false` |
+| 크로스 오리진 자식, `allow` 없음 | **`false`** |
+| 크로스 오리진 자식 + `allow="display-capture"` | `true` |
+
+`allow` 속성에서 생략된 기능은 **기본 허용목록**으로 떨어지고 `display-capture` 의 기본값은 `self` 다 — 부재는 거부가 아니다. 임베드가 실패하는 진짜 이유는 `/stage/` 가 `:8766` 이라 `:8501` 과 **크로스 오리진**이기 때문이며, 중첩 iframe 에 `allow="display-capture"` 한 줄이면 Streamlit 의 opaque-origin `srcdoc` 부모를 거쳐도 위임이 유지된다(전체 체인 실측 확인). 즉 **임베드는 기술적으로 가능하다.**
+
+그럼에도 새 창을 유지하는 근거는 권한이 아니라 **무대 화면이 프로젝터 출력이라는 성질**이다:
+
+1. **별도 디스플레이로 분리할 수 없다.** 무대 화면은 프로젝터/LED 로 나가고 오퍼레이터 컨트롤은 오퍼레이터 화면에 남아야 한다 (`stage.html:54` "커서는 프로젝터 화면의 시각적 오염", `:1145` "무대는 프로젝터 출력"). `height=900` 컴포넌트 iframe 에 갇히면 두 번째 디스플레이로 끌고 갈 수도, 독립적으로 전체화면할 수도 없다 — 브라우저 창 전체를 옮기면 오퍼레이터 컨트롤까지 프로젝터로 넘어간다.
+2. **무한 거울 위험이 커진다.** 임베드하면 오퍼레이터 탭 자체가 캡처 소스 후보가 되어, FR-081 이 정의하고 `stage.html:830-834` 가 처리 중인 self-capture 위험이 구조적으로 악화된다.
+
+Streamlit 컴포넌트 샌드박스가 `allow-popups-to-escape-sandbox` 를 포함하므로 컴포넌트 안의 `window.open()` 은 샌드박스를 벗어나 완전한 최상위 창을 연다 — 이 부분은 원래 서술대로 유효하다.
+
+#### Scope (In/Out)
+- In:
+  - `operator_ui.py` 에 순수 함수 추가 — 표시 모드 기본값 결정, `session_state` 라운드트립 지원, `build_bootstrap_payload` 에 표시 모드 전달(같은 채널에 필드 추가). `app.py` 는 이 함수들을 호출만 하고 로직을 갖지 않는다(RL-001/RL-005 — `app.py` 는 현재 테스트가 0건이라 이 분리가 유일한 테스트 경로다)
+  - 사이드바에 룸 선택과 같은 위치에 표시 모드 선택 UI(`일반 자막` / `무대 화면`, 기본값 `일반 자막`) 추가 — `app.py:150-181` 룸 선택 블록 바로 아래
+  - 무대 화면 모드 선택 시 "🎬 무대 화면 열기" 버튼 노출. `qr_generator.build_stage_url(room_id, base_url)` (base_url 은 `app.py:343` `_resolve_viewer_base_url()` 재사용)로 URL 을 만들어 컴포넌트 쪽에 전달, 컴포넌트 JS 가 사용자 클릭 이벤트 핸들러 안에서 `window.open(url, "_blank")` 호출(팝업 차단 회피를 위해 반드시 클릭 핸들러 동기 컨텍스트에서 호출)
+  - `window.open()` 이 `null` 을 반환하는 팝업 차단 케이스의 폴백 — 클릭 가능한 링크(`<a href="..." target="_blank">`)를 같은 자리에 노출. 내부 예외 문자열 노출 금지(RL-006)
+  - `components/stage.html` 에 no-pipeline 문자열 가드 3종(`getUserMedia`, `RTCPeerConnection`, OpenAI 토큰 요청 관련 문자열) 추가 — `tests/test_stage_page.py` 의 기존 가드 스타일(`test_no_presenter_keyboard_interference`, `:292-311`) 을 따른다. 실측 후 `getDisplayMedia` 는 이미 있으므로 건드리지 않는다
+  - `docs/sprint_state.md` 또는 이슈 본문에 known operational wrinkle(WS/SSE 서버가 `app.py` 세션 게이트 데몬 스레드라 컨테이너 재시작 후 오퍼레이터가 `:8501` 을 열기 전까지 `/view/`, `/stage/` 가 죽어 있는 문제, `app.py:258-305`)을 관련 갭으로 언급만 한다 — 이 이슈에서 고치지 않는다
+- Out:
+  - **`components/stage.html` 에 캡션 파이프라인 이식 — 절대 하지 않는다.** `getUserMedia`, `RTCPeerConnection`, OpenAI ephemeral-token 발급/교환, WS 8765 클라이언트를 `stage.html` 에 추가하지 않는다. `webrtc.html` 과 `viewer.html` 사이에 캡션 로직을 중복시켰던 것이 이번 스프린트의 결함 3건(ISSUE-44/45/46)과 RL-001(빈도 4)을 낳았다 — 같은 실수를 `stage.html` 에 반복하지 않는다. `stage.html` 은 이 이슈 이후에도 순수 SSE 소비자로 남는다
+  - 팝업 차단 자동 우회, 브라우저 확장 프로그램 대응 — 표준 클릭-동기 `window.open()` + 폴백 링크만 제공
+  - WS/SSE 서버 부트스트랩 타이밍 수정(위 wrinkle) — 별도 이슈 없음, 언급만
+  - 표시 모드의 룸 스키마 영속화 — `rooms.stage_config` 등 DB 스키마 변경 없음. 모드는 오퍼레이터 세션 UI 상태일 뿐
+  - `/stage/{room_id}` 레이아웃/캡처/브랜딩 자체의 변경 — ISSUE-40~42 범위, 이미 shipped
+
+#### Acceptance Criteria (DoD)
+- [ ] Given 오퍼레이터가 표시 모드를 한 번도 건드리지 않은 상태, when 사이드바가 렌더되면, then 표시 모드는 `일반 자막` 이고 시작/정지/캡션 렌더링은 오늘과 동일하게 동작한다(회귀 없음)
+- [ ] Given 오퍼레이터가 `무대 화면` 을 선택한 상태, when "시작" 을 눌러 파이프라인을 구동하면, then 마이크 권한 요청·WebRTC 연결·사용량 집계·번역까지 `일반 자막` 모드와 동일하게 `:8501` 탭에서 동작한다 — 달라지는 것은 오퍼레이터 쪽 화면 표시와 "무대 화면 열기" 버튼 노출뿐이다
+- [ ] Given `무대 화면` 모드에서 룸이 선택된 상태, when "무대 화면 열기" 를 클릭하면, then `build_stage_url(room_id, base_url)` 이 만든 `http(s)://<host>:8766/stage/{room_id}` 가 **새 최상위 브라우저 창**(iframe 도, 같은 탭 내비게이션도 아님)으로 열린다
+- [ ] Given 무대 창이 열려 캡처까지 연결된 상태, when 오퍼레이터가 무대 창을 다른 화면으로 전환하거나 닫으면, then `:8501` 탭의 파이프라인은 계속 실행 중이고, "무대 화면 열기" 를 다시 눌러 재접속해도 룸을 다시 시작할 필요가 없다
+- [ ] Given `무대 화면` 모드가 선택된 상태, when 다른 위젯(예: 언어 설정)과 상호작용해 Streamlit 이 rerun 되면, then 표시 모드 선택은 초기화되지 않고 유지된다(`session_state` 백업)
+- [ ] Given 표시 모드를 바꾸는 것, when DB 를 조회하면, then `rooms` 테이블에는 아무 변경도 없다 — 모드는 오퍼레이터별 UI 상태이지 룸에 영속화되지 않는다
+- [ ] Given 브라우저가 팝업을 차단해 `window.open()` 이 `null` 을 반환하는 상황, when "무대 화면 열기" 를 클릭하면, then 내부 예외 문자열 없이(RL-006) 클릭 가능한 대체 링크가 같은 자리에 나타나 오퍼레이터가 수동으로 열 수 있다
+- [ ] Given `components/stage.html` 전체, when 파일을 문자열 검사하면, then `getUserMedia`, `RTCPeerConnection`, OpenAI ephemeral 토큰 요청 관련 문자열(`/v1/realtime`)이 **0건**이다 — `tests/test_stage_page.py` 의 no-pipeline 회귀 가드
+
+#### Implementation Notes
+- **구현 1단계로 iframe 내 `display-capture` 가용성을 실측 검증한다.** 로컬에서 `st.components.v1.html` 컴포넌트 내부 스크립트로 `getDisplayMedia()` 를 직접 호출해 `NotAllowedError`/`SecurityError` 가 나는지 확인하고 결과를 PR 설명에 남긴다. 이 이슈의 새 창 설계는 이 실측이 "iframe 안에서는 캡처 불가"를 확인하는 것을 전제로 한다.
+- `operator_ui.py` 에 순수 함수 추가 — 기존 컨벤션(`build_room_dropdown_options`, `select_default_room`, `format_room_status_label`)을 그대로 따른다. 제안 시그니처:
+  - `select_display_mode(last_selected_mode: str | None) -> str` — `session_state.get("operator_display_mode")` 를 받아 유효하지 않으면 `"caption"` 기본값(=`일반 자막`)으로 정규화. 유효 값은 `"caption"` / `"stage"` 두 가지만.
+  - `build_bootstrap_payload(...)` 에 keyword-only 옵션 `display_mode: str = "caption"`, `stage_url: str | None = None` 추가 — 기존 호출부는 기본값으로 하위호환(`room_name`/`view_url`/`qr_data_url` 이 그랬던 것과 동일 패턴). webrtc.html 은 이 필드를 받아 무대 화면 모드일 때 "무대 화면 열기" 버튼을 렌더한다.
+- `app.py` 사이드바: `app.py:150-181` 의 룸 선택 블록 바로 다음에 `st.radio` 또는 `st.selectbox` 로 표시 모드 추가, 선택값을 `st.session_state["operator_display_mode"]` 에 저장. `admin`/룸 미배정 경로에서는 노출하지 않는다(`show_room_section` 가드 재사용).
+- `stage_url` 계산은 `app.py:362-380` 의 `_build_view_url_and_qr` 옆에 자매 함수 `_build_stage_url` 을 추가 — `qr_generator.build_stage_url(room_id, _resolve_viewer_base_url())` 를 그대로 호출하고 동일한 RL-006 try/except 패턴(실패 시 `None`, 서버 로그만)을 따른다. 세 번째 base-URL resolver 를 만들지 말 것(`app.py:343` 하나만 재사용).
+- 새 창 오픈은 `components/webrtc.html` 의 클릭 핸들러에서 수행 — bootstrap JSON 의 `stage_url` 을 버튼 `data-*` 또는 클로저 변수로 갖고 있다가, 클릭 이벤트 콜백 **동기 실행 경로 안에서** `window.open(stageUrl, "_blank")` 를 호출한다(비동기 콜백 안에서 호출하면 대부분의 브라우저가 팝업으로 취급해 차단한다). 반환값이 falsy 면 같은 위치에 `<a href="{stageUrl}" target="_blank" rel="noopener">` 폴백을 표시.
+- `components/stage.html` 에 회귀 가드 추가는 `tests/test_stage_page.py:292-311` (`test_no_presenter_keyboard_interference`) 옆에 새 테스트 함수로 — 파일 전체에서 `getUserMedia`, `RTCPeerConnection`, `/v1/realtime` 문자열이 없음을 단언한다. 오늘 파일에 이미 없는 것을 실측 확인했으므로 이 가드는 현재 통과해야 하고, 앞으로의 드리프트만 막는다.
+- 알려진 운영 갭(고치지 않음, 언급만): WS(8765)/SSE(8766) 서버는 `app.py:258-305` 의 `st.session_state` 게이트 데몬 스레드라, 컨테이너 재시작 후 어떤 오퍼레이터도 `:8501` 을 열지 않으면 `/view/`, `/stage/` 모두 응답하지 않는다. 이 이슈로 무대 진입점이 더 눈에 띄는 위치로 옮겨오면서 이 갭이 사용자에게 더 자주 노출될 수 있다 — 아직 이를 담당하는 이슈는 없다.
+
+#### Tests
+- [ ] `tests/test_operator_ui.py` — `select_display_mode` 기본값(`None`/미지정 → `"caption"`), 유효하지 않은 저장값(예: 과거 버전 잔여 문자열) → `"caption"` 정규화, 유효한 `"stage"` 는 그대로 유지되는 라운드트립
+- [ ] `tests/test_operator_ui.py` — `build_bootstrap_payload(..., display_mode="stage", stage_url="http://localhost:8766/stage/r1")` 이 반환하는 dict 에 두 키가 그대로 담기고, 기존 호출부(키워드 생략)는 `display_mode="caption"`, `stage_url=None` 으로 하위호환됨을 검증
+- [ ] `tests/test_stage_page.py` — `components/stage.html` 전체에서 `getUserMedia` / `RTCPeerConnection` / `/v1/realtime` 문자열이 0건인 no-pipeline 회귀 가드(신규 테스트 함수)
+- [ ] `tests/e2e/` (신규 파일, `e2e` 마커) — Streamlit 컴포넌트가 아닌 `webrtc.html` 을 직접 로드해 무대 모드 선택 + "무대 화면 열기" 클릭 시나리오: `window.open` 을 스텁으로 교체해 호출 인자(URL, `"_blank"`)를 단언하고, 스텁이 `null` 을 반환하도록 바꿔 폴백 링크의 `href` 가 동일 URL 을 갖는지 단언(실제 두 번째 창을 띄우지 않음)
+
+#### Rollback
+`operator_ui.py` 의 신규 함수와 `build_bootstrap_payload` 확장 파라미터, `app.py` 사이드바의 표시 모드 UI, `components/webrtc.html` 의 "무대 화면 열기" 버튼/핸들러, `components/stage.html` 의 회귀 가드 테스트를 되돌리는 단일 커밋 revert 로 원복된다. 스키마 변경이 없으므로 DB 마이그레이션 롤백은 불필요.
+
+### ISSUE-48: 오퍼레이터 컴포넌트 부트스트랩 스크립트 컨텍스트 이스케이프 파리티
+
+- Track: platform
+- Type: security
+- UI: false
+- Manual: false
+- PRD-Ref: RL-016, RL-020
+- Priority: P1
+- Estimate: 1d
+- Status: shipped
+- Owner: pillip
+- Branch: issue/ISSUE-48-bootstrap-script-escaping
+- GH-Issue: #140
+- PR: #143
+- Depends-On: none
+
+#### Goal
+`components/webrtc.html` 의 인라인 `<script>` 로 들어가는 BOOT payload 가 `sse_broadcast` 가 이미 쓰고 있는 **바로 그** script-context 이스케이프 헬퍼를 통과한다 — 뷰어/무대 페이지와 같은 규칙, 같은 구현, 두 번째 복사본 없음. 결과적으로 admin 이 입력한 어떤 룸 이름도 오퍼레이터 오리진에서 스크립트를 실행시키거나 부트스트랩을 죽일 수 없다.
+
+#### 현재 문제
+`app.py` 가 `html_template.replace("{{BOOTSTRAP_JSON}}", json.dumps(payload))` 로 payload 를 `components/webrtc.html` 의 `const BOOT = {{BOOTSTRAP_JSON}};` — **raw `<script>`** — 안에 꽂는다. `json.dumps` 는 `<` 도 `/` 도 이스케이프하지 않는다. `room_name` 은 admin 자유 입력이고 검증은 길이뿐이다(`admin_logic.py:441-443`).
+
+**실측 (PR #137 코드 리뷰 S-1, 커밋 `b8051f4`)**: 룸 이름을 `A홀</script><script>window.__pwned=1;</script>` 로 만들면 주입된 스크립트가 **실행되고**(`window.__pwned === 1`), 동시에 `BOOT` 가 정의되지 않아 **컴포넌트 부트스트랩이 통째로 죽는다** — 자막이 한 줄도 나오지 않는다.
+
+Streamlit 컴포넌트 iframe 샌드박스는 `allow-same-origin` 을 포함하므로 주입 스크립트는 `localhost:8501` **오리진에서** 실행된다 — 쿠키·localStorage 접근 가능. admin 권한이 필요해 Medium 이지만, 성격은 오퍼레이터를 겨냥한 stored XSS **이자** 한 글자 실수로 자기 발등을 찍는 자폭 장애다.
+
+**이건 새 판단이 필요한 문제가 아니다.** `sse_broadcast.py` 의 `_json_for_script` 가 ISSUE-40/44 에서 이미 이 정확한 싱크를 위해 작성·공격 검증되었고 두 렌더러가 그걸 쓴다. RL-016 이 예고한 인계 누락과 RL-020 이 가리키는 세 번째 렌더러가 `app.py` 다. 뷰어와 무대는 고쳐졌고 **오퍼레이터 화면만 남았다.**
+
+ISSUE-47 은 이 결함을 악화시키지 않는다 — `display_mode` 는 닫힌 집합이고 `stage_url` 은 서버 생성 room id + 이미 노출되던 `VIEWER_BASE_URL` 이다. 다만 두 필드도 같은 싱크로 들어가므로 이 수정의 적용 대상이다.
+
+#### Scope (In/Out)
+- In:
+  - script-context 이스케이프 헬퍼를 공유 가능한 위치로 정리하고 `app.py` 의 BOOT 주입이 그것을 쓰게 한다 (복사본 금지 — RL-001)
+  - `app.py` 의 템플릿 렌더를 순수 함수로 분리해 테스트 경로를 만든다 (RL-005)
+  - 회귀 테스트: 유닛(라운드트립·breakout 문자열) + 브라우저 e2e(주입 스크립트 미실행 + `BOOT` 생존)
+  - ISSUE-47 이 추가한 e2e fixture(`tests/e2e/test_operator_stage_mode_e2e.py` `load_webrtc`)가 **프로덕션 렌더 함수**를 쓰도록 갱신 — 현재는 fixture 가 `replace(..., json.dumps(...))` 를 자체 구현해 프로덕션이 고쳐져도 옛 경로를 계속 테스트한다 (RL-024 형태)
+- Out:
+  - `components/webrtc.html` 의 마크업 컨텍스트 이스케이프 변경 — 룸 이름은 `textContent` 로만 쓰이므로 마크업 싱크가 없다. 이중 이스케이프는 ISSUE-44 가 뷰어에서 겪은 결함이다
+  - `VIEWER_BASE_URL` 스킴 검증 (PR #137 리뷰 S-2, `javascript:` base URL) — 배포자 제어 환경변수라 별건
+  - CSP 헤더 도입, Streamlit 샌드박스 플래그 조정
+  - 룸 이름 입력 문자 화이트리스트 — 렌더 계층에서 고치는 것이 옳다 (RL-020)
+
+#### Acceptance Criteria (DoD)
+- [ ] Given 룸 이름이 `A홀</script><script>window.__pwned=1;</script>` 인 오퍼레이터 세션, when 렌더된 HTML 을 실제 브라우저로 로드하면, then `window.__pwned === undefined` 이고 `typeof BOOT === "object"` 이며 `pageerror` 가 0건이다 (현재는 `__pwned === 1` 이고 `BOOT` 가 undefined 다)
+- [ ] Given 같은 룸, when 웰컴 화면의 `.welcome-room` 을 읽으면, then `textContent` 가 원본 문자열과 **정확히 일치**한다 — `&lt;` 도 `&amp;` 도 섞이지 않는다 (이중 이스케이프 가드)
+- [ ] Given `<`, `>`, `&`, `"`, `\`, U+2028, 한글을 모두 포함한 payload, when 렌더 결과에서 `const BOOT = …;` 리터럴을 잘라 `json.loads` 하면, then 원본 dict 와 **정확히 같다**
+- [ ] Given 룸 이름에 `</script>` 가 들어간 payload, when 렌더 결과에서 `</script>` 를 세면, then 치환 전 템플릿의 개수와 **같다** — payload 가 태그를 하나도 추가하지 못한다
+- [ ] Given 저장소 전체, when script-context 이스케이프 구현(`<` 치환)을 검색하면, then **정확히 한 곳**에만 존재하고 `sse_broadcast` 와 `app.py` 렌더 경로가 모두 그것을 import 한다 (RL-001)
+- [ ] Given `app.py`, when BOOT 주입 지점을 읽으면, then 템플릿 문자열에 대한 맨 `json.dumps` 호출이 남아 있지 않고 렌더는 단위 테스트 가능한 순수 함수를 통한다
+- [ ] Given `tests/e2e/test_operator_stage_mode_e2e.py` 의 `load_webrtc` fixture, when 구현을 읽으면, then 프로덕션 렌더 함수를 호출한다 — `replace(..., json.dumps(...))` 를 자체 재구현하지 않는다
+- [ ] Given 이스케이퍼를 `json.dumps` 로 되돌린 변이, when 위 테스트를 실행하면, then **실패한다** (RL-004, 결과를 PR 설명에 남긴다)
+
+#### Implementation Notes
+- **참고 구현은 이미 있고 검증도 끝났다** — `sse_broadcast.py` 의 `_json_for_script` 는 `json.dumps(..., ensure_ascii=False)` 후 `<` / `>` / `&` / U+2028 / U+2029 를 `\uXXXX` 로 바꾼다. 출력은 완결된 JS 리터럴이자 유효한 JSON 이라 템플릿이 따옴표로 감싸지 않는 자리에 그대로 들어간다. 새로 쓰지 말고 공유한다.
+- **배치 권고**: 의존성 없는 새 모듈(예: `script_escape.py`, 공개 이름 `json_for_script`)로 뽑고 `sse_broadcast` 는 그것을 import 해 `_json_for_script` 이름을 **유지**한다. 최소 10곳의 테스트가 `from sse_broadcast import _json_for_script` 로 잡고 있으므로 별칭을 남기면 기존 테스트를 한 줄도 건드리지 않는다.
+- **렌더 순수 함수는 `operator_ui.py` 에 둔다** — `build_bootstrap_payload` 와 같은 집이다. 제안 시그니처: `render_component_html(template: str, payload: dict[str, Any]) -> str`. `app.py` 는 호출 한 줄로 바뀌고 로직을 갖지 않는다 (RL-005).
+- **`ensure_ascii` 변화를 알고 시작할 것.** 현재는 기본 `True` 라 한글이 `\uXXXX` 로 나가지만 `_json_for_script` 는 `False` 라 한글이 원문 그대로 들어간다. 새 위험은 없으나 렌더 결과를 문자열 스냅샷으로 비교하는 테스트는 여기서 깨진다.
+- **payload 전 필드가 대상이다.** `openai_session`, `user_info`, `view_url`, `qr_data_url`, `display_mode`, `stage_url` — 필드별로 갈라 처리하지 말고 payload 전체를 한 번에 통과시킨다. 반쯤 적용된 헬퍼는 "처리됨" 신호를 주기 때문에 없는 것보다 위험하다 (RL-020).
+- **e2e 는 브라우저에서 값을 봐야 한다.** `page.evaluate("window.__pwned")` 와 `typeof BOOT` 를 단언한다. 정적 문자열 검사만으로는 "실행되지 않는다"를 증명하지 못한다 — ISSUE-44 가 백슬래시 케이스에서 정확히 그 차이를 겪었다.
+- **로컬 트랩**: pre-commit 이 `ruff-format` 과 `black` 을 둘 다 켜 두고 있어 `assert cond, (msg)` 레이아웃에서 커밋이 무한 왕복한다. `SKIP=ruff-format` 으로 우회하거나 그 형태를 피한다.
+
+#### Tests
+- [ ] Given breakout 룸 이름, when 렌더 결과를 브라우저로 로드하면, then `window.__pwned` 가 `undefined` 이고 `typeof BOOT === "object"` 이며 `.welcome-room` 의 `textContent` 가 원본과 일치한다 (marker `e2e`)
+- [ ] Given 특수문자 + 한글 payload, when BOOT 리터럴을 파싱하면, then `json.loads` 결과가 원본 dict 와 같다
+- [ ] Given `</script>` 를 담은 payload, when 렌더하면, then `</script>` 개수가 원본 템플릿과 같다
+- [ ] Given 이스케이퍼를 맨 `json.dumps` 로 되돌린 변이, when 위 세 테스트를 돌리면, then 최소 두 개가 실패한다 (RED 확인)
+- [ ] Given 저장소, when `<` 치환 구현을 grep 하면, then 정의가 1곳이다
+- [ ] Given ISSUE-47 의 무대 모드 e2e 전체, when 렌더 경로 교체 후 실행하면, then 그대로 통과한다
+
+#### Rollback
+`script_escape` 모듈 추가, `sse_broadcast` import 교체, `operator_ui.render_component_html`, `app.py` 호출부 한 줄, e2e fixture 갱신을 한 커밋으로 묶어 revert 하면 원복된다. 스키마·마이그레이션·SSE 프레임 포맷 변경이 없고 `_render_stage_html` / `_render_viewer_html` 은 손대지 않으므로 뷰어·무대 페이지는 영향받지 않는다. 되돌리는 순간 오퍼레이터 화면이 다시 stored XSS 경로를 갖는다는 사실을 PR 설명에 남긴다.
+
+### ISSUE-49: 오퍼레이터 웰컴 화면 WCAG AA 보정 — 저대비 보조 텍스트 및 backdrop 분기 제거
+
+- Track: platform
+- Type: fix
+- UI: true
+- Manual: false
+- PRD-Ref: RL-018
+- Priority: P1
+- Estimate: 0.5d
+- Status: shipped
+- Owner: pillip
+- Branch: issue/ISSUE-49-welcome-contrast-aa
+- GH-Issue: #145
+- PR: #147
+- Depends-On: none
+
+#### Goal
+`components/webrtc.html` 웰컴/대기 화면의 모든 텍스트가, 이 화면이 실제로 렌더되는 **두 backdrop 모두**(`body` = `#0b0b0c`, `#viewer:fullscreen` = `#000`)에서 4.5:1(WCAG 2.1 AA, 1.4.3)을 넘긴다. 그리고 그 성질이 우연이 아니라 구조적이다 — 텍스트 색이 불투명 hex 라 backdrop 이 바뀌어도 값이 갈라지지 않는다.
+
+#### 현재 문제
+PR #137 UI 리뷰가 공용 `tests/wcag.py` 로 무대 버튼 3색을 실측하다가, **같은 `.welcome-state` 안의 기존 텍스트**가 AA 미달인 것을 발견했다.
+
+| 규칙 | 값 | 크기 | `#0b0b0c` 대비 | 판정 |
+|---|---|---|---|---|
+| `.welcome-state .hint` | `rgba(255,255,255,0.4)` | 13px | **3.80:1** (실측) | **미달** |
+| `.welcome-rules` | `rgba(255,255,255,0.4)` | 13px | **3.80:1** (실측) | **미달** |
+| `.welcome-room` | `rgba(255,255,255,0.45)` | 14px | 4.52:1 | 간신히 통과 |
+
+`.hint` 는 "우상단 설정에서 마이크를 활성화하세요" — **오퍼레이터가 이 화면에서 해야 할 유일한 행동**을 알려주는 문장이다. 둘 다 장식이 아니라 기능 문구인데 3.80:1 로 서빙되고 있다.
+
+**두 번째 결함 — backdrop 이 하나가 아니다.** `#viewer:fullscreen { background: #000 }` 이 웰컴 화면에도 적용되는 것을 UI 리뷰어가 브라우저에서 확인했다. 알파 텍스트는 더 어두운 backdrop 에서 대비가 **내려간다.** ISSUE-45 가 출하한 실측 상수(`tests/test_viewer_page.py:105-106`)가 이미 못 박아 두었다: 알파 `0.45` = `#0b0b0c` 위 4.52:1, 순수 `#000` 위 **4.43:1(미달)**. 즉 `.welcome-room` 은 일반 화면에서는 통과하고 **전체화면에서는 실패한다** — RL-018 이 두 번 물린 바로 그 형태다.
+
+**RL-018 은 이제 Frequency 3 이다.** 역설적으로 ISSUE-47 이 새로 넣은 `.stage-launch-hint`(`#a8a8b3`, 8.35:1 / `#000` 위 8.92:1)가 이 화면에서 규격을 지키는 **유일한** 작은 텍스트다. 고칠 값과 패턴이 이미 같은 파일 안에 있다.
+
+#### Scope (In/Out)
+- In:
+  - 웰컴/대기 화면의 텍스트 색 규칙 감사 및 보정 — `#viewer:fullscreen .welcome-state`, `.welcome-state`, `.welcome-title`, `.welcome-room`, `.welcome-desc`, `.welcome-state .hint`, `.welcome-rules`
+  - 이 블록의 텍스트 색을 **불투명 hex** 로 전환 — ISSUE-45/47 이 확립한 패턴. 불투명이면 `#000` 쪽 대비가 항상 더 높아 한쪽만 통과시키면 구조적으로 양쪽이 안전해진다
+  - 두 backdrop 으로 parametrize 한 대비 테스트 (`tests/wcag.py` 재사용, 두 번째 계산기 금지 — RL-001)
+  - "이 블록에 `rgba(255,255,255,α)` 텍스트 색이 0건" 구조 가드
+- Out:
+  - `components/webrtc.html` **전체**의 텍스트 색 감사(상태 칩, FAB, 자막 영역, `.qr-code-caption` 등) — 별도 후속. 남은 표면은 PR 설명에 미감사로 **명시**한다
+  - 레이아웃·타이포 스케일·문구 변경. 시각적 변경은 **색 값뿐**이다
+  - 비텍스트 대비(1.4.11)의 `.welcome-state .icon`
+  - `st.radio` "표시 모드" 위젯 대비 — Streamlit 이 스타일링하며 PR #137 UI 리뷰가 미검증으로 남긴 갭
+  - `components/viewer.html` / `stage.html` — ISSUE-45 / ISSUE-40 에서 완료
+
+#### Acceptance Criteria (DoD)
+- [ ] Given 웰컴 화면 텍스트 색 규칙 전체, when 각 규칙을 `(11,11,12)` 와 `(0,0,0)` 두 backdrop 에 대해 `tests/wcag.py::_contrast_ratio` 로 계산하면, then **모든 케이스**가 4.5:1 이상이다 (large-text 완화를 근거로 통과시키지 않는다)
+- [ ] Given `.welcome-state .hint` 와 `.welcome-rules`, when 값을 확인하면, then `rgba(255,255,255,0.4)`(3.80:1)가 아니라 두 backdrop 모두에서 4.5:1 을 넘기는 **불투명 hex** 다
+- [ ] Given `.welcome-room`, when `#000` backdrop 으로 계산하면, then 4.5:1 이상이다 (현재 4.43:1 로 전체화면에서 미달)
+- [ ] Given 보정 후의 웰컴 블록 CSS, when 텍스트 `color` 선언을 훑으면, then `rgba(255, 255, 255, α)` 형태가 **0건**이고 전부 `#rrggbb` 다
+- [ ] Given 보정 후의 화면, when 위계를 비교하면, then `.welcome-title` > `.welcome-desc` > `.hint` / `.welcome-rules` 순의 밝기 서열이 유지된다
+- [ ] Given `.hint` 색을 `rgba(255,255,255,0.4)` 로 되돌린 변이, when 대비 테스트를 실행하면, then `3.80:1` 을 보고하며 **실패한다** (RL-004)
+- [ ] Given 대비 테스트의 backdrop 상수, when `body` 와 `#viewer:fullscreen` 의 실제 `background` 선언과 대조하면, then 두 값이 일치한다
+
+#### Implementation Notes
+- **테스트는 새로 설계하지 않는다.** `tests/wcag.py` 의 `_rule_block` / `_rule_rgba` / `_rule_hex` / `_composite` / `_contrast_ratio` / `_hex_rgb` 를 import 한다. 세 번째 대비 계산기를 만들면 이 이슈가 고치려는 드리프트를 그대로 재생산한다.
+- **테스트 배치**: `tests/test_webrtc_stage_launch.py::TestStageLaunchContrast` 옆에 클래스를 추가하는 것이 맞다 — 같은 파일의 대비 단언이 한 집에 모인다. 그 파일은 이미 두 backdrop parametrize 패턴을 갖고 있으므로 그대로 따른다.
+- **값 선택**: 같은 화면의 `.stage-launch-hint` 가 이미 `#a8a8b3`(8.35:1 / `#000` 위 8.92:1)를 쓴다. 이걸 웰컴 보조 텍스트의 공통 값으로 재사용하면 supporting-text 단계가 하나로 정리된다. **눈대중으로 고르지 않는다** — 이 파일의 실패 원인이 정확히 그것이다.
+- **불투명 전환의 안전 방향을 이해하고 시작할 것.** 알파 텍스트는 backdrop 이 어두워질수록 대비가 **내려간다**(0.45: 4.52 → 4.43). 불투명 hex 는 합성이 없으므로 backdrop 이 어두워지면 대비가 **올라간다**. ISSUE-47 이 이 성질을 명시적으로 설계 근거로 삼았다(`webrtc.html` `.stage-launch` 주석). 테스트는 그래도 두 backdrop 을 모두 돌려 상수 자체를 사실로 고정한다.
+- **웰컴 마크업은 두 벌이다** — 정적 마크업과 `clearViewer()` 재렌더가 같은 클래스를 쓴다. CSS 한 곳만 고치면 둘 다 덮인다. 인라인 `style` 로 색을 넣지 않는다.
+- **`#viewer:fullscreen .welcome-state` 를 잊지 말 것.** 이 규칙은 `.welcome-state` 자신의 색만 덮고 자식들은 각자 색을 갖고 있어 영향받지 않는다 — 전체화면에서 자식들이 `#000` 위에 그대로 남는 이유이자 두 backdrop 을 모두 계산해야 하는 이유다.
+
+#### Tests
+- [ ] Given 웰컴 텍스트 규칙 × backdrop 2종, when parametrize 한 대비 테스트를 실행하면, then 전부 4.5:1 이상이다
+- [ ] Given `.hint` 를 `rgba(255,255,255,0.4)` 로 되돌린 상태, when 같은 테스트를 실행하면, then `3.80:1` 로 실패한다 (RED 확인)
+- [ ] Given `.welcome-room` 을 `rgba(255,255,255,0.45)` 로 되돌린 상태, when `#000` backdrop 케이스를 실행하면, then `4.43:1` 로 실패한다
+- [ ] Given 웰컴 블록 CSS, when `color:` 선언을 정규식으로 뽑으면, then `rgba(` 형태가 0건이다
+- [ ] Given 테스트의 backdrop 상수, when 파일의 실제 `background` 선언과 비교하면, then 일치한다
+
+#### Rollback
+색 리터럴만 바뀌므로 해당 커밋 revert 로 즉시 원복된다(레이아웃·동작 변경 없음). 함께 추가한 대비 테스트도 같은 커밋에 있어 함께 사라진다 — 되돌리는 순간 오퍼레이터 웰컴 화면이 다시 WCAG 1.4.3 미준수가 된다는 점을 PR 설명에 남긴다.
+
+### ISSUE-50: 무대 창 opener 차단에 두 오리진 e2e 커버리지 확보
+
+- Track: platform
+- Type: test
+- UI: false
+- Manual: false
+- PRD-Ref: NFR-029, RL-026, RL-004
+- Priority: P2
+- Estimate: 1d
+- Status: shipped
+- Owner: pillip
+- Branch: issue/ISSUE-50-two-origin-opener-e2e
+- GH-Issue: #148
+- PR: #149
+- Depends-On: none
+
+#### Goal
+`opened.opener = null`(`components/webrtc.html` 무대 창 오픈 경로)이 **실제 크로스 오리진 팝업에서** 유효함을 브라우저가 증명한다 — 스텁이 아니라 진짜 두 오리진에서 열린 창의 `window.opener` 값을 읽어 단언하고, 그 단언이 대입을 동기 실행 구간 밖으로 옮기는 변이에서 **실패**한다.
+
+#### 현재 문제
+PR #137 코드 리뷰가 두 오리진(`:18501` / `:18766`) 실제 Chromium 팝업으로 측정한 결과, 이 완화는 **진짜로 동작한다**: `opened.opener = null` 은 throw 하지 않고, 팝업이 크로스 오리진으로 내비게이트한 뒤에도 `window.opener === null` 로 유지된다. 이유는 `window.open` 이 반환하는 순간의 활성 문서가 아직 오리진을 상속한 `about:blank` 이라 그 대입이 **동일 오리진 쓰기**이기 때문이다.
+
+문제는 **커버리지가 0 이라는 것**이다. e2e 스텁은 `window.open` 을 같은 realm 의 평범한 객체로 갈아끼우므로 `opener` 대입이 브라우저 동작과 무관하게 **항상 성공**한다. 유일한 다른 가드는 `tests/test_webrtc_stage_launch.py` 의 부분 문자열 검사이며, 문자열이 어디에 있든 언제 실행되든 통과한다.
+
+따라서 대입이 클릭의 동기 실행 구간 밖으로 옮겨지는 순간(`setTimeout`, `await`, 프라미스로 호출되는 헬퍼로 추출) 그것은 실제 **크로스 오리진 `[[Set]]`** 이 되어 `SecurityError` 를 던지고, 기존 `try/catch` 가 그것을 `console.debug` 로 **조용히 삼킨다**. 완화는 무력화되는데 테스트는 전부 초록이다. RL-026 이 기술한 형태 그대로다.
+
+#### Scope (In/Out)
+- In:
+  - 두 오리진 e2e fixture — 서로 다른 free port 두 개에 (a) BOOT payload 를 주입한 `components/webrtc.html` 을 서빙하는 오퍼레이터 오리진, (b) 무대 스텁 페이지를 서빙하는 무대 오리진
+  - 실제 `window.open` 을 쓰는(스텁 없는) 팝업 테스트 — `page.expect_popup()` 로 팝업을 잡고 `popup.evaluate("window.opener === null")` 단언
+  - 공허성 방지 게이트 — opener 단언 전에 팝업이 **실제로 무대 오리진으로 내비게이트했음**을 값으로 확인 (RL-026)
+  - 폴백 앵커(`<a target="_blank" rel="noopener">`) 경로도 같은 fixture 로 확인
+  - 변이 증명: 대입을 `setTimeout` 안으로 옮기면 새 e2e 는 실패하고 기존 문자열 가드는 통과함을 PR 설명에 기록
+  - 팝업 정리로 창 누수 방지
+- Out:
+  - `components/webrtc.html` 프로덕션 코드 변경 — **테스트만 추가**한다. 현 구현은 실측상 올바르다
+  - 기존 스텁 e2e 삭제 — 그것은 `window.open` 호출 **인자**를 검증하며 여전히 유효하다. 두 테스트는 서로 다른 것을 본다
+  - `popup=yes,width=…` 가 탭이 아니라 창을 여는지의 브라우저별 검증 — 헤드리스에서 신뢰할 수 없다. ISSUE-51 의 측정 대상이다
+  - Streamlit 을 띄우는 풀 스택 e2e
+  - CI 기본 실행 편입 — `e2e` 마커라 기본 run 에서 deselect 된다
+
+#### Acceptance Criteria (DoD)
+- [ ] Given 오퍼레이터 페이지가 `http://127.0.0.1:{A}` 에, 무대 스텁이 `http://127.0.0.1:{B}` 에 서빙되고 `A != B` 인 상태, when "무대 화면 열기" 를 클릭해 팝업을 잡으면, then `popup.evaluate("location.origin")` 이 `http://127.0.0.1:{B}` 와 **정확히 일치**한다
+- [ ] Given 위 팝업, when 로드 완료 후 `popup.evaluate("window.opener === null")` 을 읽으면, then `True` 다
+- [ ] Given 위 팝업, when opener 단언 **전에** 무대 스텁의 마커 요소를 조회하면, then 존재한다 — 내비게이션 전 상태에서 통과하는 공허한 단언이 아님을 보장한다 (RL-026)
+- [ ] Given 이 테스트 파일, when 구현을 읽으면, then `window.open` 을 대체하는 init script 가 **없다**
+- [ ] Given 팝업 차단 폴백 앵커를 클릭한 경우, when 열린 페이지에서 `window.opener` 를 읽으면, then `null` 이다
+- [ ] Given `opened.opener = null` 을 `setTimeout` 안으로 옮긴 변이, when 새 e2e 를 실행하면, then **실패**하고, 같은 변이에서 기존 문자열 가드는 **통과**한다 — 두 결과를 나란히 PR 설명에 남긴다 (이 대비가 이 이슈의 존재 이유다)
+- [ ] Given 테스트 종료, when 브라우저 컨텍스트를 확인하면, then 열린 팝업이 닫혀 있고 fixture 가 두 서버를 정리한다
+
+#### Implementation Notes
+- **fixture 뼈대는 이미 있다** — `tests/e2e/test_stage_page_e2e.py` 의 `_free_port()` + aiohttp `AppRunner` 를 데몬 스레드에 띄우고 base URL 을 yield 하는 패턴을 그대로 두 벌 쓴다.
+- **`file://` 로는 안 된다.** opaque origin 이라 크로스 오리진 관계가 성립하지 않는다. 두 오리진은 **포트만 달라도 충분하다**.
+- **오퍼레이터 페이지는 프로덕션 렌더 경로로 만든다** — fixture 가 조립을 자체 구현하면 ISSUE-48 이 지적한 함정을 반복한다.
+- **무대 스텁은 최소로.** `<div id="stage-stub-ready">` 한 장이면 오리진과 내비게이션 완료를 증명하기에 충분하고 `stage.html` 의 캡처/SSE 부작용을 끌어들이지 않는다.
+- **Playwright 팝업 캡처**: `with page.expect_popup() as info: button.click()` → `popup = info.value` → `popup.wait_for_load_state()`. `locator.click()` 은 사용자 제스처로 인정되어 팝업 차단에 걸리지 않는다.
+- **왜 `popup.evaluate` 가 크로스 오리진에서도 되는가**: 그 코드는 팝업 **자신의 realm** 에서 실행되므로 `window.opener` 읽기는 동일 오리진 접근이다. 반대로 오퍼레이터 페이지에서 `opened.opener` 를 읽으면 그때는 진짜로 SecurityError 가 난다 — 단언을 어느 쪽에서 하는지가 이 테스트의 전부다.
+- **변이 실험은 프로덕션 파일을 실제로 고쳐서 한다**(커밋하지 않는다). 출력 2개를 PR 설명에 붙인 뒤 되돌린다.
+- **알아둘 것 — 이 커버리지가 ISSUE-51 에서 사라질 수 있다.** 진입점이 `st.link_button` 으로 옮겨지면 `window.open` 도 `opener` 대입도 사라진다. 그래도 fixture 자체(두 오리진 e2e 하네스)는 진입점 설계와 무관하게 재사용된다. 같은 주에 잡는다면 ISSUE-51 을 먼저 끝내는 편이 낭비가 없다.
+
+#### Tests
+- [ ] Given 두 오리진 fixture, when 무대 버튼을 클릭해 팝업을 잡으면, then `location.origin` 이 무대 오리진과 일치하고 마커가 존재하며 `window.opener === null` 이다 (marker `e2e`)
+- [ ] Given 폴백 앵커를 직접 클릭할 때, when 열린 페이지에서 `window.opener` 를 읽으면, then `null` 이다
+- [ ] Given `opened.opener = null` 을 `setTimeout` 안으로 옮긴 변이, when 새 e2e 를 실행하면 실패하고 기존 문자열 가드는 통과한다
+- [ ] Given 새 테스트 파일, when `add_init_script` 로 `window.open` 을 덮는 코드를 검사하면, then 없다
+- [ ] Given 기존 ISSUE-47 e2e, when 전체 e2e 를 실행하면, then 전부 통과한다
+
+#### Rollback
+테스트 전용 추가라 프로덕션 영향이 0 이다. 새 테스트 파일/fixture 를 삭제하면 원복된다. 플레이키하면 파일 단위로 skip 하고 이유를 남긴 뒤 후속에서 안정화한다 — 기본 `uv run pytest -q` 는 `e2e` 마커를 deselect 하므로 개발 루프에 영향이 없다.
+
+### ISSUE-51: 무대 화면 진입점을 Streamlit 사이드바(st.link_button)로 옮기는 방안 평가
+
+- Track: platform
+- Type: refactor
+- UI: false
+- Manual: false
+- PRD-Ref: FR-082, NFR-029, RL-027, RL-028
+- Priority: P2
+- Estimate: 0.5d
+- Status: todo
+- Owner: pillip
+- Branch: issue/ISSUE-51-stage-launch-link-button-eval
+- GH-Issue: —
+- PR: —
+- Depends-On: none
+
+#### Goal
+"무대 화면 열기" 를 컴포넌트 밖(Streamlit 사이드바의 `st.link_button`)으로 옮기는 것이 옳은지를 **측정과 문서화된 결정**으로 끝낸다 — 채택이든 기각이든, 근거가 되는 브라우저 실측값과 NFR-029 판정이 남아 다시 논쟁되지 않는다.
+
+#### 현재 문제
+PR #137 코드 리뷰가 구조적 대안을 제안했다: 무대 진입점을 `components/webrtc.html` 안이 아니라 사이드바에 `st.link_button("🎬 무대 화면 열기", stage_url)` 로 렌더한다. 이 한 수가 ISSUE-47 이 **개별적으로 완화해야 했던 세 가지 결함군을 동시에 없앤다.**
+
+1. **RL-028 (컴포넌트 iframe 리마운트)** — `display_mode` / `stage_url` 이 BOOT payload 에 실리면 값이 바뀌는 순간 `srcdoc` 이 바뀌어 문서가 새로 로드되고 RTCPeerConnection·마이크 스트림·WS·자막 스크롤백이 사라진다(Streamlit 1.48.1 측정). ISSUE-47 은 세션 중 라디오를 `disabled` 로 잠그는 **완화**로 막았다. 진입점이 컴포넌트 밖이면 두 필드가 payload 에 들어갈 이유 자체가 없어진다.
+2. **RL-027 (파괴되는 컨테이너 안의 컨트롤)** — `.stage-launch` 가 `.welcome-state` 안에 있어 첫 자막에서 `appendLine()` 이 통째로 remove 했다(측정: 1개 → **0개**). 코드 리뷰 F-1 / UI 리뷰 H-1 이 **독립적으로** 같은 결함을 찾았고 19-뮤턴트 캠페인도 기존 12개 e2e 도 잡지 못했다. ISSUE-47 은 지속 오버레이 층으로 이전해 고쳤다. Streamlit chrome 에 있으면 이 컨테이너 자체가 존재하지 않는다.
+3. **팝업 차단 / opener 전면** — 진짜 `<a>` 는 팝업 차단 대상이 아니므로 폴백 경로와 그 테스트가 통째로 사라진다. Streamlit 은 `rel="noreferrer noopener"` 를 이미 붙이므로 ISSUE-50 의 opener 질문도 증발한다.
+
+삭제 예상 규모: `components/webrtc.html` 약 150줄, `tests/test_webrtc_stage_launch.py` 전체, `tests/e2e/test_operator_stage_mode_e2e.py` 대부분, `operator_ui.build_bootstrap_payload` 의 두 필드.
+
+**그러나 이것은 기정사실이 아니다.** ISSUE-47 의 Implementation Notes 와 `docs/test_plan.md` TC-068~TC-070 이 컴포넌트 + `window.open` + 폴백 설계를 의도적으로 명시했다. 바꾸는 것은 스펙 개정이고 결정이 필요하다. 게다가 결정적인 미검증 사실이 하나 있다: **`st.link_button` 이 새 탭을 여는가 새 창을 여는가.** ISSUE-47 F-4 가 실측한 바로 windowFeatures 없는 `target="_blank"` 는 크롬/엣지/파이어폭스에서 **탭**을 연다. NFR-029 의 근거는 "무대 화면을 보조 디스플레이로 옮겨 독립적으로 전체화면한다" 이고, 탭은 오퍼레이터가 먼저 창으로 뜯어내야 한다 — 그건 이 기능이 없애려던 수고 그 자체다. ISSUE-47 이 `'popup=yes,width=1280,height=720'` 을 넣은 이유가 정확히 그것이다.
+
+#### Scope (In/Out)
+- In:
+  - `st.link_button` 의 실제 동작 측정 — 렌더되는 앵커의 `target` / `rel` 값, 그리고 Chrome / Edge / Safari 에서 **탭인가 창인가**(브라우저·버전 기록)
+  - 탭일 경우 NFR-029 의 "보조 디스플레이 분리" 근거가 충족되는지 판정
+  - 세 결함군이 실제로 닫히는지, 새로 생기는 것은 없는지 확인 — 특히 `display_mode` 라디오가 **아예 필요 없어지는지**
+  - 결정 기록: 채택 / 하이브리드 / 기각 중 하나를 근거와 함께 `docs/architecture.md` tradeoff 표와 NFR-029 주석에 남긴다
+  - 채택 시 후속 구현 이슈 생성, 기각 시 재논쟁을 막는 근거 문장
+- Out:
+  - **실제 구현 — 이 이슈에서 코드를 바꾸지 않는다.** 측정용 스파이크 브랜치는 만들되 머지하지 않는다
+  - ISSUE-47 산출물의 제거·수정 (채택되면 후속 이슈에서)
+  - FR-082 / NFR-029 / TC-068~TC-070 의 개정 자체 — **제안**까지만 한다
+  - 표시 모드의 룸 스키마 영속화 — ISSUE-47 Out 그대로 유지
+
+#### Acceptance Criteria (DoD)
+- [ ] Given 사이드바에 `st.link_button` 을 임시로 렌더한 스파이크, when 렌더된 앵커를 DOM 에서 확인하면, then `target` 과 `rel` 의 **실제 값을 그대로 인용해** 기록한다 (기대: `rel="noreferrer noopener"` — "opener 문제가 증발한다" 는 주장이 전부 이 값 위에 서 있으므로 가정하지 말고 확인한다)
+- [ ] Given 같은 스파이크, when Chrome / Edge / Safari 각각에서 클릭하면, then 브라우저별로 **탭인지 창인지**를 관측 근거와 버전 문자열과 함께 기록한다
+- [ ] Given 위 측정 결과, when NFR-029 의 프로젝터 근거와 대조하면, then 결정 문서가 **탭이 그 요구를 충족하는지 아닌지를 명시적으로 판정**한다 — "대체로 괜찮다" 같은 서술 금지
+- [ ] Given 결정이 "채택", when 이슈가 닫히면, then 후속 구현 이슈가 존재하고 그 Scope 에 삭제 대상과 개정 대상(FR-082, NFR-029, TC-068~TC-070)이 열거되어 있다
+- [ ] Given 결정이 "기각", when 이슈가 닫히면, then 기각 사유(측정값 포함)가 `docs/architecture.md` 에 남고 NFR-029 에 주석이 붙어 같은 제안이 근거 없이 재점화되지 않는다
+- [ ] Given 어떤 결정이든, when 문서를 읽으면, then `display_mode` 라디오의 운명(유지 / 제거 / `disabled` 완화 해제)과 RL-028 완화의 처리 방침이 한 문장으로 명시되어 있다
+- [ ] Given 이 이슈의 최종 diff, when `git diff` 를 확인하면, then 변경 파일이 문서뿐이다 — 프로덕션 코드·테스트 변경이 0건이다
+
+#### Implementation Notes
+- **이 이슈는 ISSUE-47 의 일부를 대체할 수 있다** — 채택되면 ISSUE-47 의 컴포넌트 진입점 설계와 TC-068~TC-070 이 폐기된다. 그래서 결론을 코드가 아니라 **문서**로 먼저 만든다. 구현자가 임의로 갈아엎지 않도록 리뷰어가 명시적으로 후속으로 넘긴 사안이다.
+- **측정은 스파이크 브랜치에서.** 사이드바 표시 모드 라디오 바로 아래에 `st.link_button` 한 줄을 임시로 넣고 관측한다. 커밋하지 않는다. Streamlit 버전(현재 1.48.1)을 함께 기록한다 — 앵커 속성은 버전에 따라 바뀔 수 있고, 그 사실 자체가 이 대안의 리스크다.
+- **하이브리드도 결론이 될 수 있다.** 예: 사이드바 `st.link_button` + 창 크기 지정이 필요하면 그때만 컴포넌트 경로 유지. 또는 진입점은 사이드바로 옮기되 `display_mode` 라디오는 제거하고 "룸이 선택되어 있으면 항상 노출" 로 단순화.
+- **탭 vs 창의 무게를 과대·과소평가하지 말 것.** ISSUE-47 이 `popup=yes` 를 넣은 것은 실측 때문이고 힌트 문구도 "새 창으로 열립니다" 라고 약속한다. 탭으로 가면 그 카피도 함께 바뀌어야 한다.
+- **RL-028 의 recommended action 이 이 이슈와 짝이다**: "컴포넌트 iframe 은 payload 문자열이 바뀔 때마다 리마운트된다" 는 불변식을 `docs/architecture.md` 의 컴포넌트 임베딩 절 옆에 적어 둘 것. 결정이 어느 쪽이든 그 문장은 남겨야 하고, 그것만으로도 이 이슈는 값을 한다.
+- **ISSUE-50 과의 순서**: 채택되면 ISSUE-50 이 만드는 opener e2e 는 삭제 대상이 된다. 같은 주에 잡을 계획이면 이 평가를 먼저 끝낸다. 다만 두 오리진 fixture 자체는 재사용 가능하므로 병렬로 진행해도 손실은 테스트 몇 개다.
+- 🎬 이모지 건(UI 리뷰 L-2)도 여기서 함께 정리한다 — 이 제품 전체에서 렌더되는 유일한 이모지이며 ISSUE-47 Scope 가 문자 그대로 명시해 구현이 따랐다. 진입점을 다시 쓰는 김에 유지/제거를 결정 문서에 한 줄로 남긴다.
+
+#### Tests
+- [ ] Given 스파이크 렌더, when 앵커 속성을 DOM 에서 읽으면, then 결정 문서에 인용된 값과 일치한다 (자동화 테스트가 아니라 **기록된 관측** — 산출물은 문서다)
+- [ ] Given Chrome / Edge / Safari 각 클릭 결과, when 결정 문서를 읽으면, then 브라우저·버전별 탭/창 판정이 표로 남아 있다
+- [ ] Given 결정이 "채택", when 후속 구현 이슈의 AC 를 읽으면, then 삭제 후에도 FR-082 의 "무대 화면을 새 최상위 컨텍스트로 연다" 가 값으로 검증되는 테스트가 최소 1개 명시되어 있다
+- [ ] Given 이 이슈의 브랜치, when `pytest -q` 를 실행하면, then 기존 스위트가 그대로 통과한다 (프로덕션 변경 0건 확인)
+
+#### Rollback
+문서 전용 변경이므로 해당 커밋 revert 로 끝난다. 스파이크 브랜치는 머지하지 않으므로 되돌릴 코드가 없다. 결정이 "채택" 이었는데 후속 구현 도중 뒤집히면, 이 이슈의 결정 문서에 반증된 측정값과 함께 개정 사유를 **추가로 append** 한다(기존 기록을 지우지 않는다).
+
+---
+
+### ISSUE-52: 오퍼레이터 세션 출력 언어를 rooms 행에 기록 — 무대/뷰어 페이지 로드 언어 정합
+
+- Track: bug
+- Type: fix
+- UI: false
+- Manual: false
+- PRD-Ref: FR-083
+- Priority: P1
+- Estimate: 0.5d
+- Status: shipped
+- Owner: pillip
+- Branch: issue/ISSUE-52-persist-session-output-lang
+- GH-Issue: #138
+- PR: #141
+- Depends-On: none
+
+#### Goal
+오퍼레이터가 세션에서 고른 입력/출력 언어가 `rooms` 행에 기록되어, 그 뒤에 새로 여는 `/stage/{room_id}` 와 `/view/{room_id}` 가 **실제로 송출 중인 언어 채널**을 구독한다.
+
+#### 현재 문제 — 실측된 무증상 오작동
+
+오퍼레이터가 입력=한국어, 출력=베트남어로 세션을 돌렸다. 번역은 **정상**이었다 — `usage_logs` 에 `source_language: ko`, `target_language: vi`, `used_llm: true`, `target_text` 는 진짜 베트남어. **그런데 무대 화면에는 한국어가 떴다.**
+
+원인은 **source of truth 가 두 개이고 서로 다른 값을 말하기 때문**이다.
+
+| 경로 | 언어를 어디서 읽나 | 그래서 무엇을 하나 |
+|---|---|---|
+| publish (송출) | `websocket_handler.py:686-689` — `room_for_publish = {"id": room_id, "primary_output_lang": target_lang}`, 주석에 *"오퍼레이터 설정이 source-of-truth"* | 베트남어 텍스트를 **`vi` 채널**에 publish |
+| 페이지 렌더 (구독) | `sse_broadcast._handle_stage:549` — `primary_lang = room.get("primary_output_lang") or "ko"` (**DB 행**) | 무대 페이지가 **`ko` 채널**을 구독 |
+
+DB 행에는 오퍼레이터의 세션 선택이 **한 번도 기록되지 않는다.** 사고 시점의 룸 행: `input_lang: "auto"`, `output_lang: "ko"`, `primary_output_lang: "ko"`, `output_langs: ["ko"]`.
+
+그리고 lazy 게이트가 이 상황을 **빈 화면보다 나쁘게** 만든다. `broadcast_translation_for_room`(`sse_broadcast.py:772-796`)은 `_supported_output_langs(primary)` 로 보조 언어를 뽑아 **뷰어가 있는 언어면 무엇이든** publish 한다. 무대 페이지가 스스로를 `ko` 뷰어로 등록해 두었으므로 서버는 한국어 원문을 **한국어로 번역**해 `ko` 채널에 실어 보냈다. 그래서 빈 컬럼이 아니라 한국어가 떴다 — 오류도 로그도 없이, 오퍼레이터가 화면을 볼 때까지 아무도 모른다.
+
+이 이슈는 그중 **페이지 로드 시점**을 고친다. 이미 열려 있는 화면의 실시간 추종은 ISSUE-53 이 담당한다.
+
+#### Scope (In/Out)
+- In:
+  - `database.Room` 에 세션 언어 기록 메서드 추가 (제안 `update_session_languages(room_id, *, input_lang, output_lang) -> bool`) — `input_lang`, `output_lang`, `primary_output_lang` 세 컬럼을 **한 UPDATE 문**으로 함께 쓴다
+  - `translation.SUPPORTED_OUTPUT_LANGS` 화이트리스트 검증 — 목록 밖 코드는 거절하고 DB 를 건드리지 않는다 (RL-002: 값이 클라이언트에서 온다)
+  - `websocket_handler` 의 두 호출 지점: ① `_authenticate_client` 가 `resolved_room_id` 를 확정한 직후(auth 메시지의 `language_settings` 반영), ② `handle_openai_websocket` 의 `language_update` 분기(`:837-860`)
+  - 값이 이미 같으면 UPDATE 를 생략하는 no-op 가드 (재접속마다 쓰기가 도는 것을 막는다)
+  - 메모리 전용 모드(기본 룸 / repo 미주입) 와 존재하지 않는 room_id 는 조용히 스킵
+  - 실패는 서버 로그만, 자막 파이프라인에 절대 영향 없음 (RL-006)
+- Out:
+  - **`rooms.output_langs` 는 손대지 않는다.** `_supported_output_langs`(`sse_broadcast.py:328`)는 #91/#92 에서 **의도적으로** 이 컬럼을 무시하고 전역 지원 언어를 쓴다 — 여기서 다시 쓰기 시작하면 뷰어 언어 선택이 룸 설정에 재결합되어 그 결정이 무효화된다. 컬럼이 변하지 않았음을 AC 로 못 박는다
+  - 이미 열려 있는 무대/뷰어 페이지의 실시간 언어 추종 — ISSUE-53
+  - 오퍼레이터 화면의 새 컨트롤 — ISSUE-54 (출력 언어 드롭다운은 `components/webrtc.html:645` 에 **이미 있다**. 이 이슈는 그 드롭다운이 이미 보내고 있는 `language_update` 를 서버가 기록하게 만들 뿐, UI 를 추가하지 않는다)
+  - **ko→ko 자기 번역 낭비 — 이 이슈 범위 밖.** primary 가 `vi` 인데 `ko` 뷰어가 있으면 `broadcast_translation_for_room` 은 한국어 원문을 `ko` 로 "번역" 하는 LLM 호출을 건다. 이 이슈 이후 그 경로는 **버그가 아니라 정상 기능**(한국어 청중이 원문을 보는 것)이 되지만, `source_lang == target_lang` 일 때 번역을 건너뛰고 원문을 그대로 publish 하면 되는 낭비가 남는다. 지금 어느 이슈도 담고 있지 않다는 사실만 기록해 둔다
+  - `admin.py` 룸 관리 폼에서 언어를 편집하는 기능 — 별건
+
+#### Acceptance Criteria (DoD)
+- [ ] Given `primary_output_lang="ko"` 인 룸에 오퍼레이터가 `output_lang="vi"` 로 인증할 때, when `_authenticate_client` 가 끝나면, then 해당 `rooms` 행의 `primary_output_lang` 과 `output_lang` 이 **둘 다 정확히 `"vi"`** 이다
+- [ ] Given 세션 도중 오퍼레이터가 출력 언어를 `vi` → `en` 으로 바꿔 `language_update` 를 보낼 때, when 서버가 그 메시지를 처리하면, then `rooms.primary_output_lang` 이 `"en"` 으로 갱신되고, 그 **다음에** 새로 연 `/stage/{room_id}` 응답의 `CONFIG.caption_lang` 이 `"en"` 이며 EventSource 요청 URL 이 `/stream/{room_id}?lang=en` 이다
+- [ ] Given `input_lang="ko"`, `output_lang="vi"` 로 인증한 세션, when `rooms` 행을 조회하면, then `input_lang` 이 `"ko"` 이다 (auto 로 남아 있으면 관리자 룸 목록이 실제로 도는 세션과 다른 값을 보여 준다)
+- [ ] Given 클라이언트가 `output_lang="xx"`(지원 목록 밖) 를 보낼 때, when 서버가 처리하면, then `rooms` 행의 세 컬럼이 **전혀 바뀌지 않고** 예외도 클라이언트로 나가지 않는다 (RL-006 — 서버 로그만)
+- [ ] Given `rooms.output_langs` 가 `'["ko"]'` 인 룸에 `output_lang="vi"` 를 기록한 뒤, when 그 컬럼을 다시 읽으면, then **값이 `'["ko"]'` 그대로**다 — 이 이슈는 `output_langs` 를 쓰지 않는다 (#91/#92 재결합 방지 가드)
+- [ ] Given `rooms.output_langs` 를 건드리지 않은 상태에서 `/view/{room_id}` 를 열 때, when 언어 드롭다운을 확인하면, then 옵션이 여전히 `SUPPORTED_OUTPUT_LANGS` 전체(ko/en/zh/vi) 이고 `vi` 가 기본 선택이다
+- [ ] Given 이미 `primary_output_lang="vi"` 인 룸에 같은 값으로 인증이 반복될 때, when 쓰기 경로를 관찰하면, then UPDATE 가 **0회** 실행된다 (no-op 가드 — 재접속마다 쓰기가 도는 것을 막는다)
+- [ ] Given DB 쓰기가 예외로 실패하도록 만든 상태, when 오퍼레이터가 언어를 바꾸면, then `language_updated` 응답은 정상적으로 돌아가고 자막 번역도 계속 동작한다 (기록 실패가 세션을 죽이지 않는다)
+- [ ] Given 존재하지 않는 room_id 또는 메모리 전용 모드, when 기록을 시도하면, then `False` 를 돌려주고 예외를 던지지 않는다
+
+#### Implementation Notes
+- **한 UPDATE 로 세 컬럼을 함께 쓰는 이유는 RL-025 다.** `rooms.output_lang`(ISSUE-26 컬럼) 과 `rooms.primary_output_lang`(ISSUE-30 컬럼) 은 거의 같은 것을 뜻하는데 이미 두 개다. 지금 한쪽만 갱신하면 "같은 것을 뜻하는 두 컬럼이 서로 다른 값" 이라는 상태를 **새로 만든다** — 이 이슈가 고치려는 결함과 정확히 같은 모양이다. docstring 에 **`primary_output_lang` 이 SSE/렌더 경로의 권위 컬럼**이고 `output_lang` 은 그 미러라고 명시한다 (RL-025 의 prevention: "어느 쪽이 authoritative 인지 이름을 붙여라").
+- 메서드 위치는 `database.py` 의 `Room` 클래스, `assign_operator`(`:901`) / `touch`(`:1152`) 와 같은 형태 — `cursor.rowcount > 0` 을 돌려주고 예외를 던지지 않는다. 검증 실패는 `update_stage_config`(`:1138-1141`) 처럼 서버 로그 + `False`.
+- 호출은 `_authenticate_client` 안에서 **동기 직접 호출**로 충분하다. 그 함수는 이미 `get_user_model().get_user_by_id()` 와 `room_manager.adopt_from_db()` 를 동기로 부르고 있고, 이 경로는 연결당 1회 + 언어 변경 시 1회라 transcript hot path 가 아니다. `asyncio.to_thread` 로 감싸면 `_translate_secondary` 와 헷갈리는 전례만 하나 더 생긴다.
+- `room_id` 는 반드시 `current_user["room_id"]` / `resolved_room_id`(서버가 결정한 값)를 쓴다. 클라이언트 payload 의 room_id 는 쓰지 않는다 — `_record_usage`(`:344-348`)가 이미 같은 이유로 그렇게 하고 있다 (RL-002).
+- 검증 목록은 `translation.SUPPORTED_OUTPUT_LANGS`(`translation.py:27`, 현재 `("ko","en","zh","vi")`) 를 **import 해서** 쓴다. 리터럴을 복사하면 목록이 늘 때 조용히 갈라진다 (RL-001).
+- `input_lang` 은 `"auto"` 를 포함해 오퍼레이터 드롭다운(`components/webrtc.html:634-640`)이 낼 수 있는 값(`auto`/`ko`/`zh`/`en`/`vi`)만 허용한다. 출력과 달리 `auto` 가 정당한 값이므로 화이트리스트가 다르다 — 같은 상수를 재사용하지 말 것.
+- **테스트 단언은 값으로 한다.** "행이 갱신됐다" 가 아니라 `row["primary_output_lang"] == "vi" and row["output_lang"] == "vi" and row["output_langs"] == '["ko"]'` 처럼 세 컬럼을 모두 못 박는다. `output_langs` 를 함께 단언하는 것이 #91/#92 재결합을 잡는 유일한 그물이다 (RL-004).
+- `.pre-commit-config.yaml` 이 `ruff-format` 과 `black` 을 둘 다 켜 두고 있어 `assert cond, (msg)` 레이아웃에서 두 훅이 서로를 되돌린다. 새 테스트에서 그 구문을 피한다 (`docs/sprint_state.md`).
+
+#### Tests
+- [ ] `tests/test_rooms_db.py` — `update_session_languages` 왕복: `("ko","vi")` 기록 후 `get_by_id` 가 `input_lang="ko"`, `output_lang="vi"`, `primary_output_lang="vi"` 를 **정확히** 돌려주고 `output_langs` 는 기록 전 값 그대로다
+- [ ] `tests/test_rooms_db.py` — 지원 목록 밖 `output_lang="xx"` 는 `False` 를 돌려주고 세 컬럼이 변하지 않는다. 존재하지 않는 room_id 도 `False`, 예외 없음
+- [ ] `tests/test_rooms_db.py` — 같은 값으로 두 번 호출하면 두 번째는 UPDATE 를 실행하지 않는다 (`sqlite3.Connection.execute` 를 감시하거나 `last_activity` 류 부수 효과가 없음을 확인 — 호출 횟수를 세는 단언으로 못 박는다)
+- [ ] `tests/test_websocket_auth.py` — auth 메시지의 `language_settings.output_lang="vi"` 가 fake room repo 에 `primary_output_lang="vi"` 로 기록된다. 기록이 예외를 던지도록 만들어도 `auth_success` 가 정상 전송된다
+- [ ] `tests/test_websocket_handler.py` — `language_update` 메시지 처리 후 기록이 호출되고, `language_updated` 응답이 그대로 나간다. 기록 실패 시에도 응답이 나간다
+- [ ] `tests/test_sse_broadcast.py` — fake repo 가 `primary_output_lang="vi"` 를 돌려줄 때 `GET /stage/{id}` 응답의 `CONFIG.caption_lang` 이 `"vi"` 이고, `GET /view/{id}` 의 `PRIMARY_LANG` 도 `"vi"` 이며 언어 목록은 ko/en/zh/vi 전부다 (RED 확인: repo 가 `ko` 를 돌려주면 `vi` 단언이 실패해야 한다)
+- [ ] `tests/test_ws_sse_integration.py` — 언어를 `vi` 로 기록 → 새 `/stage/` 렌더 → 그 페이지가 열 `?lang=` 값이 publish 채널(`target_lang`)과 **일치**한다. 이 이슈의 헤드라인 결함을 재현 순서 그대로 잡는 통합 단언
+
+#### Rollback
+`database.py` 의 신규 메서드와 `websocket_handler.py` 의 두 호출 지점을 되돌리는 단일 커밋 revert. **스키마 변경이 없다** — 기존 세 컬럼에 쓰기만 하므로 마이그레이션 롤백이 없다. 되돌린 뒤 이미 기록된 룸 행의 값은 그대로 남는데, 그 값은 마지막 세션이 실제로 쓰던 언어이므로 되돌리기 전보다 정확하다(무해하다). 되돌리는 순간 새로 여는 무대/뷰어 페이지가 다시 **조용히 틀린 언어를 구독하는 상태**로 돌아간다는 점을 PR 설명에 남긴다.
+
+---
+
+### ISSUE-53: SSE control 이벤트 채널 — 룸 프레젠테이션 상태 실시간 전파 및 클라이언트 재구독
+
+- Track: feature
+- Type: feat
+- UI: true
+- Manual: false
+- PRD-Ref: FR-084, FR-085, NFR-030
+- Priority: P1
+- Estimate: 1.5d
+- Status: shipped
+- Owner: pillip
+- Branch: issue/ISSUE-53-sse-control-channel
+- GH-Issue: #144
+- PR: #146
+- Depends-On: ISSUE-52
+
+#### Goal
+`/stream/{room_id}` 가 자막(`message`) 과 종료(`session_end`) 외에 **룸 단위 프레젠테이션 상태**를 나르는 named event `control` 을 방송하고, 무대/뷰어 클라이언트가 이를 받아 (a) 언어 채널을 재구독하거나 (b) 자막 폰트 배율을 적용한다. **명시적으로 언어를 고른 클라이언트는 절대 끌려가지 않는다.**
+
+#### 현재 문제
+ISSUE-52 는 **페이지 로드 시점**만 고친다. 이미 열려 있는 화면은 그대로다 — 행사 도중 오퍼레이터가 출력 언어를 바꾸면 무대 화면은 옛 채널에 붙은 채 조용히 굳는다. 프로젝터에 띄운 화면을 F5 로 새로 고치는 것은 행사 중에 할 수 있는 동작이 아니다(캡처가 끊기고 화면이 검게 깜빡인다).
+
+같은 부재가 자막 크기에도 있다. 행사장 뒤쪽에서 안 보이거나 너무 커서 두 줄로 넘칠 때 조절할 방법이 지금은 없다. **무대 페이지에 컨트롤을 두는 것은 답이 아니다** — NFR-025 가 클릭 표면과 포커스 가능한 요소를 0 으로 못 박고 있고, `tests/test_stage_page.py::test_no_interactive_controls`(`:363`)가 `<select>`/`<input>`/`<textarea>` 개수를 **0으로** 단언한다. 조절은 오퍼레이터 화면에서 하고 **값만 무대로 밀어 넣어야** 한다.
+
+지금 서버→비인증 클라이언트 방향으로 값을 밀 수 있는 통로는 SSE 하나뿐이며, `_write_sse_event`(`sse_broadcast.py:715`)는 이미 named event 를 낼 수 있다(`session_end` 가 그렇게 나간다). 없는 것은 **프로토콜과 그것을 읽는 클라이언트**다.
+
+#### Scope (In/Out)
+- In:
+  - `BroadcastManager` 에 룸 단위 control 상태 저장소 — `set_control(room_id, **fields) -> dict`(머지 후 스냅샷 반환), `get_control(room_id) -> dict | None`. `has_viewers` / `get_metrics` 와 같은 **동기·lock-free** 스타일
+  - `publish_control(room_id, payload)` — 그 룸의 **모든 언어 채널**에 fan-out (언어가 바뀌면 옛 채널 구독자에게도 닿아야 하므로 언어별이 아니라 룸 단위다)
+  - `_handle_stream` 의 이벤트 이름 해석: `payload.get("event")` 가 허용 목록(`{"control"}`)에 있을 때만 그 이름으로, 그 외에는 기존대로 `"message"` 로 쓴다
+  - **연결 직후 스냅샷**: `: connected` 코멘트 프레임 다음에, 그 룸의 control 상태가 있으면 `control` 이벤트 1건을 먼저 쓴다 (재로드된 무대 화면이 즉시 현재 상태로 복귀)
+  - 서버 emit 지점 2곳 — ① ISSUE-52 가 언어를 기록하는 두 자리(auth / `language_update`) 에서 성공 시 `primary_lang` control 발행, ② 새 WS 메시지 `stage_control`(`{"type":"stage_control","caption_scale":1.2}`) 핸들러: 범위 검증 → 상태 저장 → 발행 → `stage_control_ack` 응답
+  - auth 성공 응답에 현재 control 스냅샷 동봉 (오퍼레이터 UI 가 서버 값으로 슬라이더를 맞추도록 — ISSUE-54 가 소비)
+  - `components/stage.html`: `connect(lang)` 시그니처화, `control` 리스너, 재구독 절차, `--caption-scale` 적용. **DOM 에 컨트롤을 추가하지 않는다**
+  - `components/viewer.html`: 같은 `control` 리스너 + 드롭다운 값 동기화 + `--caption-scale`
+  - 서버 렌더에 `{{LANG_PINNED}}` 플레이스홀더 추가 — `_handle_stage` 가 `?lang=` 을 **받았고 그 값이 유효해서 채택했을 때만** `true`
+- Out:
+  - 오퍼레이터 화면의 슬라이더/드롭다운 UI 와 그 카피 — ISSUE-54. 이 이슈는 `stage_control` 메시지를 **받는 쪽**만 만든다 (fake websocket 으로 완전히 단위 테스트 가능)
+  - `stage_config` 영속화 — 아래 "설계 결정 1" 참조. DB 스키마 변경 0건
+  - 무대/뷰어 페이지의 자막 파이프라인 동작 변경 (`MAX_LINES`, 타이머 방식, 확정 로직) — 재구독이 그 위를 지나갈 뿐 규칙을 바꾸지 않는다
+  - **RL-022 / `viewer.html` 의 종료 상태 재무장 — 범위 밖.** `viewer.html:718-729` 의 `session_end` 는 `currentLine` 만 비우고 종료 플래그를 세우지 않아 늦게 도착한 프레임 하나가 끝난 세션을 되살린다(`stage.html:997` 은 `sessionEnded` 가드가 있다). 이 이슈가 같은 코드 구역에 리스너를 하나 더 붙이므로 **인접성만 기록**해 둔다 — control 리스너 자신은 `sessionEnded` 를 존중해야 하지만, 기존 `message` 경로의 결함을 여기서 고치지는 않는다. 지금 어느 이슈도 담고 있지 않다
+  - `broadcast_translation_for_room` 이 빈 텍스트를 서버측 가드 없이 publish 하는 문제 — 별건, 미소유
+  - WS/SSE 데몬 스레드가 `st.session_state` 게이트라 컨테이너 재시작 후 오퍼레이터가 `:8501` 을 열기 전까지 `/view/`·`/stage/` 가 죽어 있는 문제(`app.py:258-305`) — 별건, 미소유
+
+#### 설계 결정 (구현 전에 뒤집지 말 것)
+
+**1. 폰트 배율은 `stage_config` 에 영속화하지 않는다 — 서버 인메모리 라이브 상태다.**
+- `stage_config` 는 **관리자 소유**의 행사 전 브랜딩 블롭이고, 폰트 배율은 **오퍼레이터 소유**의 행사장 실시간 값이다. 한 블롭에 두 주인을 넣으면 "누가 이기나" 가 정의되지 않는다.
+- 결정적 근거: 관리자 폼(ISSUE-39)은 `get_stage_config` → 편집 → `update_stage_config` 의 **normalize→save 왕복**을 한다. `normalize_stage_config`(`stage_config.py:76-81`)는 자기가 모르는 키를 **조용히 버린다.** 관리자 폼이 `caption_scale` 을 렌더하지 않는 한, 행사 중에 맞춰 놓은 배율은 관리자가 로고 하나 바꾸는 순간 기본값으로 되돌아간다 — 그리고 아무 로그도 남지 않는다. 이것을 막으려면 `DEFAULT_STAGE_CONFIG` + `normalize` + `validate` + 관리자 폼 + 마이그레이션까지 손봐야 하고, 그러면 ISSUE-54 가 1d 를 넘긴다. RL-024/RL-025 가 경고하는 모양 그대로다.
+- 영속화 없이도 **재로드 문제는 풀린다**: 위 "연결 직후 스냅샷" 이 그 답이다. 남는 잔여 갭은 **서버 프로세스 재시작 시 배율이 1.0 으로 돌아간다**는 것 하나뿐이고, 그 복구는 오퍼레이터가 슬라이더를 한 번 움직이는 것이다. 이 잔여 갭을 이슈 본문과 `docs/architecture.md` 에 명시적으로 적어 둔다 — 나중에 "왜 안 남지" 라고 다시 묻지 않도록.
+
+**2. 언어 컨트롤은 ISSUE-47 F-2(RL-028) 의 실패 경로를 타지 않는다 — 확인 완료.**
+ISSUE-47 은 표시 모드 라디오를 세션 중 `disabled` 로 잠갔다. 이유는 그 값이 `build_bootstrap_payload` → `{{BOOTSTRAP_JSON}}` → Streamlit 컴포넌트의 `srcdoc` 문자열에 들어가고, `srcdoc` 이 바뀌면 iframe 문서가 통째로 새로 로드되어 `RTCPeerConnection`·마이크 스트림·WS·자막 스크롤백이 사라지기 때문이다(Streamlit 1.48.1 실측, RL-028).
+**언어 컨트롤은 그 경로가 아니다.** 출력 언어 드롭다운은 이미 `components/webrtc.html:645` 에, 즉 **컴포넌트 iframe 안**에 있고, 값 변경은 `sendLanguageUpdate()`(`:1077-1088`)가 **이미 열려 있는 WebSocket** 으로 `language_update` 를 보내 처리한다. BOOT payload 에 언어 필드는 없다 — 따라서 `srcdoc` 문자열이 바뀌지 않고 iframe 은 리마운트되지 않는다. ISSUE-2 의 AC "실시간 언어 변경이 재연결 없이 반영된다" 가 그 사실을 이미 담고 있다.
+**따라서 이 이슈와 ISSUE-54 는 BOOT payload 에 어떤 필드도 추가하지 않는다.** 폰트 배율도 같은 규칙으로 WS 메시지(`stage_control`)로만 흐른다. RL-028 의 prevention 이 요구하는 분류를 명시하면 — 새 상태는 전부 **interaction-scoped** 이며, 그래서 BOOT 가 아니라 WS 로 간다. 이 문장이 ISSUE-54 리뷰의 체크 항목이다.
+
+**3. control 은 자막과 같은 전송 경로를 쓴다 — 두 번째 통로를 만들지 않는다.**
+WS 서버와 SSE 서버는 서로 다른 데몬 스레드/이벤트 루프에서 돌고, 지금도 WS 루프에서 만든 payload 가 SSE 루프가 대기 중인 `asyncio.Queue` 로 들어간다(`_publish_to_viewers` → `BroadcastManager.publish` → `_handle_stream` 의 `queue.get()`). 이것은 **이미 존재하는 성질**이다. control 을 같은 `publish` 경로에 태우면 새로운 위험 등급이 생기지 않는다. 별도 소켓·별도 큐·별도 스레드를 만들면 그 순간 새 등급이 하나 생긴다.
+
+#### Acceptance Criteria (DoD)
+
+**프로토콜 / 서버**
+- [ ] Given `ko`/`vi` 두 언어 채널에 각각 뷰어가 붙어 있는 룸, when `publish_control(room_id, {...})` 가 호출되면, then **두 채널 모두**가 프레임을 받는다 — 수신 채널 수가 정확히 2 다 (언어별 publish 였다면 1 이므로 이 단언이 fan-out 을 실제로 검증한다)
+- [ ] Given control payload 가 큐를 통과할 때, when SSE 와이어 포맷을 읽으면, then 첫 줄이 `event: control` 이고 둘째 줄이 `data: {...}` 이다 (`event: message` 가 아니다)
+- [ ] Given 자막 payload 에 `"event": "control"` 키가 섞여 들어간 상황, when `_handle_stream` 이 그 프레임을 쓰면, then 허용 목록 검사를 거쳐 **`control` 로 승격되지 않는다** — 자막이 자기 이벤트 이름을 정할 수 없다
+- [ ] Given control 상태가 `{"primary_lang":"vi","caption_scale":1.2}` 인 룸, when 새 뷰어가 `/stream/{room_id}` 에 접속하면, then `: connected` 다음 프레임이 그 값을 담은 `control` 이벤트이고, 그다음부터 자막 프레임이 온다
+- [ ] Given control 상태가 아예 없는 룸, when 새 뷰어가 접속하면, then `: connected` 이후 control 프레임이 **오지 않는다** (없는 상태를 기본값으로 지어내 보내지 않는다)
+- [ ] Given `set_control(room, primary_lang="vi")` 후 `set_control(room, caption_scale=1.2)`, when `get_control(room)` 을 읽으면, then 두 필드가 **모두** 살아 있다 (부분 갱신이 앞 필드를 지우지 않는다)
+- [ ] Given `caption_scale` 이 범위 밖(`0.1` / `9` / `"크게"` / `NaN`), when `stage_control` 메시지를 처리하면, then 상태가 바뀌지 않고 control 이벤트도 발행되지 않으며 클라이언트에는 내부 예외 문자열이 아닌 일반 거절 응답만 간다 (RL-006)
+- [ ] Given ISSUE-52 의 언어 기록이 성공할 때, when 그 직후를 관찰하면, then `primary_lang` 을 담은 control 이벤트가 정확히 1회 발행된다. 기록이 **스킵되면**(값 동일 / 검증 실패) 발행도 0회다
+
+**클라이언트 — 언어 추종과 "명시적 선택이 이긴다"**
+- [ ] Given `?lang=` **없이** 연 `/stage/{room_id}`(현재 `ko` 구독), when `{"primary_lang":"vi"}` control 이 도착하면, then EventSource 가 닫히고 `/stream/{room_id}?lang=vi` 로 다시 열린다
+- [ ] Given `?lang=ko` 로 **명시적으로** 연 `/stage/{room_id}`, when 같은 control 이 도착하면, then EventSource URL 이 **`?lang=ko` 그대로**이고 재구독이 일어나지 않는다 — 폰트 배율만 적용된다
+- [ ] Given 청중이 `/view/{room_id}` 의 드롭다운을 한 번도 건드리지 않은 상태, when `{"primary_lang":"vi"}` control 이 도착하면, then 구독이 `vi` 로 바뀌고 드롭다운 표시값도 `vi` 로 함께 움직인다 (구독과 UI 가 갈라지지 않는다)
+- [ ] Given 청중이 드롭다운에서 `en` 을 **직접 골랐던** 상태, when 같은 control 이 도착하면, then 구독도 드롭다운도 `en` 그대로다 — 베트남어를 듣던 청중이 발표 중간에 한국어로 끌려가지 않는다
+- [ ] Given 이미 `vi` 를 구독 중인 클라이언트, when 같은 `{"primary_lang":"vi"}` control 이 다시 도착하면(연결 스냅샷 등으로 중복 수신), then EventSource 를 닫거나 다시 열지 않는다 — 자막이 한 프레임도 끊기지 않는다
+- [ ] Given `{"primary_lang":"xx"}`(지원 목록 밖) control, when 클라이언트가 처리하면, then 무시하고 현재 구독을 유지한다 (서버가 이미 막지만 클라이언트도 자기 목록으로 판정한다)
+- [ ] Given `session_end` 를 받아 종료 상태인 무대 페이지, when control 이 뒤늦게 도착하면, then 재구독하지 않는다 (`sessionEnded` 가드 존중)
+
+**클라이언트 — 재구독이 자막 파이프라인 불변식을 깨지 않는다**
+- [ ] Given 타자기가 한 줄을 드러내는 도중 언어 재구독이 일어날 때, when 정착 후 페이지를 검사하면, then 활성 애니메이션 루프가 **1개 이하**이고 `currentLine` 이 null 이며 `twTarget`/`twShown`/`twFinalize` 가 초기화되어 있다 (핸들 하나만 비우고 나머지를 무장한 채 두지 않는다 — RL-022 의 교훈을 여기서 반복하지 않는다)
+- [ ] Given 재구독으로 자막 스택을 비울 때, when 소스를 검사하면, then `replaceChildren()` 을 쓰고 `innerHTML`/`outerHTML`/`insertAdjacentHTML`/`document.write` 가 두 파일 모두에서 **0건**을 유지한다 (`tests/test_viewer_page.py::test_no_html_sinks_anywhere_in_the_file` 회귀)
+- [ ] Given 재구독 경로, when 스크롤 추종 측정과 DOM 쓰기의 순서를 확인하면, then **측정이 먼저**다 — `tests/test_viewer_page.py::test_lock_line_measures_follow_before_it_writes`(`:886`) / `::test_typewriter_step_measures_follow_before_it_writes`(`:916`) 와 같은 순서 단언이 재구독 경로에도 존재한다
+- [ ] Given 재구독 후, when 라이브 리전을 세면, then 각 페이지에 `aria-live` 를 가진 자막 announcer 가 **정확히 1개**다 (`tests/test_stage_page.py::test_the_page_owns_exactly_one_live_region`(`:982`), `tests/test_viewer_page.py::test_exactly_one_caption_live_region_exists`(`:1279`) 회귀)
+- [ ] Given 재구독 직후 새 언어로 자막을 주입할 때, when DOM 을 읽으면, then `.caption-line` 상한이 무대 60 / 뷰어 200 으로 **그대로**이고, 대기 문구 `#caption-empty` 가 정확히 1개이며 그 텍스트가 **새 언어**의 대기 문구다
+
+**클라이언트 — 폰트 배율**
+- [ ] Given `{"caption_scale":1.4}` control, when 무대 페이지를 검사하면, then `--caption-scale` 이 `1.4` 이고 `.caption-line` 의 계산된 `font-size` 가 배율 적용 전보다 크다 (CSS 변수 존재만이 아니라 **렌더된 크기 변화**를 값으로 단언한다 — RL-004)
+- [ ] Given `{"caption_scale":9}` 나 `{"caption_scale":"크게"}` 가 어떤 이유로든 클라이언트에 도달할 때, when 처리하면, then 클라이언트가 허용 범위(0.8–1.6)로 클램프하거나 무시하고 레이아웃이 깨지지 않는다
+- [ ] Given 배율 0.8 에서 `.caption-line` 이 최소 크기로 렌더될 때, when 대비를 계산하면, then 여전히 4.5:1 이상이다 — 알파는 애초에 **일반 텍스트 기준**(large-text 3:1 완화 미사용)으로 정해졌으므로 크기가 줄어도 판정이 뒤집히지 않는다 (ISSUE-40/45 의 근거를 그대로 승계)
+
+**NFR-025 — 무대 화면은 여전히 조작 표면이 0 이다**
+- [ ] Given 이 이슈의 변경 후 `components/stage.html`, when `tests/test_stage_page.py::test_no_interactive_controls`(`:363`) 를 실행하면, then **그대로 통과**한다 — `<select>`/`<input>`/`<textarea>` 개수 0, `<button>` 개수는 ISSUE-42 가 정한 집합 그대로다. 폰트 배율은 SSE 로 도착해 **프로그램적으로만** 적용된다
+- [ ] Given 같은 파일, when `test_no_presenter_keyboard_interference`(`:292`) 를 실행하면, then **그대로 통과**한다 — keydown 등록 1건(`?debug=1` `{passive:true}` 계수기), `preventDefault`/`stopPropagation`/`keyup` 0건, `requestFullscreen`/`.focus()` 0건
+- [ ] Given e2e 로 띄운 무대 페이지에 `control` 이벤트를 **실제로 전달한 뒤**, when 보이는 클릭 가능 요소(`button`,`a`,`input`,`select`,`[tabindex]`)를 세면, then **0개**이고 `document.activeElement === document.body` 이며 `document.fullscreenElement === null` 이다 — 이것이 이 이슈가 추가하는 **강화된** 행동 가드다 (정적 개수 가드는 control 핸들러가 런타임에 노드를 만들어도 통과한다)
+
+#### Implementation Notes
+- **`_write_sse_event` 를 포크하지 않는다.** `sse_broadcast.py:715` 는 이미 이벤트 이름을 인자로 받는다. 바꿔야 할 것은 `_handle_stream:699` 의 호출부 한 줄 — `"message"` 리터럴 대신 허용 목록을 거친 이름이다.
+  ```python
+  _CONTROL_EVENT_NAMES = frozenset({"control"})
+  name = payload.get("event")
+  await _write_sse_event(resp, name if name in _CONTROL_EVENT_NAMES else "message", payload)
+  ```
+  **화이트리스트인 이유**: 자막 payload 는 지금은 서버가 만들지만, 이름 결정 권한을 payload 에 통째로 넘기면 그 성질이 코드가 아니라 관행으로만 유지된다. 한 줄로 구조적 불변식이 되고, RL-004 가 요구하는 "틀린 구현에서 실패하는" 단언 대상이 생긴다.
+- **fan-out 은 `BroadcastManager` 안에서 한다.** `self._channels` 는 `(room_id, lang)` 키이므로 `[q for (rid, _lang), qs in self._channels.items() if rid == room_id for q in qs]`. 큐 포화 처리는 `publish`(`:213-239`)의 "가장 오래된 것 1건 버리고 넣기" 정책을 그대로 재사용한다 — 별도 정책을 만들면 control 만 조용히 유실되는 경로가 생긴다. 가능하면 `publish` 의 큐 주입부를 작은 private 헬퍼로 뽑아 둘이 공유한다 (RL-001: 복사본은 갈라진다).
+- **control 상태는 `BroadcastManager` 에 둔다.** WS 스레드와 SSE 스레드가 모두 `get_broadcast_manager()` 로 같은 인스턴스를 잡고 있어(`app.py:326`, `websocket_handler`) 별도 싱글턴을 만들 필요가 없다. `set_control`/`get_control` 은 `has_viewers`(`:202`)/`get_metrics`(`:181`) 처럼 **동기·lock-free** 로 둔다 — 스칼라 두 개의 dict 갱신이고, 채널 레지스트리 락에 얹으면 SSE 핸들러가 오퍼레이터 조작에 블로킹된다. `get_control` 은 `get_metrics` 처럼 **복사본**을 돌려줘 호출자가 내부 상태를 오염시키지 못하게 한다.
+- **연결 스냅샷의 위치가 중요하다.** `register_viewer` **다음**, 큐 루프 **전**, `: connected` 바로 뒤다. 등록 전에 보내면 그 사이에 도착한 갱신을 놓치고, 루프 안에서 보내면 자막 프레임과 순서가 섞인다.
+- **`{{LANG_PINNED}}` 는 서버만 판정할 수 있다.** `_handle_stage:551-552` 는 `?lang=` 을 검증해 `caption_lang` 으로 내려보내는데, 클라이언트는 그 값이 URL 에서 온 것인지 룸 기본값인지 **구분할 수 없다**(`stage.html:979-981` 의 주석이 브라우저에서 쿼리를 다시 파싱하지 말라고 못 박고 있고 그 판단은 옳다). 그러므로 서버가 `requested_lang is not None and requested_lang in output_langs` 를 그대로 boolean 으로 실어 보낸다. `_render_stage_html` 의 `values` dict 에 한 항목 추가 + 템플릿에 `lang_pinned: {{LANG_PINNED}}` 한 줄이다. 값은 다른 모든 스크립트 컨텍스트 값과 마찬가지로 `_json_for_script` 를 통과시킨다 (RL-016/RL-020 — 스칼라도 예외가 아니다). `_render_viewer_html` 은 이 필드가 필요 없다(뷰어는 `?lang=` 을 읽지 않는다) — **뷰어 템플릿에 넣지 말 것.** `test_every_template_placeholder_is_mapped`(`tests/test_viewer_page.py:679`)와 대응 무대 테스트가 미사용 플레이스홀더를 잡는다.
+- **뷰어의 "명시적 선택" 신호는 드롭다운뿐이다.** `viewer.html` 은 `?lang=` 을 읽지 않는다(`:668` — `CONFIG.primary_lang` 로 시작한다). `langSelect` 의 `change` 핸들러(`:740`)에서 `langLocked = true` 를 세우고 control 은 그 플래그를 존중한다. `localStorage` 로 잠금을 영속화하지 않는다 — 다음 세션의 다른 언어까지 따라와 청중이 왜 언어가 안 바뀌는지 모르게 된다.
+- **재구독 함수는 하나만 만든다.** `stage.html` 의 `connect()`(`:982`)는 인자가 없고 `CONFIG.caption_lang` 을 직접 읽으며, `viewer.html` 의 `connect(lang)`(`:675`)는 이미 인자를 받는다. 무대 쪽을 `connect(lang)` 로 맞추고 현재 언어를 모듈 변수로 들되, **`CONFIG.caption_lang` 을 변경 가능한 상태로 재활용하지 말 것** — 부트스트랩 값은 "서버가 무엇을 줬는가" 의 기록으로 남아야 `lang_pinned` 판정과 디버깅이 가능하다. `tests/test_stage_page.py::test_stream_subscription_uses_the_bootstrapped_caption_lang`(`:725`) 가 이 변경으로 필연적으로 흔들린다 — **삭제하지 말고**, "초기 구독은 부트스트랩 값을 쓰고, 그 뒤 구독은 control 로만 바뀐다" 는 더 구체적인 단언으로 강화한다 (ISSUE-42 가 ISSUE-40 의 가드에 한 것과 같은 처리).
+- **재구독 절차의 순서를 고정한다.** ① 종료/동일 언어/지원 목록 밖 → 조기 반환, ② 스크롤 추종 측정, ③ `_twStop()`, ④ `currentLine=null` + `twTarget`/`twShown`/`twFinalize` 초기화, ⑤ `replaceChildren()` 으로 스택 비우고 새 언어 대기 문구 재생성, ⑥ 옛 EventSource `close()`, ⑦ 새 EventSource `open`. ⑥ 이 ⑦ 보다 **먼저**여야 두 스트림이 한 컬럼에 섞이지 않는다. ③ 이 ⑤ 보다 먼저여야 rAF/interval 콜백이 방금 지운 노드에 쓰지 않는다. ②→⑤ 순서는 기존 순서 단언 테스트와 같은 이유다.
+- **`announce()` 를 재구독 경로에서 새로 부르지 않는다.** 무대는 `setCaptionState()`(`stage.html:958-972`)가 대기 문구 낭독을 **이미 소유**하고 있으므로 상태 전환만 시키면 된다. 새 호출을 추가하면 라이브 리전 쓰기 경로가 둘이 되어 RL-019 가 경고한 상태로 되돌아간다.
+- **폰트 배율 CSS**: 두 템플릿의 `:root` 에 `--caption-scale: 1;` 을 두고, 무대 `.caption-line`(`stage.html:402`)의 `font-size: clamp(20px, 1.4vw + 8px, 32px)` 를 `calc(clamp(20px, 1.4vw + 8px, 32px) * var(--caption-scale))` 로 감싼다. 뷰어(`viewer.html:199`)도 같은 방식. **`.caption-empty` 같은 상태 문구에는 걸지 않는다** — 오퍼레이터가 조절하려는 것은 자막이지 안내 문구가 아니다. `word-break: keep-all` / `overflow-wrap: anywhere`(`tests/test_stage_page.py::test_caption_typography_for_narrow_column`) 규칙은 그대로 둔다 — 배율을 올리면 좁은 컬럼에서 긴 토큰이 넘칠 위험이 커지므로 오히려 이 규칙이 더 중요해진다.
+- **배율 범위는 0.8–1.6, step 0.1, 기본 1.0.** 하한이 1.0 미만이어도 되는 이유는 **대비 판정이 크기와 무관**하기 때문이다 — ISSUE-40/45 는 `clamp()` 하한이 24px 미만으로 떨어질 수 있다는 이유로 large-text 완화(3:1)를 쓰지 않고 **일반 텍스트 4.5:1** 로 알파를 정했다(`#0b0b0c` 위 0.45 = 4.52:1). 그 판정은 어떤 크기에서도 유효하므로 축소가 AA 를 깨지 않는다. 이 논리를 주석으로 남긴다 — 남기지 않으면 다음 사람이 "축소하면 대비가 위험하지 않나" 로 되돌린다.
+- **자막 payload 와 control payload 를 같은 리스너에서 처리하지 않는다.** `es.addEventListener("control", ...)` 로 분리한다. `message` 핸들러 안에서 `payload.event` 를 분기하면 SSE 의 named event 를 쓰는 의미가 없고, 자막 경로에 조건문이 하나 더 늘어난다.
+- **1.5d 를 넘길 것 같으면 분할선은 서버/클라이언트다.** 서버 절반(상태 저장소 + fan-out + 이벤트 이름 해석 + 스냅샷 + WS 핸들러)은 단독으로 머지 가능하다 — 아무도 읽지 않는 이벤트가 나갈 뿐 기존 동작이 변하지 않는다. 클라이언트 절반을 뒤 이슈로 미루되, **그때는 ISSUE-54 도 함께 미룬다**(오퍼레이터가 조작해도 화면이 안 바뀌는 상태로 출하하면 안 된다).
+- `.pre-commit-config.yaml` 의 `ruff-format` / `black` 충돌 — `assert cond, (msg)` 레이아웃을 피한다.
+
+#### Tests
+- [ ] `tests/test_sse_broadcast.py` — `publish_control` fan-out: `(room,"ko")` 와 `(room,"vi")` 에 큐를 등록하고 1회 발행 후 **두 큐 모두** 정확히 1건씩 받는다. 다른 룸의 큐는 **0건**이다
+- [ ] `tests/test_sse_broadcast.py` — 와이어 포맷: control payload 를 흘린 응답 바이트에 `event: control\ndata: ` 가 있고 `event: message` 로 나가지 않는다. 자막 payload 에 `"event":"control"` 을 심어도 `event: message` 로 나간다 (허용 목록 가드 — 이 단언이 없으면 화이트리스트를 지워도 통과한다)
+- [ ] `tests/test_sse_broadcast.py` — 연결 스냅샷: control 상태가 있는 룸에 접속하면 첫 데이터 프레임이 `event: control` 이고 그 값이 상태와 **정확히 일치**한다. 상태가 없는 룸에서는 control 프레임이 0건이다
+- [ ] `tests/test_sse_broadcast.py` — `set_control` 부분 갱신이 앞 필드를 보존한다. `get_control` 이 돌려준 dict 를 변형해도 내부 상태가 변하지 않는다 (복사본 반환)
+- [ ] `tests/test_websocket_handler.py` — `stage_control` 메시지: 유효 값은 상태 갱신 + 발행 1회 + `stage_control_ack`; 범위 밖 / 비수치는 갱신 0회 + 발행 0회 + 예외 문자열 없는 거절 응답
+- [ ] `tests/test_websocket_handler.py` — ISSUE-52 의 언어 기록이 성공하면 control 발행 1회, 스킵되면 0회 (RED 확인: 발행을 무조건 하도록 바꾸면 0회 케이스가 실패해야 한다)
+- [ ] `tests/test_stage_page.py` — `test_no_interactive_controls`(`:363`) 와 `test_no_presenter_keyboard_interference`(`:292`) 가 **변경 없이 통과**한다 (두 테스트를 이 이슈에서 수정했다면 그것 자체가 실패 신호다)
+- [ ] `tests/test_stage_page.py` — `test_stream_subscription_uses_the_bootstrapped_caption_lang`(`:725`) 를 "초기 구독만 부트스트랩 값을 쓰고 이후 구독은 control 이 정한다" 로 **강화**한 형태로 대체. 정적 단언: `CONFIG.caption_lang` 에 **대입하는** 구문이 0건이다
+- [ ] `tests/test_stage_page.py` / `tests/test_viewer_page.py` — 재구독 경로에 `replaceChildren()` 이 쓰이고 HTML sink 가 0건이며, 스크롤 추종 측정이 DOM 쓰기보다 앞선다는 순서 단언 (기존 `test_lock_line_measures_follow_before_it_writes` 스타일 미러링)
+- [ ] `tests/test_stage_page.py` / `tests/test_viewer_page.py` — `--caption-scale` 이 `:root` 에 기본 `1` 로 선언되고 자막 라인 규칙에만 `calc(... * var(--caption-scale))` 로 걸려 있으며, `.caption-empty` 등 상태 문구 규칙에는 걸려 있지 않다
+- [ ] `tests/e2e/test_stage_page_e2e.py` — `?lang=` 없이 연 페이지에 `control{primary_lang:"vi"}` 주입 → EventSource URL 이 `?lang=vi` 로 바뀐다. `?lang=ko` 로 연 페이지에 같은 것을 주입 → URL 이 `?lang=ko` **그대로**다 (두 케이스를 같은 테스트 파일에 나란히 두어 pin 규칙이 눈에 보이게 한다)
+- [ ] `tests/e2e/test_stage_page_e2e.py` — 재구독 직후 `control` 을 전달한 상태에서 보이는 클릭 가능 요소 **0개**, `document.activeElement === document.body`, `document.fullscreenElement === null` (NFR-025/NFR-030 행동 가드)
+- [ ] `tests/e2e/test_stage_page_e2e.py` — 타자기 진행 중 재구독: 정착 후 rAF 루프 1개 이하, `.caption-line` 0개, `#caption-empty` 정확히 1개이며 텍스트가 **새 언어**의 대기 문구다. `control` 을 두 번 연속 주입해도 EventSource 재생성이 1회뿐이다
+- [ ] `tests/e2e/test_viewer_page_e2e.py` — 드롭다운 미조작 상태에서 control 수신 → 구독과 드롭다운 표시값이 **둘 다** 새 언어. 드롭다운으로 `en` 을 고른 뒤 control 수신 → **둘 다 `en` 그대로** (RL-004: 구독만 보지 말고 UI 값도 함께 단언한다)
+- [ ] `tests/e2e/test_stage_page_e2e.py` — `control{caption_scale:1.4}` 주입 후 `.caption-line` 의 `getComputedStyle(...).fontSize` 가 주입 전보다 **크다**(변수 존재 확인이 아니라 렌더 값 비교). `caption_scale: 9` 주입 시 클램프되어 레이아웃이 유지된다
+- [ ] `tests/test_stage_page.py` — 배율 하한(0.8)에서의 `.caption-line` 대비가 `tests/wcag.py` 헬퍼로 4.5:1 이상임을 수치로 단언 (ISSUE-45 가 뽑아 둔 공용 헬퍼를 재사용 — 복사하지 않는다)
+
+#### Rollback
+서버는 `BroadcastManager` 의 control 상태/fan-out, `_handle_stream` 의 이벤트 이름 해석 한 줄과 스냅샷 블록, `websocket_handler` 의 `stage_control` 핸들러와 발행 호출을 되돌리면 끝난다 — **스키마 변경이 0건**이라 마이그레이션 롤백이 없다. 클라이언트는 두 템플릿의 `control` 리스너와 `--caption-scale` 선언을 제거하고 `connect()` 를 부트스트랩 언어 고정으로 되돌린다. 되돌린 뒤에도 ISSUE-52 의 **페이지 로드 시점 정합은 그대로 유지**되므로, 잃는 것은 "이미 열린 화면의 실시간 추종" 하나뿐이다. 부분 롤백이 필요하면 클라이언트만 되돌려도 안전하다 — 아무도 읽지 않는 `control` 이벤트가 와이어에 흐를 뿐이다.
+
+---
+
+### ISSUE-54: 오퍼레이터 화면 실시간 컨트롤 — 언어 즉시 반영 및 무대 자막 크기 슬라이더
+
+- Track: feature
+- Type: feat
+- UI: true
+- Manual: false
+- PRD-Ref: FR-086, NFR-030
+- Priority: P1
+- Estimate: 1d
+- Status: shipped
+- Owner: pillip
+- Branch: issue/ISSUE-54-operator-live-controls
+- GH-Issue: #150
+- PR: #151
+- Depends-On: ISSUE-53
+
+#### Goal
+오퍼레이터가 `:8501` 설정 패널에서 **출력 언어**를 바꾸면 이미 열려 있는 무대/뷰어 화면이 즉시 따라오고, 새로 추가되는 **무대 자막 크기 슬라이더**로 행사 중에 자막 배율을 조절할 수 있다 — 둘 다 캡션 파이프라인을 끊지 않는다.
+
+#### 현재 문제
+ISSUE-53 은 출하됐다(GH #144, PR #146, squash `c8ccd1a`) — 서버·클라이언트 배선이 끝났고 `control` 이벤트를 **트리거할 사람**만 남는다. 두 가지가 비어 있다.
+
+1. **출력 언어 드롭다운은 이미 있지만(`components/webrtc.html:645`) 오퍼레이터가 그것이 무대 화면에도 영향을 준다는 사실을 알 방법이 없다.** 지금 이 드롭다운의 카피와 주변 문맥은 "오퍼레이터 자기 화면의 번역 언어" 로 읽힌다. ISSUE-52/53 이후 이 컨트롤은 룸 전체의 기본 송출 언어를 바꾸는 컨트롤이 된다 — 그 사실이 UI 에 없으면 오퍼레이터는 청중 화면을 모르고 바꾸게 된다.
+2. **자막 크기 조절 수단이 무대에 전혀 없다.** 설정 패널에 이미 있는 `#fontSizeSlider`(`:657`, 18–48px)는 **오퍼레이터 자기 화면의 `--translation-font-size`** 를 바꿀 뿐 무대/뷰어에 아무 영향이 없다(`:1109-1116`, `localStorage` + CSS 변수). 행사장 뒤쪽에서 안 보인다는 신고가 들어와도 지금은 할 수 있는 일이 없다.
+
+무대 페이지에 컨트롤을 두는 선택지는 없다 — NFR-025 와 `tests/test_stage_page.py::test_no_interactive_controls`(`:363`)가 `<input>` 개수를 0으로 못 박고 있고, 사용자도 무대 화면 위 조작과 관리자 폼에 묻는 방식을 모두 명시적으로 거절했다.
+
+#### Scope (In/Out)
+- In:
+  - `components/webrtc.html` 설정 패널에 "무대 자막 크기" `<input type="range">` 추가 — `min=0.8 max=1.6 step=0.1 value=1.0`, 기존 `.control-group` / `.slider` / 값 표시 `<span>` 패턴 재사용
+  - 슬라이더 → WS `{"type":"stage_control","caption_scale":<number>}` 전송. `sendLanguageUpdate()`(`:1077-1088`) 와 같은 `readyState === OPEN` 가드
+  - 연속 드래그 억제 — `input` 이벤트마다 보내지 않고 짧은 디바운스 또는 `change` 시점 전송 (한 번의 드래그가 수십 건의 control 방송이 되지 않게)
+  - `stage_control_ack` 수신 시 표시값을 서버 값으로 확정
+  - `stage_control_error` 수신 처리 — 서버는 거절 시 `{"type":"stage_control_error","message":<고정 문구>}` 를 보낸다(`websocket_handler.py:1032-1039`). 슬라이더 표시값을 **마지막으로 ack 된 값으로 되돌리고**, 서버가 준 고정 문구만 노출한다(값·예외 문자열을 지어내지 않는다 — RL-006). 응답에 `caption_scale` 이 실려 오지 않는다는 점에 주의한다
+  - **초기값은 서버가 권위**: `auth_success` 의 `control` 필드(ISSUE-53 이 실제로 출하한 형태 — `websocket_handler.py:371-383`)로 슬라이더를 맞춘다. 그 필드는 **`dict` 또는 `null`** 이고(`BroadcastManager.get_control` 이 상태가 없으면 `None` 을 준다 — `{}` 가 아니다), `dict` 여도 **설정된 키만** 담기므로 `{"primary_lang":"vi"}` 처럼 `caption_scale` 이 **없을 수 있다.** 세 경우를 각각 다룬다: `null` → 폴백, `caption_scale` 없음 → 폴백, 있음 → 그 값. 폴백은 `localStorage`, 그것도 없으면 1.0. **로드 시 자동 전송은 하지 않는다**
+  - 출력 언어 드롭다운의 라벨/도움말 카피 갱신 — 이 선택이 무대·뷰어의 기본 자막 언어를 바꾼다는 사실 명시
+  - 세션 미시작(WS 미연결) 상태에서 언어를 바꿨을 때의 동작 명시와 안내
+  - 새 컨트롤의 WCAG AA — 라벨·값 표시 텍스트 대비를 **설정 패널의 실제 배경 `#0e0e10`** 위에서 수치로 계산 (RL-018)
+  - 새 컨트롤의 a11y — `<label for>` 연결, 값 표시에 `aria-live="polite"`, `:focus-visible` 링 (RL-010, 기존 `#fsTransSize`(`:738`) 패턴)
+- Out:
+  - 서버측 `stage_control` 핸들러·검증·발행 — ISSUE-53 소유
+  - `components/stage.html` / `components/viewer.html` 변경 — ISSUE-53 소유. **이 이슈는 무대 템플릿을 한 줄도 건드리지 않는다**
+  - 기존 `#fontSizeSlider` / `#originalSizeSlider`(오퍼레이터 자기 화면용) 의 동작 변경·통합 — 대상이 다르므로 그대로 둔다. 두 슬라이더가 나란히 있는 혼동은 **라벨로** 해결한다
+  - Streamlit 사이드바에 컨트롤 추가 — **금지**. 아래 "설계 결정" 참조
+  - BOOT payload(`build_bootstrap_payload`) 필드 추가 — **금지**. 같은 이유
+  - 관리자 폼 / `stage_config` 영속화 — ISSUE-53 설계 결정 1 에서 기각됨
+  - 배율 프리셋 버튼, 키보드 단축키, 무대 화면별 개별 배율 — 슬라이더 하나로 시작한다
+  - **뷰어의 언어 전환 시 라이브 리전 이중 쓰기 — ISSUE-67 소유.** 이 이슈가 만드는 출력 언어 조작이 그 결함의 **방아쇠를 바꾼다**(청중의 드롭다운 조작 → 오퍼레이터의 원격 조작). 실측: 뷰어는 전환 시 announcer 에 두 번 쓰고 **첫 번째가 옛 언어의 대기 문구**다(`docs/ui_review_notes.md:1731-1744`, L-1). 무대는 한 번만 쓴다. **이 이슈는 `viewer.html` 을 한 줄도 건드리지 않으므로 코드 의존이 없다** — 순서는 무관하고, 두 이슈가 같은 스프린트에 들어가면 ISSUE-67 을 먼저 넣는 편이 리허설에서 덜 혼란스럽다
+  - **인증 없는 WS 채널 노출 — ISSUE-55/56 소유.** 이 이슈는 `stage_control` 의 **보내는 쪽 UI** 만 만든다. 서버는 ISSUE-53 이후 이미 그 메시지를 받고 있으므로 **이 이슈가 노출을 넓히지 않는다**(0 증분). 그 문장을 PR 설명에 적어 리뷰어가 같은 판단을 다시 하지 않게 한다
+
+#### 설계 결정 — ISSUE-47 F-2(RL-028) 와 같은 경로인가? **아니다**
+ISSUE-47 은 표시 모드 라디오를 세션 중 `disabled` 로 잠갔다. 그 값이 `build_bootstrap_payload` → `{{BOOTSTRAP_JSON}}` → 컴포넌트 iframe 의 `srcdoc` 문자열에 들어가고, `srcdoc` 이 바뀌면 문서가 통째로 새로 로드되어 `RTCPeerConnection`·마이크 스트림·WS·자막 스크롤백이 사라지기 때문이다(Streamlit 1.48.1 실측, RL-028).
+
+**이 이슈의 두 컨트롤은 그 경로를 타지 않는다.** 둘 다 **컴포넌트 iframe 안**에 있고, 값은 BOOT payload 가 아니라 **이미 열려 있는 WebSocket** 으로 흐른다. 출력 언어 드롭다운(`:645`)은 이미 그렇게 동작하고 있으며(ISSUE-2 AC: "실시간 언어 변경이 재연결 없이 반영된다"), 새 슬라이더도 같은 규칙을 따른다. `srcdoc` 문자열이 바뀌지 않으므로 iframe 은 리마운트되지 않는다.
+
+**그래서 이 이슈는 BOOT payload 에 필드를 추가하지 않고, Streamlit 사이드바에도 위젯을 추가하지 않는다.** RL-028 의 prevention 이 요구하는 분류로 말하면 두 상태 모두 **interaction-scoped** 이고, interaction-scoped 상태는 컴포넌트 밖 Streamlit chrome 에 두거나 세션 중 `disabled` 여야 하는데 — 세 번째 답이 있다: **애초에 payload 에 넣지 않는 것.** 이미 뚫려 있는 WS 채널이 그 답이다. 이 문단이 PR 설명에 그대로 들어가야 한다(RL-028 은 새 상태의 분류를 PR 에 적으라고 요구한다).
+
+**세션 재시작 없이 언어를 바꾸는 것이 파이프라인을 끊지 않는가?** 끊지 않는다. `language_update` 는 서버의 `language_settings` dict 만 바꾸고(`websocket_handler.py:837-860`), 다음 transcript 부터 새 `target_lang` 이 적용된다. WebRTC 연결도 마이크 스트림도 건드리지 않는다. **다만 전환 순간에 진행 중이던 문장은 옛 언어로 끝난다** — 이것은 결함이 아니라 문장 단위 파이프라인의 자연스러운 성질이며, 안내 카피에 반영한다.
+
+#### Acceptance Criteria (DoD)
+- [ ] Given 세션이 돌고 있고 무대 화면이 `?lang=` 없이 열려 있는 상태, when 오퍼레이터가 출력 언어를 `ko` → `vi` 로 바꾸면, then 무대 화면이 **페이지 새로고침 없이** `vi` 채널로 옮겨 가고, `:8501` 탭의 마이크·WebRTC·자막 스크롤백은 그대로 유지된다(컴포넌트 iframe 이 리마운트되지 않는다)
+- [ ] Given 같은 상황, when 전환 직후를 관찰하면, then 전환 이전에 확정된 자막 라인들은 지워지지 않거나(뷰어) 새 언어 대기 상태로 정리되며(무대), 어느 쪽이든 **빈 검은 화면이 나타나지 않는다**
+- [ ] Given 오퍼레이터가 "시작" 을 누르기 **전에** 출력 언어를 바꾼 상태, when 그 뒤 "시작" 을 누르면, then auth 시점 기록(ISSUE-52) + control 발행(ISSUE-53) 으로 이미 열려 있던 무대 화면이 그 언어로 맞춰진다. 그리고 시작 전에는 언어 변경이 아직 반영되지 않는다는 사실이 UI 에 드러난다(단정적인 성공 표시를 하지 않는다)
+- [ ] Given 설정 패널이 열린 상태, when "무대 자막 크기" 슬라이더를 확인하면, then 범위가 0.8–1.6, 기본값 1.0 이고 현재 값이 텍스트로 함께 표시되며, 기존 "번역 글자 크기" 슬라이더와 **라벨로 명확히 구분**된다
+- [ ] Given 슬라이더를 1.0 → 1.4 로 드래그할 때, when 열려 있는 무대 화면을 확인하면, then 자막 글자 크기가 즉시 커지고 좌측 발표 영역과 캡처 재생에는 아무 변화가 없다
+- [ ] Given 슬라이더를 한 번의 드래그로 끝에서 끝까지 움직일 때, when 전송된 `stage_control` 메시지 수를 세면, then **한 자릿수** 이하다 (틱마다 방송하지 않는다 — 개수를 세는 단언으로 못 박는다)
+- [ ] Given WS 가 아직 연결되지 않은 상태(세션 미시작), when 슬라이더를 움직이면, then 예외 없이 값만 로컬에 반영되고 내부 오류 문자열이 노출되지 않는다 (RL-006)
+- [ ] Given 서버에 배율 1.4 가 이미 설정된 룸, when 오퍼레이터가 페이지를 새로고침하고 세션을 다시 인증하면, then 슬라이더가 **1.4** 를 가리킨다 — `localStorage` 의 옛 값이 아니라 서버 스냅샷이 이긴다
+- [ ] Given 서버에 배율 상태가 없는 룸, when 오퍼레이터 화면이 로드되면, then 슬라이더는 기본값 1.0(또는 `localStorage` 값)을 표시하고 **아무 메시지도 자동 전송하지 않는다**
+- [ ] Given 새로 추가한 라벨과 값 표시 텍스트, when 설정 패널의 실제 배경 `#0e0e10` 위에서 알파 합성 후 대비를 계산하면, then 4.5:1 이상이다 (`#0b0b0c` 가 아니다 — 배경을 잘못 잡는 것이 RL-018 의 정확한 형태다)
+- [ ] Given 키보드만 쓰는 오퍼레이터, when Tab 으로 슬라이더에 도달하면, then 보이는 포커스 링이 나타나고 화살표 키로 값이 변하며 `<label>` 이 프로그램적으로 연결되어 있다 (RL-010)
+- [ ] Given `components/stage.html` 과 `components/viewer.html`, when 이 이슈의 diff 를 확인하면, then **두 파일의 변경이 0줄**이다 (ISSUE-53 소유 — 여기서 손대면 소유권이 흐려진다)
+- [ ] Given `operator_ui.build_bootstrap_payload` 와 `app.py`, when 이 이슈의 diff 를 확인하면, then **BOOT payload 에 새 필드가 0개**다 (RL-028 회귀 가드)
+- [ ] Given 슬라이더가 1.4 에서 ack 된 상태, when 서버가 어떤 이유로든 `stage_control_error` 를 보내면, then 표시값이 **1.4 로 되돌아가고** 노출되는 문구가 서버가 보낸 고정 문구이며 내부 값·예외 문자열이 DOM 에 0건이다 (RL-006)
+
+#### Implementation Notes
+- **기존 패턴을 그대로 복제한다.** 슬라이더 마크업은 `#fontSizeSlider` 그룹(`components/webrtc.html:654-659`)의 `.control-group` + `<label>` + `.slider` + `<span>` 구조를, 이벤트 핸들러는 `:1109-1116` 의 `oninput` 형태를, 전송은 `sendLanguageUpdate()`(`:1077-1088`)의 `readyState === OPEN` 가드를 따른다. 새 CSS 클래스나 새 알파 값을 만들지 않는다 — 만드는 순간 RL-018 의 "근거 없는 준수 추정" 이 하나 더 생긴다.
+- **대비는 계산해서 정한다.** 재사용할 규칙의 현재 값: `.control-group label` = `rgba(255,255,255,0.5)` @12px, `.control-group span` = `rgba(255,255,255,0.55)` @13px, 배경 `.settings-panel { background: #0e0e10 }`(`:74`). `tests/wcag.py`(ISSUE-45 가 추출) 의 `_composite` / `_contrast_ratio` 헬퍼로 수치를 뽑고, **그 수치를 테스트 parametrize 목록에 그대로 남긴다.** 눈대중 금지.
+- **디바운스는 `input` 을 막는 것이 아니라 전송만 억제한다.** 로컬 표시값은 매 틱 갱신해야 슬라이더가 뻑뻑하게 느껴지지 않는다. 전송만 ~150ms 디바운스하거나 `change` 이벤트로 옮긴다. 드래그 중 무대 자막이 실시간으로 따라오길 원한다면 디바운스 쪽을 택한다 — `change` 는 손을 떼야 반영된다.
+- **`stage_control_ack` 처리에서 슬라이더 값을 되받아 쓸 때 되먹임 루프를 만들지 말 것.** ack 로 값을 설정하는 코드가 다시 전송 핸들러를 트리거하면 무한 왕복이 된다. 값 설정은 프로그램적 대입(`slider.value = ...`)으로만 하고 전송은 사용자 이벤트 핸들러 안에서만 한다.
+- **언어 드롭다운 카피.** 라벨은 그대로 두고 `.lang-warning` 옆에 짧은 보조 문구를 둔다. 담아야 할 사실 세 가지 — ① 이 선택이 무대/뷰어의 **기본** 자막 언어를 바꾼다, ② 자기 언어를 직접 고른 청중은 바뀌지 않는다, ③ 세션 시작 전 변경은 시작하는 순간 반영된다. 셋을 한 문장에 욱여넣지 말고 짧게 나눈다. `docs/ux_spec.md` "Copy Guidelines" 의 톤(존댓말, 기술 용어 최소화)을 따른다.
+- **"자기 언어를 고른 청중은 안 바뀐다" 는 규칙은 오퍼레이터에게 반드시 보여야 한다.** 이 규칙(ISSUE-53) 을 모르면 오퍼레이터는 "언어를 바꿨는데 뒷줄 사람 화면은 그대로" 를 버그로 신고한다. 카피가 이 이슈의 산출물인 이유다.
+- **슬라이더 단위는 배율(×)로 표시한다.** 서버 프로토콜이 배수이고 무대 자막이 `clamp()` 기반이라 px 로 보여 줄 수 없다. `1.0×` / `1.4×` 처럼 표시하고, 라벨은 "무대 자막 크기" 로 두어 오퍼레이터 자기 화면용 "번역 글자 크기"(px) 와 구분한다.
+- **e2e 는 `webrtc.html` 을 직접 로드한다.** `tests/e2e/test_operator_stage_mode_e2e.py` 가 이미 Streamlit 을 거치지 않고 컴포넌트를 직접 띄우는 하네스를 갖고 있다(ISSUE-47). WebSocket 을 스텁으로 바꿔 전송된 메시지를 배열에 모으면 개수·값 단언이 그대로 된다.
+- **`tests/test_webrtc_stage_launch.py` 스타일의 정적 가드를 추가한다** — BOOT payload 에 새 키가 없다는 사실은 `operator_ui.build_bootstrap_payload` 의 반환 키 집합을 **정확히** 단언해야 잡힌다(`in`/`not in` 은 키가 늘어나도 통과한다, RL-004).
+- `.pre-commit-config.yaml` 의 `ruff-format` / `black` 충돌 — `assert cond, (msg)` 레이아웃을 피한다.
+- **범위 숫자를 새로 적는 것이 아니라 기존 대조에 편입시킨다.** 0.8/1.6 은 이미 서버 상수 + 두 템플릿 상수 **세 곳**에 손으로 적혀 있고, ISSUE-53 리뷰가 `test_the_range_is_one_rule_across_the_server_and_both_templates`(`tests/test_stage_page.py:1599`)로 묶어 두었다. 이 이슈의 `<input min max>` 가 네 번째 사본이다. 갈라지면 **서버가 허용하는 값을 오퍼레이터가 보낼 수 없거나 그 반대**가 되고 어디에도 로그가 남지 않는다. 번들러가 없어 상수를 공유할 수 없다는 사실은 변하지 않았으므로, 해법은 공유가 아니라 **대조 하나를 넓히는 것**이다.
+- **디바운스 값이 무대 스크롤에 미치는 영향은 이미 처리돼 있다.** ISSUE-53 UI 리뷰의 F-1/F-2 수정으로 두 템플릿의 `applyCaptionScale` 은 (a) 같은 값 재수신 시 무동작이고 (b) 뷰어는 쓰기 전에 추종을 재고 무대는 쓴 뒤 재앵커한다. 따라서 디바운스가 느슨해 중복 프레임이 나가도 **스크롤이 튀지 않는다** — 디바운스는 순수하게 방송량 문제이며, 전송 개수 AC 를 만족하는 선에서 가장 단순한 형태를 고르면 된다.
+
+#### Tests
+- [ ] **기존 `tests/test_stage_page.py::test_the_range_is_one_rule_across_the_server_and_both_templates`(`:1599`)를 확장**해 `components/webrtc.html` 의 새 range 입력을 **네 번째 사본**으로 편입한다 — 서버 상수 `websocket_handler.CAPTION_SCALE_MIN/MAX` 와 두 템플릿 상수, 그리고 이 입력의 `min`/`max` 가 **네 값 모두 일치**함을 단언한다. RED 확인 2건(입력의 `max` 를 1.5 로, `min` 을 0.9 로)을 PR 설명에 적는다. **별도 테스트를 새로 만들지 말 것** — 그 순간 대조가 두 곳으로 갈라지고, 그것이 이 테스트가 존재하는 이유인 RL-025 그 자체다 (ISSUE-53 코드 리뷰 C-3 가 이 이슈를 지목해 예고했다)
+- [ ] `tests/test_webrtc_stage_launch.py`(또는 인접 신규 파일) — `components/webrtc.html` 정적 검사: `step="0.1"`, `value="1"`(또는 `1.0`) 를 가진 range 입력이 **정확히 1개** 추가되어 있고, 기존 `#fontSizeSlider` / `#originalSizeSlider` 의 속성은 변하지 않았다
+- [ ] `tests/test_operator_ui.py` — `build_bootstrap_payload(...)` 의 반환 키 집합이 ISSUE-47 이후와 **정확히 동일**하다(집합 상등 단언). 새 키가 하나라도 늘면 실패한다 (RL-028 회귀 가드)
+- [ ] 신규 대비 테스트 — 새 컨트롤이 쓰는 텍스트 색 규칙 × 배경 `#0e0e10` parametrize 로 4.5:1 이상. 알파를 0.3 으로 낮추면 **실패한다**(RED 확인, RL-004). `tests/wcag.py` 헬퍼를 import 해서 쓰고 복사하지 않는다 (RL-001)
+- [ ] `tests/e2e/` — 슬라이더 드래그: WS 스텁이 받은 `stage_control` 메시지 수가 한 자릿수 이하이고, **마지막** 메시지의 `caption_scale` 이 최종 슬라이더 값과 정확히 일치한다
+- [ ] `tests/e2e/` — WS 미연결 상태에서 슬라이더 조작: 전송 0건, 콘솔 예외 0건, DOM 에 예외 문자열 0건
+- [ ] `tests/e2e/` — auth 응답의 `control` 세 형태 parametrize, `localStorage` 에는 매번 `1.0` 을 심어 둔다: ① `{"caption_scale":1.4,"primary_lang":"vi"}` → 슬라이더 **1.4**(서버가 이긴다) ② `{"primary_lang":"vi"}`(배율 키 없음) → **1.0** ③ `null` → **1.0**. 세 경우 모두 전송 **0건**. **RED 확인**: 서버 스냅샷 처리를 지우면 ①이 실패하고, `control` 을 무조건 dict 로 가정하면 ③이 예외를 던진다
+- [ ] `tests/e2e/` — `stage_control_ack` 수신으로 슬라이더 값이 설정될 때 추가 전송이 발생하지 않는다 (되먹임 루프 가드)
+- [ ] `tests/e2e/` — 슬라이더에 Tab 으로 도달 시 `document.activeElement` 가 그 입력이고 화살표 키로 값이 바뀐다. `<label for>` 가 입력의 `id` 를 가리킨다
+- [ ] `git diff --stat` 확인을 겸하는 정적 테스트 또는 PR 체크 — `components/stage.html` / `components/viewer.html` 변경 0줄 (소유권 경계 가드)
+- [ ] `tests/e2e/` — WS 스텁이 `stage_control_error` 로 응답: 슬라이더가 마지막 ack 값으로 복귀하고 추가 전송이 0건이며(되먹임 금지) 콘솔 예외 0건
+
+#### Rollback
+`components/webrtc.html` 의 새 슬라이더 마크업·핸들러·전송 코드와 언어 드롭다운 보조 카피를 되돌리는 단일 커밋 revert. **서버·DB·BOOT payload·무대 템플릿을 건드리지 않으므로 되돌릴 것이 컴포넌트 한 파일과 그 테스트뿐이다.** 되돌린 뒤에도 ISSUE-52 의 페이지 로드 정합과 ISSUE-53 의 언어 추종(오퍼레이터가 기존 출력 언어 드롭다운을 쓰면 그대로 동작한다)은 유지되고, 잃는 것은 **자막 크기 조절 수단**과 언어 변경의 파급 범위를 알려 주는 카피다. 되돌리는 순간 행사장에서 자막이 안 보인다는 신고에 대응할 방법이 다시 없어진다는 점을 PR 설명에 남긴다.
+
+---
+
+
+### ISSUE-55: WebSocket 인증을 서버 세션에 결속 — 존재만 하면 통과하는 신원 주장 차단
+
+- Track: platform
+- Type: security
+- UI: false
+- Manual: false
+- PRD-Ref: FR-083, NFR-010, RL-002, RL-003, RL-028
+- Priority: P1
+- Estimate: 1.5d
+- Status: todo
+- Owner: pillip
+- Branch: issue/ISSUE-55-ws-auth-session-binding
+- GH-Issue: —
+- PR: —
+- Depends-On: none
+
+#### Goal
+`ws://…:8765` 가 클라이언트 스스로 말한 `{id, username}` 만으로 세션을 열어 주는 상태를 끝낸다 — 인증은 **서버가 이미 발급한 비밀**(HMAC 서명 세션 쿠키, 또는 서버가 발행한 세션 고정 토큰)을 제시할 때만 성립한다.
+
+#### 현재 문제
+
+`_authenticate_client`(`websocket_handler.py:92-241`)가 요구하는 것의 전부는 이렇다. ① `data["user"]["id"]` 가 `users` 에 존재할 것, ② `is_active` 일 것, ③ `username` 이 그 행과 일치할 것. **비밀번호도, 토큰도, 쿠키도, Origin 도 검사하지 않는다.** 서버는 `0.0.0.0:8765` 에 바인딩되고(`websocket_handler.py:939-943`) 배포 환경에서는 ALB 가 `/ws` 로 라우팅한다(`components/webrtc.html:1816`). 즉 **사용자명 하나만 알면 프레임 하나로 인증된다.**
+
+이 구멍은 ISSUE-52 이전에도 있었다. 그때의 능력은 "자막 텍스트를 위조해 뷰어 채널에 밀어 넣기" 였고 — 세션 한정이고, 행사장 화면을 보면 드러난다. **ISSUE-52 가 그 채널에 영속 능력을 새로 붙였다**: 조작된 `auth` 프레임 하나가 `rooms.input_lang` / `output_lang` / `primary_output_lang` 을 덮어쓰고, 그 뒤에 열리는 모든 `/stage/{room_id}` · `/view/{room_id}` 가 그 언어 채널을 구독한다. **증분 위험은 Medium, 밑에 깔린 구멍은 High** — 이 이슈는 후자를 닫는다.
+
+**ISSUE-53(PR #146, 머지 완료)이 이 채널의 능력을 한 번 더 넓혔고, 새 능력은 "다음에 여는 페이지" 가 아니라 이미 열려 있는 화면에 실시간으로 닿는다.** 코드 리뷰가 실측한 증분(`docs/review_notes.md:2994-3014`, S-1):
+
+| 능력 | ISSUE-53 이전 | 이후 |
+|---|---|---|
+| 자막 위조 | 가능 (ISSUE-30 채널) | 그대로 |
+| 룸 언어 영구 덮어쓰기 | 가능 (ISSUE-52) — **다음에 여는 페이지**만 영향 | 그대로 |
+| **이미 열린 무대/뷰어의 실시간 조작** | **불가** | **가능** — `language_update` 한 건이 열려 있는 모든 non-pinned 화면을 즉시 재구독시킨다 |
+| 자막 배율 | 불가 | 가능 (0.8–1.6, 인메모리, 비영속) |
+
+세 번째 줄이 핵심이다. `ko`↔`vi` 를 번갈아 보내면 매번 `replaceChildren()` + 대기 문구 복귀가 일어나므로, **`WS_RATE_LIMIT_PER_MINUTE=30` 안에 머무르면서도 약 2초에 한 번 모든 non-pinned 무대 자막 컬럼을 비울 수 있다.** 무대 화면에는 조작 표면이 0개라(NFR-025) 현장에서 되돌릴 수단이 없고, **새로고침도 소용없다** — 접속 시점 스냅샷(`sse_broadcast.py:735-743`)이 적대적 상태를 다시 밀어 준다. 행사장 자막 블랙아웃이며, 사용자명 하나만 알면 프레임 하나로 시작된다.
+
+증분 자체는 **Medium** 이다 — 같은 소켓으로 이미 "프로젝터에 임의 문자열 표시" 가 가능하므로 상한이 올라가지 않는다. 그러나 *복구 불가능성*은 새로 생긴 성질이고, **밑에 깔린 구멍은 여전히 High** 다. 이 이슈가 그 High 를 닫는다.
+
+**ISSUE-53 이 in-PR 로 넣은 얇은 방어 하나가 지금 유일한 크로스룸 장벽이다.** `stage_control` 핸들러의 `room_id` 는 클라이언트 payload 가 아니라 **인증이 확정한 값**에서 온다(`websocket_handler.py:1025`, RL-002). 코드 리뷰의 뮤턴트 M19(`room_id = data.get("room_id") or user_info.get("room_id")`)가 **전체 스위트를 통과했고**, 그 자리에 `test_a_client_supplied_room_id_is_ignored` 가 in-PR 로 추가되어 닫혔다. 즉 **룸 소유권 검사가 없는 동안(ISSUE-56) 그 한 줄이 남의 룸 무대 화면을 건드리지 못하게 막는 전부**다. 이 이슈와 ISSUE-56 은 그 한 줄에 기대지 않아도 되는 상태를 만든다.
+
+RL-002 는 이 파일을 두고 쓰인 항목이고(빈도 2), ISSUE-5(PR 머지 완료)가 그중 "주장된 신원을 DB 와 대조" 까지만 닫았다. RL-002 의 recommended action 은 원래 **"토큰 기반 WS 인증 — 서버가 자기 저장소와 대조"** 였다. 남은 절반이 이 이슈다.
+
+#### Scope (In/Out)
+- In:
+  - 설계 결정을 **먼저 실측**한 뒤 후보 A / B 중 하나를 채택 (아래 "설계 결정")
+  - `_authenticate_client` 가 신원을 **서버 비밀에서** 유도하고, auth 프레임의 `user` 블록은 교차 확인용으로만 쓴다 — 불일치하면 일반 `auth_error`
+  - 검사 순서: 쿠키/토큰 검증이 **DB 조회보다 먼저**다 (인증되지 않은 소켓이 DB 를 때리는 경로를 남기지 않는다)
+  - 인증 경로를 타는 fake websocket 하네스 4개를 **하나의 공유 헬퍼**로 모으고 서명 쿠키(또는 토큰)를 그 헬퍼가 붙인다 (RL-001)
+  - `docs/architecture.md` — Browser→Server 표의 `auth` 행(`:209`) 갱신, 그리고 `:78` 의 낡은 서술("session cookie format … no signing") 수정. ISSUE-10 이 HMAC 서명을 넣은 뒤로 이 줄은 사실이 아니고, 이 이슈가 그 서명에 **의존**하므로 문서가 틀린 채로 남으면 안 된다
+  - `.env.example` / README 배포 절차에서 `SESSION_SECRET` 을 필수 항목으로 승격 (아래 Implementation Notes)
+- Out:
+  - **쿠키 포맷 변경 · 서버측 세션 스토어 · 만료 검증 — 별건.** 아래 "잔여 갭" 에 명시한다. 지금 포맷을 바꾸면 살아 있는 로그인 세션이 전부 끊긴다
+  - `process_request` 훅으로 핸드셰이크를 401 로 끊는 방식 — 아래 설계 결정에서 **기각**, 근거만 남긴다
+  - 룸 소유권 검증 — ISSUE-56 (같은 함수를 건드리므로 먼저 머지되는 쪽이 fake repo 픽스처를 정리한다. 코드 의존은 없다)
+  - Origin allowlist, WS rate limit 강화, `login.py` / Streamlit 로그인 흐름 — 각각 별건, 변경 0줄
+
+#### 설계 결정 (구현 전에 실측할 것)
+
+**후보 A — 핸드셰이크 쿠키 재사용 (기본안).**
+`websockets` 15.0.1 의 top-level `serve` 는 asyncio 구현이므로(`.venv/…/websockets/__init__.py:153`) 핸들러 안에서 `websocket.request.headers` 로 핸드셰이크 헤더를 읽을 수 있다. 브라우저는 WS 핸드셰이크에도 쿠키를 실으며, **쿠키는 포트를 구분하지 않으므로** `:8501` 에서 설정된 `user_session` 이 `ws://localhost:8765` 로도 간다. 검증은 `auth._verify_cookie`(`auth.py:50-63`) 를 그대로 쓴다 — `tests/test_hmac_cookie.py::TestVerifyCookie` 가 이미 7개 케이스(변조 HMAC / 변조 payload / 서명 누락 / 빈 문자열 / 형식 오류 / 다른 secret / 정상)로 검증해 둔 함수다. **BOOT payload 변경 0건 — RL-028 경로를 아예 타지 않는다.**
+
+> **먼저 실측할 것.** 컴포넌트는 `st.components.v1.html` 의 `srcdoc` iframe 안에서 돈다. Streamlit 이 그 iframe 을 sandbox 하면 origin 이 opaque 가 되고 SameSite 기본값(Lax) 쿠키가 붙지 않는다. **로컬과 배포 두 곳에서** DevTools → Network → WS 핸드셰이크 요청 헤더에 `Cookie: user_session=…` 이 실제로 있는지 확인한 뒤 진행한다. `components/webrtc.html:1795-1805` 가 `window.parent.location` 접근을 try/catch 로 감싸 `localhost` 폴백을 두고 있다는 사실은, 이 코드베이스가 두 경우를 모두 만난 적이 있다는 뜻이다. 확인에 실패하면 후보 B 로 간다.
+
+**후보 B — 오퍼레이터 페이지 렌더 시점의 서버 발행 토큰 (폴백).**
+`secrets.token_urlsafe` 로 만든 토큰을 `st.session_state` 에 담고 BOOT 로 내려 auth 프레임에 실어 보낸다.
+- **RL-028 제약**: 토큰은 `{{BOOTSTRAP_JSON}}` 문자열에 들어가므로 **Streamlit 세션 수명 동안 바이트가 고정**되어야 한다. 매 rerun 마다 새로 만들면 오퍼레이터가 무엇을 하든 iframe 이 리마운트되어 `RTCPeerConnection`·마이크 스트림·WS·자막 스크롤백이 사라진다. 최초 1회만 생성해 `st.session_state` 에서 재사용한다. 새 필드의 분류는 **session-scoped** 이며 그 문장을 PR 설명에 적는다.
+- **ISSUE-54 와 정면 충돌한다.** ISSUE-54 의 Tests 목록은 "`build_bootstrap_payload` 반환 키 집합이 ISSUE-47 이후와 **정확히 동일**(집합 상등)" 인 회귀 가드를 **추가하기로 예정**되어 있다. (현재 main 에는 그 단언이 아직 없다 — `tests/test_operator_ui.py::test_existing_fields_are_untouched_by_the_new_kwargs:458` 은 고정 키 튜플을 순회할 뿐이라 키가 늘어도 통과한다.) 후보 B 를 택하면 기대 키 집합을 이 이슈가 먼저 갱신하고, ISSUE-54 의 가드는 "이 이슈 이후" 기준으로 쓰여야 한다. 어느 쪽이 먼저 머지되든 **양쪽 PR 설명에 그 사실을 적는다.**
+- 서버측에 토큰→user_id 매핑이 필요한데 WS 스레드와 Streamlit 스레드가 별개라 프로세스 단위 dict 를 새로 만들어야 한다 — 새 상태가 하나 늘고, 컨테이너 재시작·다중 워커에서 깨진다.
+
+**→ 기본안은 후보 A.** 새 상태 0개, 검증 함수와 그 테스트가 이미 존재, BOOT 미변경, ISSUE-54 와 무충돌.
+
+**기각 — `process_request` 로 핸드셰이크 자체를 401 로 끊기.** 더 이르게 막지만, 인증되지 않은 연결은 어차피 `handle_openai_websocket:775-780` 에서 어떤 메시지도 처리하지 못하고 닫히므로 실질 이득이 작다. 반면 fake websocket 하네스 5개가 전부 HTTP 레벨을 흉내 내야 해서 테스트 비용이 급증한다. 근거를 남기고 채택하지 않는다.
+
+**잔여 갭 (이슈 본문과 PR 설명에 반드시 남길 것).** 서명 쿠키에는 발급 시각이 없고 `token` 은 서버 어디에도 저장되지 않는다(`auth.py:78-89`) — **서명이 유효하면 영원히 유효하다.** 이 이슈는 그 성질을 바꾸지 않는다. 즉 WS 는 Streamlit 세션 복원(`restore_session_from_cookie`)과 **정확히 같은** 신뢰 수준을 갖게 된다 — 개선이지 완결이 아니다. RL-003 이 토큰의 예측 가능성을 다뤘고 ISSUE-9 가 CSPRNG 로 닫았지만, **만료는 아직 아무도 소유하지 않았다.**
+
+#### Acceptance Criteria (DoD)
+- [ ] Given 공격자가 유효한 `username` 과 `user_id` 를 알지만 서명 쿠키(또는 토큰)가 없을 때, when `{"type":"auth","user":{…}}` 를 보내면, then `_authenticate_client` 가 `None` 을 돌려주고 `auth_success` 가 0건이며 응답이 기존과 **문자열 상등**인 `"인증에 실패했습니다."` 다 (왜 실패했는지 구분되지 않는다 — RL-006)
+- [ ] Given 유효한 서명 쿠키를 가진 오퍼레이터, when 같은 auth 프레임을 보내면, then 인증에 성공하고 반환 dict 의 `role` 이 **DB 값**이며 `room_id` 가 서버가 확정한 값이다 (ISSUE-5 의 성질 회귀 없음)
+- [ ] Given 쿠키의 user_id 가 7 인데 프레임의 `user.id` 가 9 일 때, when 서버가 처리하면, then 거절되고 **어떤 룸에도 등록되지 않으며** `rooms` 행에 쓰기가 0건이다 (ISSUE-52 의 언어 기록 포함 — 인증 전에는 어떤 영속 효과도 없다)
+- [ ] Given ① HMAC 변조 쿠키 ② 다른 `SESSION_SECRET` 로 서명된 쿠키 ③ 서명 없는 구형 포맷 쿠키, when 각각으로 접속하면, then 세 경우 모두 거절되고 사유는 서버 로그에만 남는다
+- [ ] Given 인증 성공 이후, when `rooms.primary_output_lang` 기록 동작을 관찰하면, then ISSUE-52 의 동작이 **그대로** 유지된다 (이 이슈는 게이트만 추가하고 기록 로직을 바꾸지 않는다)
+- [ ] Given 실 브라우저로 연 오퍼레이터 화면, when "시작" 을 눌러 세션을 열면, then WS 인증이 성공하고 자막 파이프라인이 이전과 동일하며 **컴포넌트 iframe 이 리마운트되지 않는다** — 마이크·`RTCPeerConnection`·자막 스크롤백이 유지된다 (RL-028)
+- [ ] Given 이 이슈의 diff, when `operator_ui.build_bootstrap_payload` 의 반환 키를 세면, then 후보 A 채택 시 **0개 증가**이고 `components/webrtc.html` 변경이 **0줄**이다. 후보 B 채택 시 증가한 키가 정확히 1개이며, 같은 Streamlit 세션의 연속 rerun 두 번이 `json.dumps` 기준 **동일 문자열**을 낸다
+- [ ] Given 인증 경로를 타는 fake websocket 하네스들, when 테스트 코드를 읽으면, then 모두 **하나의 공유 헬퍼**를 쓰고 그 헬퍼가 쿠키/토큰을 붙이는 **유일한 자리**다 (RL-001 — 사본 4개는 갈라진다)
+- [ ] Given 서명 쿠키(또는 토큰) 없이 접속한 클라이언트, when `{"type":"stage_control","caption_scale":1.2}` 와 `{"type":"language_update","output_lang":"vi"}` 를 각각 보내면, then 두 경우 모두 **control 발행이 0회**이고 `BroadcastManager` 의 룸 control 상태가 **변하지 않으며** 열려 있는 SSE 채널로 나간 프레임이 **0건**이다 (ISSUE-53 이 넓힌 실시간 능력이 인증 뒤로 들어갔음을 값으로 확인 — 인증 게이트만 보고 그 아래 효과를 안 보면 RL-004 다)
+
+#### Implementation Notes
+- **`websockets` 15.0.1 의 API 이름에 주의.** top-level `serve` 는 `websockets.asyncio.server.serve` 로 매핑된다(`.venv/lib/python3.11/site-packages/websockets/__init__.py:153`). 핸들러 인자는 `ServerConnection` 이고 핸드셰이크 헤더는 `connection.request.headers` 다 — legacy `WebSocketServerProtocol` 의 `.request_headers` 와 이름이 다르다. 검색해서 나오는 예제 대부분이 legacy 기준이므로 그대로 옮기면 `AttributeError` 가 난다.
+- 쿠키 파싱은 직접 split 하지 말고 `http.cookies.SimpleCookie` 로 한다. `user_session` 값에는 `:` 가 들어 있어 손으로 자르면 반드시 틀린다.
+- **`auth._verify_cookie` / `_compute_hmac` 을 그대로 재사용한다.** 두 함수는 `st` 를 전혀 건드리지 않는 순수 함수이고, `websocket_handler` 는 이미 `from auth import check_usage_limit, update_user_session` 를 하고 있으므로 새 import 비용이 0이다. 사본을 만들면 RL-001 이 경고한 그 상황이 그대로 재현된다.
+- **`SESSION_SECRET` 의 의미가 이 이슈로 바뀐다.** 미설정 시 `_get_session_secret`(`auth.py:23-34`)이 프로세스마다 무작위 값을 만들고 경고만 낸다. WS 스레드와 Streamlit 스레드는 같은 프로세스라 `os.environ` 를 공유해 로컬에서는 동작하지만, 이 이슈 이후 미설정은 "재시작하면 로그아웃" 이 아니라 **"재시작하면 WS 인증 불가 = 자막 송출 불가"** 가 된다. 경고 문구에 그 사실을 추가하고 `.env.example` / README 배포 절차에서 필수로 승격한다.
+- **실패 문자열은 기존 것을 재사용한다.** `"인증에 실패했습니다."` 는 `tests/test_websocket_auth.py:69-86` 등이 이미 기준으로 삼는 값이다. "쿠키 없음" 전용 문구를 새로 만들면 그 자체가 열거 오라클이 된다 (RL-006).
+- **영향 받는 테스트 하네스는 4개다** — `tests/test_websocket_auth.py:53`(`_make_websocket`, 호출 14곳), `tests/test_rooms_db.py:515`, `tests/test_room_manager.py:316`(인라인 `AsyncMock`), `tests/test_coverage_gaps.py:225`. **`tests/test_rate_limit.py:124` 와 `tests/test_websocket_handler.py:78` 은 `_authenticate_client` 자체를 patch 하므로 영향이 없다.** 이 구분을 공유 헬퍼의 docstring 에 적어 두면 다음 사람이 6개를 다 고치려다 시간을 버리지 않는다.
+- 현재 하네스는 `ws = AsyncMock()` 이므로 `ws.request.headers.get("Cookie")` 가 MagicMock 을 돌려주고 `_verify_cookie` 가 `None` 으로 degrade 한다 — 즉 **하네스를 안 고치면 전부 조용히 거절로 바뀐다.** 헬퍼는 기본값으로 유효 쿠키를 붙이고, `cookie=None` 을 명시할 때만 미인증 케이스가 되게 한다.
+- `.pre-commit-config.yaml` 이 `ruff-format` 과 `black` 을 둘 다 켜 두어 `assert cond, (msg)` 레이아웃에서 두 훅이 서로를 되돌린다. 새 테스트에서 그 구문을 피한다 (`docs/sprint_state.md`).
+
+#### Tests
+- [ ] `tests/test_websocket_auth.py` — 쿠키 없는 auth 프레임: `None` 반환, `auth_success` 0건, `auth_error` **정확히 1건**이고 메시지가 `"인증에 실패했습니다."` 와 문자열 상등
+- [ ] 같은 파일 — 변조 HMAC / 다른 secret / 서명 없는 구형 포맷 3케이스 parametrize, 세 경우 모두 거절. **RED 확인**: 검증 호출을 삭제하면 세 케이스가 전부 통과로 뒤집혀야 한다
+- [ ] 같은 파일 — 쿠키 user_id ≠ 프레임 `user.id`: 거절되고 `_RecordingRoomRepo.calls == []` (인증 실패가 언어 기록을 남기지 않는다는 것을 **값으로** 단언 — ISSUE-52 회귀 가드)
+- [ ] 같은 파일 — 유효 쿠키 + `role="admin"` 주장: 반환 role 이 DB 의 `"user"` (ISSUE-5 성질 유지)
+- [ ] `tests/test_operator_ui.py` — 후보 A: `build_bootstrap_payload` 반환 **키 집합 상등**(이 이슈 전후 동일). 후보 B: 증가한 키가 정확히 1개이고 같은 세션 상태로 두 번 호출한 결과가 동일 문자열이다 (rerun 마다 값이 바뀌면 실패 — RL-028 회귀 가드)
+- [ ] `pytest.mark.integration` — 실제 `websockets` 클라이언트로 쿠키 없이 접속해 `auth` 를 보내면 거절된다 (소켓 레벨 부정 테스트. 단위 하네스가 전부 fake 라 이 한 건이 "실제 헤더 경로가 연결됐다" 를 증명하는 유일한 그물이다)
+- [ ] 수동 리허설 체크리스트 1건 + **증거** — 실 브라우저 시작→자막 1줄→정지 가 이전과 동일하고, WS 핸드셰이크 요청 헤더에 쿠키가 실린 스크린샷을 PR 에 첨부한다. 후보 A 의 전제이므로 증거 없이 머지하지 않는다
+
+#### Rollback
+`websocket_handler` 의 검증 블록과 테스트 공유 헬퍼를 되돌리는 단일 커밋 revert. **스키마·쿠키 포맷·프로토콜 필드 변경이 0건**이라 마이그레이션 롤백이 없고, 후보 A 였다면 클라이언트 변경도 0줄이라 브라우저 캐시 문제도 없다. 되돌리는 순간 **사용자명만 아는 누구나 `auth` 프레임 하나로 임의 룸의 자막과 `rooms` 언어 컬럼을 조작할 수 있고, ISSUE-53 이후로는 이미 프로젝터에 띄워져 있는 무대 화면을 약 2초마다 비울 수 있는 상태**로 복귀한다는 점을 PR 설명에 명시한다 — 이 되돌림은 기능 손실이 아니라 노출 복원이며, 현장에서 되돌릴 수단이 없는 종류의 노출이다.
+
+---
+
+### ISSUE-56: WebSocket 인증에 룸 소유권 검증 추가 — 남의 룸을 잡는 경로 차단
+
+- Track: platform
+- Type: security
+- UI: false
+- Manual: false
+- PRD-Ref: FR-083, RL-002, RL-004, RL-025
+- Priority: P2
+- Estimate: 1d
+- Status: todo
+- Owner: pillip
+- Branch: issue/ISSUE-56-ws-room-ownership-check
+- GH-Issue: —
+- PR: —
+- Depends-On: none
+
+#### Goal
+인증된 사용자가 **자기에게 배정되지 않은 룸**으로 WebSocket 세션을 열 수 없다 — 관리자 표면에 이미 존재하는 `operator_id == user_id` 규칙이 WS 경로에도 적용된다.
+
+#### 현재 문제
+
+`_authenticate_client:179-199` 는 `room_manager.adopt_from_db(requested_room_id)` 가 non-None 이면 그대로 통과시킨다. `adopt_from_db`(`room_manager.py:234-270`)가 보는 것은 **`status != "closed"` 뿐**이다 — `operator_id` 를 읽지 않는다. 따라서 인증된 아무 사용자나 임의의 non-closed room_id 로 auth 하면 그 룸의 커넥션이 되고, **ISSUE-52 이후에는 그 프레임 하나가 `rooms.input_lang` / `output_lang` / `primary_output_lang` 세 컬럼을 덮어쓴다.** room_id 는 `secrets.token_urlsafe(8)`(`room_manager.py:31-33`) 이라 추측은 어렵지만, QR·뷰어 URL·무대 URL·행사 안내에 노출되므로 **비밀이 아니다.**
+
+같은 규칙이 관리자 표면에는 **이미 있다** — `admin_logic.py:342` (`user_role == "operator" and room.get("operator_id") != user_id → []`) 와 `filter_rooms_for_role:224-228`. **WS 경로에만 없다.** 이것이 RL-025 의 모양이다. 다만 여기서는 "두 층이 서로 다른 진실로 같은 규칙을 강제" 가 아니라 **한 층이 아예 강제하지 않는** 더 단순한 형태다.
+
+**ISSUE-53 머지 이후 그 프레임 하나가 얻는 것이 늘었다.** 임의의 non-closed room_id 로 auth 한 사용자는 이제 그 룸의 `stage_control`(자막 배율)과 `language_update`(control 발행)를 쓸 수 있고, 후자는 **이미 열려 있는** 무대·뷰어 화면을 즉시 재구독시킨다 — `ko`↔`vi` 를 번갈아 보내면 레이트리밋 안에서도 약 2초마다 자막 컬럼이 비고, 무대에는 조작 표면이 0개이며(NFR-025) 새로고침해도 접속 스냅샷이 적대적 상태를 다시 밀어 준다(`docs/review_notes.md:2994-3014`).
+
+**지금 그것을 막는 것은 한 줄뿐이다.** `stage_control` 핸들러가 `room_id` 를 클라이언트 payload 가 아니라 인증 결과에서 읽는다(`websocket_handler.py:1025`, RL-002). 그 규칙을 깨는 뮤턴트 M19 가 **전체 스위트를 통과**했고 ISSUE-53 리뷰가 `test_a_client_supplied_room_id_is_ignored` 를 in-PR 로 추가해 닫았다. 그러나 그 한 줄은 "**auth 가 확정한** room_id 를 쓴다" 를 보장할 뿐, **auth 가 확정하는 room_id 자체가 남의 룸일 수 있다** — 그것이 이 이슈다. 두 방어는 직교하며 하나가 다른 하나를 대신하지 못한다.
+
+#### Scope (In/Out)
+- In:
+  - 공용 술어 `can_operate_room(room_row, *, user_role, user_id) -> bool` 추가 — **deny-by-default**
+  - `RoomManager.adopt_from_db` 에 **keyword-only 필수** 인자 `user_role`, `user_id` 추가. 이미 읽은 행 하나로 status 와 소유권을 **함께** 판정한다 (두 번 읽으면 그 사이가 RL-025 가 말하는 drift 창이 된다)
+  - `_authenticate_client` 는 호출부만 바꾸고 거절 지점·거절 문구는 기존 것을 재사용
+  - 세 표면의 규칙 차이(대시보드 가시성 ≠ 로그 열람 ≠ 운영 권한)를 docstring 과 **불일치 테스트**로 못 박음
+- Out:
+  - **`filter_rooms_for_role` / `get_logs_for_operator` 의 동작 변경 — 금지.** 아래 설계 결정 참조. 두 함수는 다른 질문에 답하고 있고, 통합하면 관리자 대시보드의 가시성이 조용히 넓어진다
+  - SSE 뷰어/무대 경로 — 비인증 공개 경로이고 룸 소유권 개념이 없다
+  - 룸 배정 UI, 역할 체계 개편, `role="user"` 계정의 정리 — 별건
+  - 인증 자체의 강화(비밀 제시) — ISSUE-55. **두 이슈는 같은 함수를 건드리지만 코드 의존은 없다** — 먼저 머지되는 쪽이 fake repo/websocket 픽스처를 정리하고, 뒤에 오는 쪽이 그 위에 올린다
+
+#### 설계 결정 — 왜 기존 규칙을 그대로 복사하면 안 되는가
+
+`admin_logic.py:342` 의 문장을 **글자 그대로 옮기면 구멍이 그대로 남는다.** 그 문장은 `user_role == "operator"` 일 때만 소유권을 검사하는데, 오퍼레이터 사이드바는 역할이 아니라 **소유권**으로 룸을 고른다 — `_load_assigned_rooms_for_user`(`app.py:117-131`)는 **admin 만 제외**하고 그 외 모든 역할에 `list_by_operator(user_id)` 를 준다. 실제로 `tests/test_websocket_auth.py` 와 `tests/test_rooms_db.py` 의 오퍼레이터 픽스처는 전부 `role="user"` 다. 즉 복사본은 `role="user"` 를 **검사 없이 통과**시킨다.
+
+**WS 규칙은 "admin 이 아니면 소유해야 한다" 는 deny-by-default 여야 한다.** 그리고 세 표면의 질문이 서로 다르다는 사실을 문서로 남기고 **그 불일치 자체를 테스트로 고정**한다 (RL-025 의 prevention: "어느 쪽이 authoritative 인지 이름을 붙이고, 불일치 케이스를 테스트하라").
+
+| 표면 | 질문 | admin | operator | user | 그 외 |
+|---|---|---|---|---|---|
+| `filter_rooms_for_role` | 관리자 대시보드 목록에 보이나 | 전체 | 소유 | **없음** | 없음 |
+| `get_logs_for_operator` | 이 룸의 로그를 읽을 수 있나 | 예 | 소유 | **아니오** | 아니오 |
+| `can_operate_room` (신규, WS) | 이 룸으로 송출할 수 있나 | 예 | 소유 | **소유** | 아니오 |
+
+`role="user"` + 소유 룸이 앞의 둘에서는 거절되고 세 번째에서는 허용된다. **이것은 버그가 아니라 질문이 다르기 때문**이며, 그 문장을 `can_operate_room` 의 docstring 첫 줄에 적는다.
+
+#### Acceptance Criteria (DoD)
+- [ ] Given `operator_id=7` 인 non-closed 룸과 `id=9` 인 인증된 사용자, when 그 사용자가 그 room_id 로 auth 하면, then `None` 을 돌려주고 `auth_error` 가 **정확히 1건**이며 메시지가 미존재/closed 룸과 **완전히 같은** `"요청한 룸을 찾을 수 없습니다."` 다 (룸의 존재 여부가 새어 나가지 않는다 — RL-006)
+- [ ] Given 같은 상황, when 거절 직후를 관찰하면, then `rooms` 의 세 언어 컬럼이 **바뀌지 않았고** `register_connection` 도 호출되지 않았다 (ISSUE-52 의 쓰기가 인증 실패 뒤에 일어나지 않는다)
+- [ ] Given `operator_id=7` 인 룸과 `id=7` 인 사용자, when auth 하면, then **성공**한다 — `role="user"` 와 `role="operator"` **두 값 모두** parametrize 로 확인한다 (현재 운영 계정이 `role="user"` 인 경로를 깨뜨리지 않는다)
+- [ ] Given `role="admin"` 과 `operator_id` 가 자기가 아닌 룸의 행, when `can_operate_room` 을 호출하면, then `True` 다 — admin 은 소유권 검사의 대상이 아니다. (admin 의 실제 auth 성공 여부는 이 이슈의 관심사가 아니다: admin 은 사이드바에서 룸을 고를 수 없어 `room_id="default"` 로 오고, 그 경로는 이 이슈 전후로 **동일**하다)
+- [ ] Given repo 가 없는 메모리 전용 모드(기본 룸 / 단위 테스트), when 소유권을 판정할 행이 없으면, then **거절하지 않는다** — `adopt_from_db` 의 메모리 폴백 경로가 이전과 동일하게 동작하고 `tests/test_room_manager.py::TestAuthRoomRouting` 이 **무수정으로 통과**한다
+- [ ] Given `operator_id` 가 `NULL` 인(아직 배정되지 않은) 룸, when 임의의 non-admin 사용자가 auth 하면, then 거절된다 — 미배정은 "모두의 것" 이 아니라 "아무의 것도 아님" 이다
+- [ ] Given `role="user"` 이고 자기가 소유한 룸의 행, when `filter_rooms_for_role` 와 `can_operate_room` 에 같은 입력을 주면, then 앞은 그 룸을 **제외**하고 뒤는 **`True`** 다 — 이 불일치가 의도된 것임을 고정한다 (RL-025)
+- [ ] Given `adopt_from_db` 의 시그니처, when 인자를 빠뜨린 호출을 하면, then `TypeError` 로 **즉시** 실패한다 — 기본값으로 검사를 끄는 경로가 존재하지 않는다
+- [ ] Given 한 번의 auth, when `repo.get_by_id` 호출 횟수를 세면, then **정확히 1회**다 (소유권 검사를 위한 추가 조회가 0회 — 같은 행으로 status 와 소유권을 함께 판정한다)
+- [ ] Given `operator_id=7` 인 룸과 `id=9` 인 인증된 사용자, when 그 room_id 로 auth 한 뒤 `stage_control` 과 `language_update` 를 각각 보내면, then 그 룸의 control 상태가 **변하지 않고** control 발행이 **0회**이며 그 룸의 SSE 채널로 나간 프레임이 **0건**이다 (auth 거절이 실시간 조작 능력까지 실제로 끊는지를 효과로 확인한다 — 반환값만 보면 RL-004 다)
+- [ ] Given `websocket_handler.py:1025` 의 `stage_control` 핸들러, when 이 이슈의 diff 를 확인하면, then `room_id` 를 인증 결과에서 읽는 한 줄과 `test_a_client_supplied_room_id_is_ignored` 가 **무수정**이다 — 두 방어는 직교하므로 이 이슈가 그것을 대체하지 않는다
+
+#### Implementation Notes
+- **필수 키워드 인자로 만드는 비용은 6곳뿐이다.** `adopt_from_db` 의 프로덕션 호출부는 `websocket_handler.py:184` **하나**, 테스트 호출부는 `tests/test_room_manager.py:420, 429, 438, 445, 447` 다섯이다. 기본값으로 여는 유혹을 받아들이지 말 것 — **기본값이 곧 우회 경로**이고, RL-023 이 경고한 "데이터가 허락하는 순간 뚫리는 가정" 과 같은 형태다.
+- **기존 fake repo 행에 `operator_id` 를 넣어야 한다. 이게 이 이슈에서 가장 조용히 틀리기 쉬운 부분이다.** 지금 fake 들은 `{"id": …, "status": "active"}` 만 돌려준다.
+  - `tests/test_websocket_auth.py::test_register_connection_keyerror_race_returns_auth_error(:482)` 의 `_GoodRepo(:489)` 는 `auth_error` 를 기대하므로 **여전히 초록으로 통과하지만, 검증하려던 `register_connection` KeyError 분기에는 도달조차 못 한다.** 전형적인 무의미 통과다 (RL-004 / RL-024). `_GoodRepo` 행에 인증 사용자 id 를 `operator_id` 로 넣고, **"register_connection 까지 실제로 도달했다" 를 확인하는 단언을 함께 둔다** — 도달 증거 없는 거절 단언은 이 변경 이후 아무것도 증명하지 못한다.
+  - `_RecordingRoomRepo(:524)` 의 기본 행과 `TestAuthPersistsSessionLanguages` 의 픽스처 행(`:579-587`)도 마찬가지다. `_auth_ws_for_room(:553)` 이 `user.id = 1` 을 쓰므로 행에 `"operator_id": 1` 을 넣는다. 넣지 않으면 ISSUE-52 의 AC 테스트가 전부 빨강이 된다.
+- **거절 지점과 문구는 기존 것을 재사용한다.** 새 분기를 만들면 `len(auth_errors) == 1` 과 메시지 상등을 단언하는 기존 테스트 4개(`:389`, `:416`, `:455`, `:482`)가 흔들린다. 소유권 실패는 `adopt_from_db` 가 `None` 을 돌려주는 것으로 표현하는 것이 가장 적은 표면을 건드린다.
+- **술어를 어디에 둘 것인가.** 1순위는 `admin_logic.py` — 규칙이 이미 두 번 쓰여 있는 곳이다. `room_manager` 가 그것을 import 하면 `branding_assets` / `stage_config` 가 딸려 오는데 둘 다 Streamlit-free 이고 의존이 가볍다(`admin_logic.py:20-21`). 그 edge 가 걸리면 술어를 의존 0 모듈(`room_access.py` 등)에 두고 `admin_logic` 이 재수출한다. 어느 쪽이든 **정의는 한 곳**이어야 한다 (RL-001). `admin_logic.py:23-25` 가 "양방향 import 의존을 피해 그래프를 단순하게 유지" 를 명시적 원칙으로 적어 두었으므로 PR 설명에서 이 선택의 근거를 밝힌다.
+- **타입 비교에 주의한다.** DB 의 `operator_id` 는 INTEGER 이고 `validated_user["id"]` 도 INTEGER 지만, fake repo 가 문자열을 넣으면 조용히 거절된다. 술어 안에서 `int()` 로 강제 변환하지 말고 **타입이 다르면 거절 + 서버 로그**로 처리한다 — 조용한 강제 변환은 나중에 우회로가 된다.
+- `.pre-commit-config.yaml` 의 `ruff-format` / `black` 충돌 — `assert cond, (msg)` 레이아웃을 피한다.
+
+#### Tests
+- [ ] `tests/test_room_access.py`(신규) 또는 `tests/test_admin_room_mgmt.py` — `can_operate_room` 진리표를 parametrize 로 **7행 전부** 값으로 고정: (admin, 남의 룸)=True / (operator, 자기 룸)=True / (operator, 남의 룸)=False / (user, 자기 룸)=True / (user, 남의 룸)=False / (알 수 없는 역할, 자기 룸)=False / (임의 역할, `operator_id=None`)=False
+- [ ] 같은 파일 — **RL-025 불일치 고정**: `role="user"` + 소유 룸에서 `filter_rooms_for_role` 는 빈 목록을, `can_operate_room` 은 `True` 를 돌려준다. 두 단언을 한 테스트에 나란히 둬서 차이가 눈에 보이게 한다
+- [ ] `tests/test_websocket_auth.py` — 남의 룸 auth: `None` 반환, `auth_error` 정확히 1건, 메시지 문자열 상등, `_RecordingRoomRepo.calls == []`
+- [ ] 같은 파일 — 자기 룸 auth 가 `role="user"` / `role="operator"` 두 케이스 모두 성공하고 `register_connection` 이 호출된다
+- [ ] 같은 파일 — 카운터를 붙인 fake repo 로 `get_by_id` 호출이 **1회**임을 단언 (추가 조회 금지 가드)
+- [ ] `tests/test_room_manager.py` — 인자를 빠뜨린 `adopt_from_db` 호출이 `TypeError`. 메모리 전용 모드에서는 소유권과 무관하게 in-memory 룸을 돌려준다
+- [ ] 뮤테이션 확인(ISSUE-43 카탈로그 형식) — 소유권 비교를 `!=` → `==` 로 뒤집으면 최소 2개, 술어 호출을 통째로 삭제하면 최소 3개 테스트가 RED 여야 한다. **킬 카운트를 PR 설명에 적는다**
+
+#### Rollback
+`admin_logic`(또는 `room_access`)의 신규 술어, `RoomManager.adopt_from_db` 의 시그니처, `_authenticate_client` 의 호출부를 되돌리는 단일 커밋 revert. **스키마 변경이 0건**이라 마이그레이션 롤백이 없고, 프로토콜·클라이언트·문구도 그대로다. 되돌린 뒤에는 인증된 사용자가 다시 임의의 non-closed 룸으로 접속해 그 룸의 언어 컬럼을 바꿀 수 있게 된다 — 이 사실을 PR 설명에 남긴다. 부분 롤백은 불가능하다(술어와 호출부는 함께 움직인다).
+
+---
+
+### ISSUE-57: 동일 언어 채널의 자기 번역 LLM 호출 제거 — 원문 그대로 publish
+
+- Track: platform
+- Type: performance
+- UI: false
+- Manual: false
+- PRD-Ref: FR-083, RL-001, RL-004, RL-025
+- Priority: P2
+- Estimate: 0.5d
+- Status: todo
+- Owner: pillip
+- Branch: issue/ISSUE-57-skip-self-translation
+- GH-Issue: —
+- PR: —
+- Depends-On: none
+
+#### Goal
+`source_lang` 과 같은 언어 채널에 뷰어가 있을 때 LLM 왕복 없이 **원문을 그대로** 그 채널에 publish 한다 — 그 결과 프레임은 번역 경로가 내보냈을 프레임과 동일하다.
+
+> **Priority 주석**: 리뷰/플래너의 원안은 P3 였다. 이 저장소는 P0/P1/P2 만 쓰고 P3 사용 사례가 0건이라, 우선순위 어휘를 이 이슈가 일방적으로 늘리지 않도록 **가장 낮은 기존 등급인 P2** 로 넣었다. 실질 긴급도는 P2 중에서도 가장 낮다 — 정확성 결함이 아니라 비용/품질 최적화다.
+
+#### 현재 문제 — **버그가 아니라 낭비다**
+
+`broadcast_translation_for_room`(`sse_broadcast.py:775-796`)은 보조 언어를 전역 `SUPPORTED_OUTPUT_LANGS` 에서 뽑고(#91/#92) primary 만 제외한다. 그래서 `source_lang` 이 그 목록 안에 있고 그 언어 채널에 뷰어가 붙어 있으면 **원문을 원문 언어로 "번역"** 하는 Bedrock 호출이 나간다.
+
+- ISSUE-52 이후의 예: primary=`vi`, 발화=한국어, `ko` 뷰어 1명 → `ko` 채널에 한국어 원문을 얻기 위해 **ko→ko** LLM 호출.
+- **ISSUE-52 이전에도 이미 발생한다.** primary=`ko`, 발화=영어, `en` 뷰어 1명 → **en→en**. 기존 테스트 `tests/test_sse_broadcast.py::test_main_publish_not_blocked_by_secondary_translation(:420)` 과 `::test_secondary_translation_only_for_langs_with_viewers(:523)` 의 픽스처가 정확히 이 형태다(`source_lang="en"` + `en` 뷰어 등록). 즉 이 낭비는 ISSUE-52 가 **만든 것이 아니라** ISSUE-52 가 **관찰 가능하게 만든** 것이다.
+- **ISSUE-52 이후 이 publish 자체는 정상 동작이다** — 한국어 청중이 원문을 읽는 것. 고칠 것은 결과가 아니라 **그 결과를 얻는 방법**이다. ISSUE-52 의 Scope 가 "지금 어느 이슈도 담고 있지 않다" 고 적어 둔 항목이 이것이고, 이 이슈가 그것을 인수한다.
+- 비용은 뷰어가 붙은 발화 1건당 **LLM 호출 1건 + `asyncio.to_thread` 1건 + Bedrock 지연**이다. 정확성 영향은 오히려 **음(-)** 이다 — 같은 언어로 "번역" 하라는 요청을 받은 LLM 은 문장을 재작성할 수 있어, 청중이 "원문" 이라고 믿고 읽는 텍스트가 발표자의 말과 달라질 수 있다.
+
+#### Scope (In/Out)
+- In:
+  - `broadcast_translation_for_room` 의 보조 언어 루프에서 `lang == source_lang` 인 채널을 **번역 없이** publish
+  - 세 publish 지점(primary / secondary / 신규 단축)의 payload 조립을 작은 private 헬퍼 하나로 모음 — 지금도 `:762-770` 과 `:824-832` 에 거의 같은 dict 가 둘 있다 (RL-001)
+  - 빈 텍스트 파리티 — `_translate_and_publish_secondary:821-822` 의 `if not translated: return` 과 **동일한 결과**를 내도록 빈/공백 원문은 publish 하지 않는다
+  - 기존 테스트 두 개(`:420`, `:523`)의 픽스처 갱신
+- Out:
+  - **primary 채널의 자기 번역은 건드리지 않는다.** 오퍼레이터가 입력=출력을 같게 고르면(`websocket_handler.py:536-537`) primary 도 자기 번역이 되지만, 그 경로는 오퍼레이터 화면 자막·`usage_logs.used_llm`·스트리밍 부분 청크(#114/#116)에 모두 영향을 준다. 별건이고 **지금 어느 이슈도 담고 있지 않다** — 이 문장으로 기록만 남긴다
+  - `_supported_output_langs` 의 언어 목록 정책(#91/#92) — 손대지 않는다
+  - 빈 텍스트를 primary 채널에 가드 없이 publish 하는 문제(ISSUE-53 Out 에 기록된 미소유 항목) — 여전히 미소유
+  - 클라이언트(`stage.html` / `viewer.html`) 변경 0줄, SSE 와이어 포맷 변경 0건
+
+#### 설계 결정 — 게이트를 어디에 두는가
+
+후보 **(a)** `broadcast_translation_for_room` 의 루프, 후보 **(b)** `_translate_and_publish_secondary` 안.
+
+**(a) 를 택한다.** (b) 는 `tests/test_sse_broadcast.py::TestTranslateAndPublishSecondary` 의 두 테스트를 깨뜨린다 — `test_translate_fn_raises_swallowed_no_publish(:1012)` 와 `test_translate_fn_returns_falsy_skips_publish(:1039)` 는 `source_lang="en", target_lang="en"` 으로 워커를 **직접** 불러 예외 격리와 falsy 반환 처리를 검증한다. 워커 안에서 단축하면 `translate_fn` 이 호출되지 않아 검증 대상 분기가 사라진다(하나는 빨강, 하나는 `q.qsize()==0` 이 깨진다). (a) 는 그 테스트들을 건드리지 않는다.
+
+대신 (a) 는 "워커를 직접 부르면 여전히 자기 번역이 가능하다" 는 잔여 성질을 남긴다. RL-025 의 prevention 대로 **어느 층이 authoritative 인지 이름을 붙인다**: 단축 판정의 소유자는 `broadcast_translation_for_room` 이고, `_translate_and_publish_secondary` 는 "시킨 대로 번역하는" 저수준 워커다. 두 함수의 docstring 에 그 한 문장씩을 적는다.
+
+#### Acceptance Criteria (DoD)
+- [ ] Given primary=`vi`, `source_lang="ko"`, `ko` 채널에 뷰어 1명, when 자막 1건이 브로드캐스트되면, then `translate_fn` 이 `ko` 를 대상으로 **0회** 호출되고 `ko` 큐에 프레임이 **정확히 1건** 들어온다
+- [ ] Given 같은 상황, when 그 프레임을 **항등 `translate_fn`** 을 주입한 번역 경로가 같은 입력에서 만들었을 프레임과 비교하면, then `text` 가 `source_text` 와 **바이트 단위로 동일**하고, `lang` 이 `"ko"` 이며, 키 집합이 `{"text","lang","timestamp"}` 로 **정확히 같다** (`timestamp` 값만 다르다)
+- [ ] Given primary=`vi`, `source_lang="ko"`, `en` 채널에도 뷰어 1명, when 브로드캐스트되면, then `en` 은 **평소대로 번역**되어 `translate_fn` 이 `("ko","en")` 으로 **정확히 1회** 호출된다 — 단축이 다른 언어로 새지 않는다
+- [ ] Given `source_lang` 채널에 뷰어가 **없을** 때, when 브로드캐스트되면, then 그 채널로 publish 도 번역도 일어나지 않는다 (기존 `has_viewers` lazy 게이트가 단축 판정보다 **먼저**다)
+- [ ] Given `source_text` 가 빈 문자열이거나 공백뿐일 때, when 단축 경로가 평가되면, then 그 채널에 **아무것도 publish 되지 않는다** — 번역 경로의 `if not translated: return` 과 같은 결과다
+- [ ] Given `source_lang` 이 primary 와 같을 때, when 보조 언어 목록을 만들면, then 그 언어는 애초에 보조 목록에 없으므로 단축 경로도 타지 않고 primary 채널 publish 가 **정확히 1건**이다 (이중 publish 금지)
+- [ ] Given 이 이슈의 diff, when `_translate_and_publish_secondary` 를 **직접** 호출하는 기존 테스트 3개(`:1012`, `:1039`, `:1077`)를 실행하면, then **무수정으로 통과**한다
+- [ ] Given 세 publish 지점, when 소스를 읽으면, then payload dict 를 조립하는 자리가 **한 곳**이다 — 단축 경로가 자기 payload 를 따로 만들지 않는다
+
+#### Implementation Notes
+- **비교는 정규화 없이 `lang == source_lang` 로 충분하며, 그 근거를 주석으로 남긴다.** 이 값이 도달할 수 있는 집합이 닫혀 있기 때문이다: auto 모드에서는 `detect_language`(`translation.py:53-95`)가 `ko`/`zh`/`vi`/`en` 만 돌려주고, 명시 모드에서는 ISSUE-34 게이트(`websocket_handler.py:519-535`)가 `detected_lang != input_lang` 인 발화를 아예 되돌려 보내므로 `source_lang` 은 같은 네 값 중 하나다. `lower()` / `strip()` 을 덧붙이면 이 파일에 존재하지 않는 정규화 규칙을 새로 만드는 것이고, 그 규칙은 곧 다른 곳과 갈라진다. **근거를 남기지 않으면 다음 사람이 "방어적으로" 정규화를 추가한다.**
+- **기존 테스트 두 개의 픽스처를 반드시 고쳐야 한다 — 고치지 않으면 이 이슈는 초록 위에서 빨강을 만든다.**
+  - `test_main_publish_not_blocked_by_secondary_translation(:420)`: `source_lang="en"` + `en` 뷰어라 단축이 걸려 `slow_calls` 가 비고 `msg_secondary["text"] == "Hello"` 가 깨진다. 이 테스트의 의도(느린 보조 번역이 primary publish 를 막지 않는다)를 유지하려면 픽스처를 **실제 번역이 일어나는 조합**으로 바꾼다 — 예: `primary_output_lang="vi"`, `source_lang="ko"`, 뷰어는 `vi`(primary)와 `en`(보조). 단언 구조는 그대로 두고 큐 변수만 바꾸면 된다. 이 조합은 ISSUE-52 이후의 실제 운영 형태이기도 하다(한국어 발화 → 베트남어 송출 → 영어 뷰어 1명).
+  - `test_secondary_translation_only_for_langs_with_viewers(:523)`: 같은 이유로 `source_lang` 을 보조 목록과 겹치지 않게 바꾼다. `secondary_calls == ["en"]` 단언은 그대로 유지한다.
+  - **두 테스트를 고쳤다는 사실 자체를 PR 설명에 적는다.** 이 저장소에서 기존 가드 수정은 기본적으로 경보 신호이므로(ISSUE-53 Tests 참조), 왜 수정이 불가피한지와 **원래 의도가 보존됐다는 근거**를 함께 남긴다.
+- 단축 경로는 `asyncio.create_task` 를 쓰지 않고 루프 안에서 바로 `await` 한다 — 격리할 지연이 없고, task 를 만들면 primary 와의 순서가 불필요하게 흔들린다. 다만 primary publish **뒤**에 오도록 순서는 유지한다(`:759-770` 의 "primary 를 먼저" 계약).
+- **실측용 로그 한 줄을 남긴다** — `[SSE] self-lang passthrough (room=… lang=…)`. 이 이슈의 효과는 "호출이 사라진 것" 이라 로그가 없으면 운영에서 적용 여부를 확인할 방법이 없다.
+- `usage_logs` 에는 영향이 없다 — 보조 언어 번역은 애초에 사용량을 기록하지 않는다(`_record_usage` 는 `_handle_transcript` 에서만 불린다). AC 로 다시 확인할 필요는 없지만 PR 설명에 적어 리뷰어가 찾아 헤매지 않게 한다.
+- `.pre-commit-config.yaml` 의 `ruff-format` / `black` 충돌 — `assert cond, (msg)` 레이아웃을 피한다.
+
+#### Tests
+- [ ] `tests/test_sse_broadcast.py` — 자기 언어 단축: primary `vi`, `source_lang="ko"`, `ko`+`en` 뷰어. `translate_fn` 호출 인자 목록이 `[("ko","en")]` 로 **정확히 하나**이고, `ko` 큐 프레임의 `text` 가 `source_text` 와 상등, `set(frame) == {"text","lang","timestamp"}`
+- [ ] 같은 파일 — **payload 파리티**: 항등 `translate_fn` 으로 돌린 번역 경로의 프레임과 단축 경로의 프레임이 `timestamp` 를 제외하고 **완전히 같다**(dict 비교). RED 확인: 단축 경로에서 `lang` 을 빠뜨리거나 키를 하나 더하면 실패해야 한다
+- [ ] 같은 파일 — 뷰어 없는 자기 언어 채널: publish 0건, 번역 0건 (lazy 게이트 우선순위)
+- [ ] 같은 파일 — 빈 문자열/공백뿐인 `source_text`: 자기 언어 채널 publish 0건 (번역 경로의 falsy 가드와 동일 결과)
+- [ ] 같은 파일 — `source_lang == primary_lang` 인 경우 primary 채널에 프레임이 **1건**이고 두 번 들어가지 않는다
+- [ ] 같은 파일 — 기존 `TestTranslateAndPublishSecondary` 3개가 **무수정 통과** (워커는 여전히 시킨 대로 번역한다는 계약)
+- [ ] 갱신된 `test_main_publish_not_blocked_by_secondary_translation` / `test_secondary_translation_only_for_langs_with_viewers` 가 새 픽스처에서 **원래 의도대로** 통과 (전자는 여전히 `elapsed_main < 0.3` 을, 후자는 여전히 뷰어 없는 언어의 스킵을 검증한다)
+
+#### Rollback
+`sse_broadcast.py` 의 단축 분기와 payload 헬퍼, 그리고 두 테스트 픽스처를 되돌리는 단일 커밋 revert. **스키마·프로토콜·클라이언트 변경이 0건**이라 되돌려도 와이어 포맷과 뷰어 동작이 동일하다. 되돌리면 자기 언어 채널이 다시 LLM 왕복을 타고, 청중이 "원문" 이라고 믿고 읽는 텍스트가 LLM 재작성본일 수 있는 상태로 복귀한다 — 되돌리는 쪽이 잃는 것은 **비용과 정확성 둘 다**라는 점을 PR 설명에 남긴다.
+
+### ISSUE-58: 마크업 속성 뮤테이션 클래스 도입 — 선언형 속성 삭제를 가드 카탈로그의 1급 시민으로 편입
+
+- Track: platform
+- Type: test
+- UI: false
+- Manual: false
+- PRD-Ref: RL-026, RL-004, RL-014
+- Priority: P2
+- Estimate: 1.5d
+- Status: todo
+- Owner: pillip
+- Branch: issue/ISSUE-58-markup-attribute-mutations
+- GH-Issue: —
+- PR: —
+- Depends-On: ISSUE-43
+
+#### Goal
+`guard_mutations` 러너가 **마크업 속성 삭제**를 파이썬 표현식·분기 뮤테이션과 같은 자격으로 다룬다 — `<video muted>` 의 `muted` 한 토큰을 지우면 이름을 특정할 수 있는 테스트가 반드시 실패하고, 그 사실이 한 명령과 CI 게이트로 재현된다.
+
+#### 현재 문제
+**두 문서가 서로를 가리키고 아무도 이 클래스를 소유하지 않는다.**
+
+`docs/review_lessons.md` 의 **[RL-026] Declarative markup attributes that gate runtime behaviour are invisible to every assertion** 은 Recommended action 에서 이 이슈의 전신을 **이름으로 지목한다**: *"When an issue's mutation catalogue is written (see ISSUE-43), include markup-attribute deletion as a mutation class alongside expression and branch mutations — it is the class that both existing test styles structurally miss."*
+
+그런데 ISSUE-43 의 Scope 는 정확히 그 반대를 적었다 — `JS/HTML(components/*.html) 뮤테이션 — 파이썬 소스만`. 그리고 ISSUE-43 은 **이미 출하됐다(PR #142)**. RL-026 이 기다리던 이슈는 그 클래스를 명시적으로 밖으로 밀어낸 채 닫혔고, 그 사이에 이 클래스를 잡는 장치는 여전히 0 개다.
+
+**근거는 실측이다(PR #129, ISSUE-42 리뷰 뮤테이션).**
+- **M33** — `<video autoplay muted playsinline>` 를 통째로 삭제 → e2e 17건과 정적 가드 **전부 통과**.
+- **M34** — `muted` **한 토큰만** 삭제 → 역시 전부 통과. `muted` 없는 `<video>` 는 크롬 자동재생 정책에 막혀 재생되지 않는다. 무대 좌측이 검은 화면으로 남는, **행사장에서 치명적인 무증상 결함**이다.
+- **M35** — 캡처 스트림을 아예 붙이지 않음 → 생존했을 뿐 아니라 **이웃 테스트를 무력화**했다. `test_track_ended_falls_back_to_the_title_card` 의 `srcObject === null` 단언이 통과한 이유는 해제됐기 때문이 아니라 **애초에 설정된 적이 없어서**다. 마크업 뮤테이션이 RL-004 의 공허한 단언 형태에 도달한 사례다.
+
+**한편 이 이슈가 처음부터 만들 것은 거의 없다.** 그 리뷰 이후 `tests/e2e/test_stage_capture_e2e.py::TestStageCaptureLifecycle::test_capture_video_declares_the_attributes_that_let_it_autoplay` 가 출하되어 `{autoplay, muted, playsInline}` 을 **DOM 프로퍼티로** 확인하고 있다. 즉 M33/M34 를 죽일 테스트는 **이미 존재한다.** 없는 것은 *그 테스트가 정말로 그 속성을 죽이는지 확인하는 기계*이고, 그 기계가 없으니 나머지 속성들(`hidden`, `aria-live`, `aria-atomic`, `rel="noopener"`)은 아무도 확인한 적이 없다. ISSUE-43 이 `test_resolve_rejects_symlink_that_points_inside_the_room` 을 카탈로그 첫 항목으로 삼았던 것과 같은 출발점이다.
+
+**러너가 지금 마크업을 받지 못하는 구조적 이유는 셋이고, 전부 파이썬 전용 가정이다.**
+1. `guard_mutations.ALLOWED_FILES` 가 `.py` 4개로 하드코딩되어 있다(의도된 설계 — 카탈로그가 스스로 범위를 넓히지 못한다). 확대는 **코드 변경 + 리뷰**를 요구하며, 그것이 이 이슈가 TOML 편집이 아니라 이슈인 이유다.
+2. `run_catalog` 의 `compile(mutated, ...)` 사전 검사는 파이썬 문법 검사다. HTML 에는 대응물이 없으므로 "깨진 뮤턴트를 kill 로 오계상하지 않는다"(PR #142 리뷰 F-1) 는 방어를 **다른 수단으로 다시 세워야 한다**.
+3. `_run_pytest` 는 `--no-cov -p no:cacheprovider` 만 붙이고 `pyproject.toml` 의 `addopts = "-ra -m 'not e2e' ..."` 를 그대로 상속한다. e2e 노드 ID 를 명시해도 마커 필터에 **deselect** 되어 "no tests collected"(exit 5)가 되고, 러너는 그것을 baseline 실패 → `ERROR` 로 처리한다. 마커 오버라이드 없이는 e2e 레인이 한 건도 돌지 않는다.
+
+#### Scope (In/Out)
+- In:
+  - `ALLOWED_FILES` 에 `components/stage.html`, `components/viewer.html`, `components/webrtc.html` 추가 — **여전히 러너 하드코딩**(카탈로그가 넓히지 못한다는 성질 유지)
+  - 비파이썬 대상의 뮤턴트 무결성 검사 — `compile()` 을 대체할 사전 검사 + Playwright/브라우저 실패를 kill 이 아닌 `ERROR` 로 강등하는 출력 스크린
+  - e2e 노드를 도는 실행 경로 — 마커 오버라이드와 `NODE_OPTIONS` 제거를 러너 안에서 처리
+  - **검증 레인 결정과 기록** — 카탈로그 항목마다 (a) e2e DOM 프로퍼티 레인인지 (b) 태그 범위를 좁힌 정적 문자열 레인인지 명시하고, 왜 그 레인인지 한 줄로 남긴다
+  - 아래 시드 카탈로그 8건 등재 + 킬 테스트가 없는 항목의 **변별력 있는** 테스트 보강
+  - 마크업 가드 ID 명명 규약(`<템플릿>.<로커스>#<속성>`)을 `guard_mutations.toml` 헤더에 기록
+  - CI `mutation` job 에 Playwright 캐시/설치 스텝 추가 및 job 예산 재설정 (기존 `lint`/`test`/`e2e` job 의 커맨드는 **불변**)
+  - `docs/review_lessons.md` RL-026 에 이 이슈를 가리키는 한 줄 **추가**(기존 문장은 지우지 않는다) — 다음 사람이 다시 ISSUE-43 로 튕겨 나가지 않게 한다
+- Out:
+  - **파이썬 카탈로그 확장 — 그건 `guard_mutations.toml` 편집이지 이슈가 아니다.** 새 파이썬 가드가 필요하면 해당 기능 이슈에서 항목 한 줄을 추가한다
+  - 기존 `lint` / `test` / `e2e` job 의 커맨드·마커·커버리지 인자 변경 (RL-014 원칙, ISSUE-43 선례)
+  - 커버리지 임계치 상향 (ISSUE-59 에서 별도로 판정)
+  - 새 e2e 시나리오 대량 추가 — 시드 카탈로그가 요구하는 최소 킬 테스트만 쓴다
+  - **프로덕션 마크업 변경.** 살아남은 뮤턴트가 "테스트가 약한 것" 이 아니라 "속성이 실제로 없는 것" 이면 별도 이슈로 올리고 카탈로그에 `TODO(ISSUE-NN)` 을 단다 (ISSUE-43 과 동일 규율)
+  - `defer` / `loading` / `decoding` / `crossorigin` / `referrerpolicy` — **실측 결과 `components/` 전체에 0건**이다. 도입되는 날 카탈로그에 추가한다는 사실만 기록한다
+
+#### 시드 마크업 카탈로그
+
+| 가드 ID | 대상 | 뮤테이션 | 검증 레인 | 킬 테스트 현황 |
+|---|---|---|---|---|
+| `stage.capture_video#muted` | `stage.html` `<video …>` | `muted` 토큰 삭제 (M34) | e2e DOM 프로퍼티 | **있음** — `test_capture_video_declares_the_attributes_that_let_it_autoplay` |
+| `stage.capture_video#autoplay` | 동일 | `autoplay` 토큰 삭제 | e2e DOM 프로퍼티 | **있음** — 동일 테스트 |
+| `stage.capture_video#playsinline` | 동일 | `playsinline` 토큰 삭제 | e2e DOM 프로퍼티 | **있음** — 동일 테스트 |
+| `stage.capture_video#element` | 동일 | `<video>` 태그 통째 삭제 (M33) | e2e DOM 프로퍼티 | **있음** — 동일 테스트가 `getElementById` 에서 즉시 실패 |
+| `stage.capture_video#hidden` | 동일 | `hidden` 토큰 삭제 | e2e DOM 프로퍼티 | **확인 필요** — 기존 단언은 `ended` **이후**의 `hidden === true` 만 본다. 초기 상태 단언이 없으면 신규 작성 |
+| `stage.caption_announcer#aria_live` | `stage.html` 라이브 리전 | `aria-live="polite"` 삭제 | 정적(태그 범위) | **있음** — `tests/test_stage_page.py` |
+| `viewer.caption_announcer#aria_atomic` | `viewer.html` 라이브 리전 | `aria-atomic="true"` 삭제 | 정적(태그 범위) | **확인 필요** — `aria-live` 단언은 있으나 `aria-atomic` 은 미확인 |
+| `webrtc.stage_launch_fallback#rel_noopener` | `webrtc.html` 폴백 앵커 | `rel="noopener"` 삭제 | 정적(태그 범위) | **있음** — `tests/test_webrtc_stage_launch.py` |
+
+#### Acceptance Criteria (DoD)
+
+**러너 확장 — 마크업 레인**
+- [ ] Given `components/stage.html` 을 대상으로 하는 카탈로그 항목, when 러너를 실행하면, then 항목이 허용 목록 거부 없이 적용되고 `killed` / `survived` 중 하나로 판정된다 (현재는 `ERROR — 허용 목록 밖 파일입니다`)
+- [ ] Given 허용 목록에 없는 마크업 파일을 가리키는 임시 카탈로그 항목, when 러너를 실행하면, then 거부되고 그 파일은 수정되지 않는다 — 확대는 여전히 **러너 코드 변경**으로만 가능하다
+- [ ] Given e2e 노드 ID 에 바인딩된 마크업 가드, when 러너가 그 노드를 실행하면, then pytest 가 `no tests collected`(exit 5) 로 끝나지 않고 실제로 테스트가 수행된다 — `pyproject.toml` 의 `addopts` 에 있는 `-m 'not e2e'` 가 러너 안에서 오버라이드된다
+- [ ] Given `NODE_OPTIONS` 가 설정된 셸에서 러너를 실행할 때, when e2e 레인이 돌면, then Playwright 드라이버가 죽지 않고 정상 실행된다 (러너가 서브프로세스 env 에서 `NODE_OPTIONS` 를 제거한다)
+
+**오탐 차단 (F-1 의 마크업 판)**
+- [ ] Given Playwright 브라우저가 설치되지 않았거나 드라이버가 실패하는 환경, when 마크업 뮤턴트를 검증하면, then 결과가 `killed` 가 아니라 `ERROR` 이고 사유 문자열에 드라이버/브라우저 실패 표식이 포함된다 — **가드를 지운 적이 없는데 kill 로 계상되는 것이 RL-004 의 재발이다**
+- [ ] Given `find` 스니펫이 대상 마크업 파일에 2회 이상 등장하는 임시 카탈로그 항목, when 러너를 실행하면, then 비정상 종료하고 그 파일은 수정되지 않는다 (파이썬 항목과 동일한 "정확히 1회" 계약이 마크업에도 적용된다)
+- [ ] Given 마크업 뮤테이션을 적용한 실행이 정상/예외/`SIGINT`/`SIGTERM` 중 어떤 경로로 끝나든, when 작업 트리를 확인하면, then `git diff --quiet` 가 0 이다 (샌드박스 1회 복사 성질이 마크업에도 그대로 유지된다)
+
+**RL-026 이 요구한 단언 형태**
+- [ ] Given `stage.capture_video#muted` 뮤테이션, when 바인딩된 e2e 를 실행하면, then `v.muted === true` **DOM 프로퍼티** 단언이 실패한다 — 속성 문자열 매칭이나 "영상이 재생되는가" 같은 관측 가능한 부작용으로 통과해서는 안 된다
+- [ ] Given 같은 뮤테이션, when 헤드리스 canvas `captureStream()` 으로 스텁한 캡처가 붙어 있을 때 재생 여부만 관찰하는 단언을 별도로 시도하면, then 그 단언은 **통과한다** — 행위 단언으로는 이 클래스를 볼 수 없다는 사실을 PR 설명에 두 결과를 나란히 놓아 기록한다
+- [ ] Given 시드 카탈로그 8건 전부, when 러너를 실행하면, then `survived` 가 0건이고 각 항목이 `<가드 ID> killed by <테스트 노드 ID>` 로 출력된다
+- [ ] Given 시드 카탈로그의 가드 ID 중 어떤 테스트도 `Guard:` docstring 으로 지목하지 않은 것, when 러너를 실행하면, then `unnamed` 으로 보고되고 종료 코드가 0 이 아니다 (기존 양방향 대조 계약이 마크업 ID 에도 적용된다)
+
+**비용 상한**
+- [ ] Given CI 워크플로, when `mutation` job 이 실행되면, then 기존 `lint` / `test` / `e2e` job 의 정의가 `main` 과 **바이트 단위로 동일**하고, `mutation` job 만 Playwright 캐시/설치 스텝과 새 `timeout-minutes` 를 갖는다
+- [ ] Given 파이썬 20건 + 마크업 8건 카탈로그, when CI 에서 `mutation` job 을 실행하면, then 러너 실행 구간의 실측 소요가 기록되고 `timeout-minutes` 가 그 실측의 **2배 이상**으로 설정되어 있으며, 실측값이 job 정의 주석에 남는다 (PR #142 가 `~9s / timeout 10` 을 기록한 것과 같은 형식)
+- [ ] Given 카탈로그, when e2e 레인 항목 수를 세면, then **6건 이하**다 — 상한을 넘기려면 이 AC 를 고치는 리뷰를 거친다
+- [ ] Given 마크업 항목을 하나도 포함하지 않은 `--guard` 선택 실행, when 러너를 돌리면, then Playwright 를 전혀 기동하지 않고 기존 파이썬 전용 실행 시간(~9s)에서 유의미하게 늘어나지 않는다
+
+#### Implementation Notes
+- **`find` 는 반드시 태그 전체를 잡는다.** `muted` / `aria-live="polite"` 같은 토큰은 파일 안에 여러 번 나온다(`v.muted` 같은 JS 참조 포함). `find` 에 `<video …></video>` 태그를 통째로 적고 `replace` 에서 토큰 하나만 뺀다. 이것이 "정확히 1회" 계약을 만족시키는 유일한 형태이며, 동시에 PR #122 의 "스니펫이 3번 등장해서 통과" 실패 모드를 반복하지 않는 장치다.
+- **`compile()` 의 마크업 대응물은 "diff 가 의도한 토큰 하나인가" 다.** HTML 에는 문법 검사기가 없으므로, 사전 검사는 `find` 와 `replace` 가 같은 태그명으로 시작하고 길이 차가 의도한 토큰 길이와 일치하는지 정도로 충분하다. **하중을 받는 것은 사후 스크린이다** — 파이썬 레인의 import/문법 스크린 옆에 Playwright 계열 표식(`playwright._impl._errors`, `Executable doesn't exist`, `BrowserType.launch`, 브라우저 타임아웃)을 추가해 exit=1 을 `ERROR` 로 강등한다. 그렇게 하지 않으면 CI 러너에 브라우저가 없다는 사실이 "가드가 잘 죽었다" 로 보고된다.
+- **마커 오버라이드는 `-o addopts=` 로 통째로 비우지 않는다.** 그러면 출력 계약에 쓰는 다른 옵션까지 함께 사라진다. `-m 'e2e or not e2e'` 처럼 **항상 참인 표현식**을 주는 편이 파이썬 레인과 e2e 레인을 한 커맨드로 처리하면서 부작용이 가장 작다.
+- **`baseline_cache` 가 비용의 핵심 지렛대다.** `run_catalog` 는 `frozenset(nodes)` 로 baseline 을 캐시하므로, 같은 e2e 테스트에 바인딩된 마크업 가드 4건은 **baseline 1회 + 뮤턴트 4회 = 5회**로 끝난다(8회가 아니다). 시드 카탈로그가 `capture_video` 계열 5건을 같은 테스트에 묶은 것은 우연이 아니다 — 카탈로그를 설계할 때 이 성질을 의식적으로 쓴다.
+- **Streamlit 을 띄우는 e2e 는 고르지 않는다.** `tests/e2e/conftest.py` 의 `streamlit_server` 는 session 스코프이지만 **autouse 가 아니다**. 무대 캡처 e2e 는 aiohttp 앱을 모듈 스코프로 직접 띄우므로 Streamlit 서브프로세스 기동 비용을 내지 않는다. 마크업 킬 테스트는 이 계열에서만 고른다 — 킬 테스트 선택이 곧 예산 결정이다.
+- **샌드박스에서 마크업 뮤테이션이 실제로 먹는 이유를 확인해 두었다.** `sse_broadcast.py` 의 무대 템플릿 경로는 `Path(__file__).resolve().parent / "components" / "stage.html"` 이고 **렌더 시점마다 `read_text`** 한다(모듈 레벨 캐시 없음). 러너는 `cwd=sandbox` + `PYTHONPATH=sandbox` 로 돌리므로 샌드박스의 마크업이 그대로 쓰인다. 이 성질이 깨지면(템플릿을 import 시점에 캐시하는 리팩터) 마크업 레인 전체가 조용히 무력화되므로, 그때 이 노트를 근거로 되돌린다.
+- **`Guard:` 표기 수집은 손댈 필요가 없다.** `collect_guard_annotations` 는 `tests/**/*.py` 를 `ast` 로 훑고 노드 ID 를 저장소 루트 상대 경로로 만들므로 `tests/e2e/...::Class::test_...` 가 이미 그대로 나온다. 클래스 중첩도 처리된다.
+- **`--no-cov` 는 마크업 레인에서도 필수다.** `pyproject.toml` 의 `addopts` 에 `--cov-fail-under=50` 이 있어 부분 실행이 커버리지 미달로 실패하면 **뮤턴트를 죽인 것처럼 보인다**. 러너가 이미 붙이고 있지만, 마커 오버라이드를 넣다가 이 인자를 잃지 않도록 주의한다 — ISSUE-43 이 실측으로 확인한 항목이다.
+- **`stage.capture_video#element`(태그 통째 삭제)는 다른 e2e 도 함께 무너뜨린다.** 그래도 `Guard:` 표기가 붙은 노드만 실행하므로 판정은 깨끗하고, `getElementById(...)` 가 `null` 이 되어 프로퍼티 읽기에서 실패한다 — import 실패가 아니므로 정당한 kill 이다. 다만 실패 메시지가 `TypeError` 로 나오므로 사후 스크린이 이것을 "깨진 뮤턴트" 로 오분류하지 않도록 표식 패턴을 좁게 유지한다.
+- **살아남으면 멈춘다.** `#hidden` / `#aria_atomic` 이 생존하면 그것은 테스트가 없다는 뜻이고, 이 이슈 안에서 **변별력 있는** 테스트를 쓴다. 반대로 속성 자체가 없어서 생존한 것이라면 프로덕션을 고치지 말고 별도 이슈로 올린다.
+- 로컬 e2e 실행은 이 환경에서 `env -u NODE_OPTIONS uv run pytest tests/e2e -m e2e --no-cov` 형태로 돈다. 러너가 env 를 스스로 정리하더라도 개발자가 수동 재현할 때 필요하므로 `guard_mutations.py` 모듈 docstring 에 한 줄 남긴다.
+
+#### Tests
+- [ ] Given 시드 카탈로그 8건과 보강된 테스트, when 러너를 서브프로세스로 호출하면, then 종료 코드가 0 이고 출력에 `survived` 가 0건이다 (`tests/test_guard_mutations.py` 확장)
+- [ ] Given `components/stage.html` 의 주석 문자열만 바꾸는 무해한 임시 마크업 항목, when 러너를 실행하면, then `survived` 로 보고되고 종료 코드가 0 이 아니다 — 마크업 레인 자신이 RL-004 를 반복하지 않음을 증명한다
+- [ ] Given Playwright 실행 실패를 흉내 낸 pytest 출력(드라이버 오류 텍스트 + exit=1), when 판정 함수를 직접 호출하면, then 결과가 `ERROR` 이고 `killed` 가 아니다
+- [ ] Given e2e 노드 하나만 담은 카탈로그, when 러너가 만든 pytest 커맨드를 가로채 검사하면, then 마커 표현식이 e2e 를 deselect 하지 않고 `--no-cov` 가 여전히 포함되며 env 에 `NODE_OPTIONS` 가 없다
+- [ ] Given `find` 가 `components/viewer.html` 에 2회 등장하는 임시 항목, when 러너를 실행하면, then 비정상 종료하고 파일이 원본과 바이트 단위로 동일하다
+- [ ] Given 마크업 뮤테이션 적용 직후 예외를 던지도록 패치한 러너, when 프로세스가 끝나면, then 작업 트리의 `components/*.html` 이 원본과 바이트 단위로 동일하고 샌드박스가 남지 않는다
+- [ ] Given `stage.capture_video#hidden` / `viewer.caption_announcer#aria_atomic`, when 각 뮤테이션을 적용하고 바인딩 테스트만 실행하면, then 최소 1건이 실패한다 (필요 시 이 이슈에서 신규 작성한 테스트)
+- [ ] Given 시드 카탈로그의 마크업 가드 ID 전부, when `ast` 로 `tests/` 의 `Guard:` 표기를 수집해 대조하면, then 대응 테스트가 없는 가드가 0개이고 카탈로그에 없는 표기도 0개다
+- [ ] Given 마크업 항목을 제외한 `--guard` 선택 실행, when 실행 시간을 측정하면, then Playwright 기동 흔적이 출력에 없다
+
+#### Rollback
+카탈로그의 마크업 항목 8건, `ALLOWED_FILES` 의 `components/*.html` 확장, 비파이썬 검증 경로, CI `mutation` job 의 Playwright 스텝을 되돌린다. **이 이슈에서 새로 쓴 DOM 프로퍼티 테스트와 `Guard:` 표기는 남긴다** — 러너가 없어도 그 자체로 RL-026 이 처방한 형태의 회귀 테스트이며 이 이슈의 실질 가치다(ISSUE-43 롤백 정책과 동일). 프로덕션 마크업은 변경하지 않으므로 런타임 롤백 대상이 없다. 되돌리면 마크업 속성 클래스는 다시 무주공산이 되므로, 되돌리는 커밋에 RL-026 을 다시 열어 둔다는 사실을 적는다.
+
+---
+
+### ISSUE-59: CI 하드닝 잔여 항목 정리 — job 타임아웃, 러너 커버리지 귀속, 허용 목록 확대 판정
+
+- Track: platform
+- Type: chore
+- UI: false
+- Manual: false
+- PRD-Ref: RL-014, RL-004
+- Priority: P2
+- Estimate: 0.5d
+- Status: todo
+- Owner: pillip
+- Branch: issue/ISSUE-59-ci-hardening-leftovers
+- GH-Issue: —
+- PR: —
+- Depends-On: ISSUE-43
+
+#### Goal
+ISSUE-43 리뷰(PR #142)가 실측했지만 어느 이슈도 인수하지 않은 CI 항목 셋 — job 타임아웃 부재, `guard_mutations.py` 의 커버리지 귀속, 허용 목록 확대 후보 — 에 각각 **결정과 근거**를 붙여 닫는다. 실질 긴급도는 최하위다 — 결함이 아니라 미결정 항목의 정리다.
+
+#### 현재 문제
+세 항목 모두 PR #142 리뷰에서 **측정됐고**, 셋 다 "이번 PR 의 범위가 아니다" 라는 올바른 이유로 밖에 남았다. 그 상태로 기록만 되면 잊힌다.
+
+1. **`lint` / `test` / `e2e` job 에 `timeout-minutes` 가 없다.** PR #142 는 새 `mutation` job 에만 `timeout-minutes: 10` 을 붙이고 기존 세 job 정의를 `main` 과 **바이트 단위로 동일하게** 남겼다 — 게이트 추가가 기존 게이트를 건드려서는 안 된다는 규율(RL-014)의 올바른 적용이다. 그 결과 세 job 은 GitHub 기본값 **360분**을 그대로 쓴다. 멈춘 Playwright 브라우저 하나, 응답 없는 Streamlit 픽스처 하나가 러너 시간 **6시간**을 태운다. 실측 근거는 있다: 단위 스위트는 로컬 **~78–82초**, e2e 는 Playwright **22건**이다.
+2. **`guard_mutations.py` 가 `--cov=.` 분모 안에 있다** — 262 statements, 97% 커버. 잘 덮여 있지만 그것은 **애플리케이션 코드가 아니라 개발 도구**다. `pyproject.toml` 의 `[tool.coverage.run] omit` 은 이미 `tests/*`, `pages/*`, `app.py`, `login.py`, `admin.py` 를 빼고 있다. 측정 대상으로 남길 것인가(현 상태, 그리고 실제로 잘 덮여 있다) 도구로 보아 제외할 것인가 — **어느 쪽도 방어 가능하지만 아무도 결정하지 않았다.** 판단을 미루면 다음 사람이 커버리지 숫자를 볼 때마다 같은 질문을 다시 한다.
+3. **가드 뮤테이션 허용 목록 확대 후보가 기록되지 않은 채 떠 있다** — `sse_broadcast.py` 의 라우트 가드, `stage_config` 의 검증. ISSUE-43 은 허용 목록을 러너에 **의도적으로 하드코딩**해 카탈로그가 스스로 넓히지 못하게 했다. 따라서 확대는 코드 변경 + 카탈로그 편집이고, 각 가드마다 "그 가드만 겨냥한 변별력 있는 네거티브 테스트" 를 새로 써야 한다 — ISSUE-43 이 `branding_assets` 에서 실제로 한 작업량이다. 지금 필요한 것은 **하는 것이 아니라 할 값어치가 있는지 판정하는 것**이다.
+
+#### Scope (In/Out)
+- In:
+  - `.github/workflows/ci.yml` 의 `lint` / `test` / `e2e` 세 job 에 실측 근거가 있는 `timeout-minutes` 추가 (근거를 주석으로 함께 남긴다)
+  - `guard_mutations.py` 의 커버리지 귀속 결정 — 유지 또는 `omit` 등재 중 하나를 고르고 근거를 남긴다
+  - `sse_broadcast.py` / `stage_config` 허용 목록 확대의 **평가와 결정 기록** (`docs/architecture.md` tradeoff 표 1행)
+  - `pyproject.toml` 을 건드리는 경우 CLAUDE.md §5 의 pre-commit 계약 준수
+- Out:
+  - **`--cov-fail-under` 값 상향 — 양쪽 모두 Out.** CI `test` job 은 60, `pyproject.toml` 은 50 으로 갈라져 있는데, 이 **차이를 해소하는 것도 이 이슈의 산출물이 아니다**. 사실만 한 줄로 기록한다
+  - 허용 목록 실제 확대와 카탈로그 항목 추가 — 결정이 "채택" 이면 후속 이슈
+  - 기존 job 의 **커맨드**(마커, 커버리지 인자, 스텝 구성) 변경 — 이 이슈가 더하는 것은 `timeout-minutes` 한 줄뿐이다 (RL-014)
+  - `mutation` job 의 `timeout-minutes: 10` 변경 (ISSUE-58 이 마크업 레인을 넣으면 그쪽에서 재설정한다)
+  - 러너 코드 변경 0줄
+
+#### Acceptance Criteria (DoD)
+- [ ] Given `.github/workflows/ci.yml`, when 세 job 정의를 읽으면, then `lint` / `test` / `e2e` 각각에 `timeout-minutes` 가 있고, 각 값이 **실측 소요를 인용한 주석**과 함께 있으며 그 실측의 2배 이상이다 (단위 스위트 ~78–82초, e2e 22건)
+- [ ] Given 세 job 의 diff, when `git diff main -- .github/workflows/ci.yml` 을 보면, then 추가된 줄이 `timeout-minutes` 와 그 주석뿐이고 `run:` 커맨드·스텝 순서·캐시 키가 **단 한 글자도 바뀌지 않았다**
+- [ ] Given 변경된 워크플로, when PR CI 가 한 바퀴 돌면, then 네 job 전부 타임아웃 없이 통과한다 (상한이 정상 실행을 자르지 않는다는 실증)
+- [ ] Given `guard_mutations.py` 의 커버리지 귀속 결정, when `pyproject.toml` 또는 `docs/architecture.md` 를 읽으면, then "유지" 또는 "제외" 중 하나가 **명시적으로 선택**되어 있고 근거가 한 문장 이상 남아 있다 — "일단 두자" 같은 무결정 서술은 허용하지 않는다
+- [ ] Given 결정이 "제외", when `uv run pytest -m 'not e2e' --cov=. --cov-fail-under=60` 을 실행하면, then **여전히 통과한다** — 97% 로 잘 덮인 262 statements 를 분모에서 빼면 전체 비율이 **내려가므로**, 임계치 상향 없이 CI 를 깨뜨릴 수 있는 유일한 경로다. 제외 전/후 커버리지 수치를 PR 설명에 나란히 적는다
+- [ ] Given 결정이 "제외" 이고 `pyproject.toml` 을 수정했을 때, when 커밋하면, then 같은 커밋에 `CLAUDE.md` 갱신이 포함되어 `.githooks/pre-commit` 이 통과하고 커밋 메시지에 `docs(claude)` 표기가 있다 (CLAUDE.md §5)
+- [ ] Given 결정이 "유지", when 근거를 읽으면, then 왜 개발 도구를 애플리케이션 분모에 남기는지가 적혀 있고 `pyproject.toml` 변경이 0건이다 (그 경우 pre-commit 계약이 발동하지 않는다)
+- [ ] Given `sse_broadcast.py` 라우트 가드와 `stage_config` 검증, when 확대 평가 결과를 읽으면, then 각각에 대해 (a) 후보 가드 개수, (b) 가드별로 새로 써야 할 변별력 있는 네거티브 테스트의 유무, (c) 채택 / 보류 / 기각 판정이 표로 남아 있다
+- [ ] Given 판정이 "채택", when 이슈가 닫히면, then 후속 이슈가 존재하고 그 Scope 에 `ALLOWED_FILES` 변경과 카탈로그 항목이 열거되어 있다
+- [ ] Given 판정이 "보류" 또는 "기각", when 근거를 읽으면, then 같은 제안이 근거 없이 재점화되지 않도록 **무엇이 바뀌면 재평가하는지**가 한 문장으로 적혀 있다
+- [ ] Given 이 이슈의 최종 diff, when 파일 목록을 보면, then `guard_mutations.py` 와 `guard_mutations.toml` 이 **변경 파일에 없다**
+
+#### Implementation Notes
+- **상한은 넉넉하되 무의미하지 않게.** 목적은 "빨리 실패시키기" 가 아니라 **6시간 폭주를 막는 것**이다. checkout + `uv sync` + 캐시 복원이 실행 시간의 상당 부분이므로, 순수 테스트 실측에 그 오버헤드를 더한 뒤 2배를 잡는다. e2e 는 브라우저 다운로드가 캐시 미스일 때 ~500MB 를 받으므로 다른 셋보다 관대해야 한다 — 캐시 미스가 타임아웃으로 나타나면 원인을 오독하게 된다.
+- **세 job 을 한 커밋에 넣되, `mutation` job 은 손대지 않는다.** ISSUE-58 이 Playwright 를 그 job 에 끌어들이면 상한을 다시 잡아야 하고, 두 이슈가 같은 줄을 고치면 충돌한다.
+- **커버리지 결정의 실질 기준은 "이 파일의 커버리지가 내려갔을 때 무엇을 알려주는가" 다.** 분모에 남기면 러너를 고칠 때 테스트도 함께 고치라는 압력이 유지된다(현재 97% 는 그 압력이 실제로 작동한 결과다). 빼면 애플리케이션 커버리지 숫자가 더 정직해진다. **양쪽 다 맞는 답이 있으므로, 고르고 이유를 적는 것 자체가 산출물이다.**
+- **`omit` 를 택하면 `guard_mutations.toml` 도 함께 생각한다** — TOML 은 커버리지 대상이 아니므로 실제 편집은 `guard_mutations.py` 한 줄이다. `[tool.coverage.run] omit` 은 이미 5개 항목이 있으니 같은 형식으로 한 줄 추가하고, **왜 도구인지**를 인라인 주석으로 남긴다.
+- **50 vs 60 은 이 이슈가 고치지 않지만 기록은 한다.** `pyproject.toml` 의 `addopts` 는 `--cov-fail-under=50`, CI `test` job 은 `--cov-fail-under=60` 이다. 로컬이 더 느슨하다는 사실은 의도일 수도, 표류일 수도 있다. 한 줄 기록만 남기고 판정은 다음 사람에게 넘긴다.
+- **허용 목록 확대 평가에서 가장 비싼 것은 코드가 아니라 테스트다.** ISSUE-43 이 `branding_assets` 15건에 들인 작업의 대부분은 "containment 로도 통과하는 테스트를 킬 테스트로 지정하면 안 된다" 를 가려내는 일이었다(`test_resolve_rejects_symlink_that_points_inside_the_room` 대 나머지 둘). 평가는 그 관점으로 한다 — **가드마다 두 방어가 갈라지는 유일한 입력이 존재하는가**. 존재하지 않으면 그 가드는 뮤테이션 카탈로그에 넣어도 값을 못 한다.
+- `.pre-commit-config.yaml` 의 `ruff-format` / `black` 충돌이 있으므로 `pyproject.toml` 편집 후 `uv run pre-commit run --all-files` 를 한 번 돌려 확인한다.
+
+#### Tests
+- [ ] Given 변경된 `.github/workflows/ci.yml`, when PR CI 를 실행하면, then `lint` / `test` / `e2e` / `mutation` 네 job 이 모두 타임아웃 없이 통과한다
+- [ ] Given `git diff main -- .github/workflows/ci.yml`, when 추가·삭제 줄을 세면, then 추가는 `timeout-minutes` + 주석뿐이고 삭제가 0줄이다
+- [ ] Given 커버리지 결정이 "제외", when `uv run pytest -m 'not e2e' --cov=. --cov-fail-under=60` 을 실행하면, then 통과하고 제외 전/후 총 커버리지 수치가 PR 설명에 기록되어 있다
+- [ ] Given `pyproject.toml` 을 수정한 커밋, when `.githooks/pre-commit` 을 태우면, then 통과한다 (`CLAUDE.md` 동반 수정 확인)
+- [ ] Given 이 이슈의 브랜치, when `uv run python guard_mutations.py` 를 실행하면, then 종료 코드가 0 이다 (러너 동작에 영향이 없음을 확인)
+- [ ] Given 허용 목록 확대 평가, when `docs/architecture.md` 를 읽으면, then 후보 2건의 판정 표가 존재한다 (자동화 테스트가 아니라 **기록된 결정** — 산출물은 문서다)
+
+#### Rollback
+CI 는 `timeout-minutes` 세 줄을 지우면 원복된다 — 커맨드를 건드리지 않았으므로 게이트의 판정 결과에는 아무 영향이 없다. 커버리지 결정이 "제외" 였고 총 커버리지가 예상보다 낮게 나와 `test` job 이 불안정해지면 `omit` 한 줄을 되돌리되, **`CLAUDE.md` 동반 수정도 같은 커밋에서 함께 되돌린다**(pre-commit 계약은 되돌릴 때도 성립해야 한다). 문서에 남긴 판정 기록은 지우지 않고 번복 사유를 **추가로 append** 한다 — 되돌렸다는 사실 자체가 다음 사람에게 필요한 근거다.
+
+---
+
+### ISSUE-60: 무대 렌더러의 플레이스홀더 치환을 엄격 인덱싱으로 통일
+
+- Track: platform
+- Type: fix
+- UI: false
+- Manual: false
+- PRD-Ref: RL-001, RL-021
+- Priority: P2
+- Estimate: 0.5d
+- Status: todo
+- Owner: pillip
+- Branch: issue/ISSUE-60-stage-render-strict-placeholder
+- GH-Issue: —
+- PR: —
+- Depends-On: none
+
+#### Goal
+
+`_render_stage_html` 도 미매핑 플레이스홀더에서 `KeyError` 로 죽는다 — 하나의 `PLACEHOLDER_RE` 를 공유하는 세 렌더러의 **실패 정책이 하나**가 된다.
+
+#### 현재 문제 — **보안 결함이 아니라 fail-loud 일관성 결함이다**
+
+ISSUE-48(머지 `972653b`, PR #143)이 이스케이퍼와 치환 문법의 정의를 `script_escape.py` 한 곳으로 모았다. 그런데 그것을 **소비하는** 세 지점의 실패 정책이 두 벌로 남았다.
+
+| 렌더러 | 위치 | 치환 표현식 | 정책 |
+|---|---|---|---|
+| 무대 | `sse_broadcast.py:494` | `.sub(lambda m: values.get(m.group(1), m.group(0)), template)` | **관대** |
+| 뷰어 | `sse_broadcast.py:389` | `.sub(lambda m: values[m.group(1)], template)` | 엄격 |
+| 오퍼레이터 | `operator_ui.py:213` | `.sub(lambda m: values[m.group(1)], template)` | 엄격 |
+
+관대한 쪽의 결과: `components/stage.html` 에 오타 났거나 새로 넣었지만 아직 배선하지 않은 플레이스홀더가 **리터럴 `{{FOO}}` 그대로 페이지에 실린다.** 그런데 그 자리는 대부분 `stage.html:487-493` 의
+
+```
+const CONFIG = {
+  room_id: {{ROOM_ID}},
+  ...
+};
+```
+
+즉 `<head>` 안 인라인 `<script>` 다. `{{FOO}}` 는 유효한 JS 가 아니므로 **첫 페인트 전에 SyntaxError 로 부트스트랩 전체가 죽고, 서버에는 아무 신호도 남지 않는다.** ISSUE-44 가 뷰어에서 엄격 인덱싱을 고른 이유가 정확히 이 실패 형태를 막기 위함이었고, 무대만 그 결정 밖에 남아 있다.
+
+**보안 영향은 없다.** 주입 경로가 아니고, 이스케이프 자체는 공유되며 정확하다. 값이 개발자 통제 밖(룸 이름)일 때의 팽창도 단일 패스가 이미 막고 있다. 고칠 것은 **오작동의 크기가 아니라 오작동이 들리는지 여부**다.
+
+이 항목은 ISSUE-48 리뷰의 **R-3 (severity Low, deferred)** 다. 당시 ISSUE-49 가 머지를 기다리고 있어 diff 를 무대 렌더러까지 넓히지 않고 미뤘다. 그 유예가 끝났고, 이 이슈가 남은 한 줄을 인수한다.
+
+#### Scope (In/Out)
+
+- In:
+  - `sse_broadcast.py:494` 의 `.get(m.group(1), m.group(0))` → `values[m.group(1)]` **한 줄**
+  - `_render_stage_html` docstring 에 뷰어(`:376-377`)와 **같은 문장**의 정책 문단 추가
+  - 미매핑 플레이스홀더가 `KeyError` 로 죽고 그 예외가 **서버 로그까지 도달**하는지 확인하는 테스트
+  - 템플릿의 플레이스홀더 집합과 `values` 키 집합의 **상등** 단언
+  - 세 렌더러의 치환 표현식이 같은 형태임을 고정하는 정적 가드 (RL-001)
+- Out:
+  - `script_escape.py` — `json_for_script` 도 `PLACEHOLDER_RE` 도 **0줄** 변경
+  - `components/stage.html` 마크업 **0줄** 변경 (플레이스홀더 추가/삭제/이름변경 없음)
+  - 뷰어·오퍼레이터 렌더러 **0줄** 변경 (이미 엄격하다)
+  - SSE 와이어 포맷, 404 상태코드/본문, `_handle_stage` 의 `except` 구조 — 변경 없음. `_handle_stage:533-545` 는 이미 render 를 try 로 감싸고 `{e!r}` 를 찍은 뒤 404 를 준다. **확인만 하고 손대지 않는다.**
+  - `{{ROOM_NAME}}` 의 sink 선택(markup → `html.escape`)에 대한 재검토 — `:6` 과 `:1129` 둘 다 마크업이고 스크립트 안에는 없다. 오늘 기준 올바르며 이 이슈의 관심사가 아니다
+
+#### Acceptance Criteria (DoD)
+
+- [ ] Given `<p>{{NOPE}}</p>` 만 담은 임시 템플릿으로 `_STAGE_TEMPLATE_PATH` 를 바꾼 상태, when `_render_stage_html` 을 호출하면, then `KeyError` 가 raise 되고 **예외 인자가 정확히 `"NOPE"`** 다 (raise 여부가 아니라 어느 키인지까지 값으로 고정한다 — RL-004)
+- [ ] Given 같은 상태, when `/stage/room-1` 을 실제로 GET 하면, then status 가 **404** 이고 본문이 `_NOT_FOUND_HTML` 과 **문자열 상등**이며 본문에 `"NOPE"` / `"KeyError"` / 트레이스백 문자열이 **하나도 없다** (RL-006)
+- [ ] Given 같은 요청, when stdout 을 캡처하면, then `[Stage] stage template render failed:` 로 시작하는 줄이 **정확히 1건**이고 그 줄이 `KeyError` 를 담고 있다 — **"raise 한다" 와 "누군가 듣는다" 는 별개의 주장이고 둘 다 증거가 필요하다** (RL-029). 이 단언이 없으면 이 이슈의 엄격화는 관대 버전과 관측상 구분되지 않는다
+- [ ] Given 현재 `components/stage.html`, when `PLACEHOLDER_RE.findall` 로 이름을 뽑으면, then 그 집합이 `{ROOM_NAME, ROOM_ID, OUTPUT_LANGS_JSON, PRIMARY_LANG, INITIAL_STATE, STAGE_CONFIG_JSON}` 과 **상등**이고, `sse_broadcast.py:486-493` 의 `values` 키 집합과도 **상등**이다 (부분집합이 아니라 상등 — 남는 키도 모자란 키도 없다)
+- [ ] Given 정상 룸, when `/stage/room-1` 을 렌더하면, then 응답 본문에 남은 `{{...}}` 매치가 **0건**이고 status 가 200 이다
+- [ ] Given 룸 이름이 `{{NOPE}}`(미매핑 이름)인 룸, when 렌더하면, then **200** 이고 `<h1 class="event-title" id="event-title">{{NOPE}}</h1>` 가 본문에 그대로 있다 — `re.sub` 는 치환 **결과**를 재스캔하지 않으므로 엄격화의 대상은 템플릿에 적힌 이름뿐이다. 기존 `test_room_name_cannot_expand_another_placeholder(:1168)` 도 **무수정 통과**한다
+- [ ] Given 세 렌더 함수의 소스, when docstring 을 제외한 본문을 읽으면, then `values[m.group(1)]` 이 **3건**이고 `values.get(` 이 **0건**이다 (RL-001 — 정책이 다시 두 벌로 갈라지면 이 가드가 잡는다)
+- [ ] Given 이 이슈의 diff, when `values[...]` 를 `values.get(..., m.group(0))` 로 되돌리면, then 새 테스트 중 **최소 2개**가 RED 다 — 되돌려도 전부 초록인 테스트는 이 이슈를 증명하지 않는다
+
+#### Implementation Notes
+
+- **프로덕션 변경은 정확히 한 줄이다** (`sse_broadcast.py:494`). 이 이슈의 부피는 전부 테스트와 검증 절차에 있다.
+- **브랜치를 따자마자 할 일 — 이 이슈의 유일한 실제 위험이다.** 엄격화는 *지금까지 조용했던 경우*를 예외로 바꾼다. 따라서 `components/stage.html` 이 `values` 가 공급하지 않는 이름을 **하나도** 갖고 있지 않다는 것을 먼저 확인해야 한다. 하나라도 어긋나면 이 변경은 무대 페이지를 **통째로 404** 로 만든다.
+
+  ```
+  grep -o "{{[A-Z_]*}}" components/stage.html | sort -u
+  ```
+
+  를 `sse_broadcast.py:486-493` 의 `values` 키와 대조한다. **2026-08-30 main(`972653b`) 기준으로는 양쪽 모두 위 6개로 일치하고, 파일 전체의 `{{` 출현이 7회(`ROOM_NAME` 2회 포함)로 그 6개가 전부다 — 즉 오늘 기준 안전하다.** 그래도 재확인 없이 진행하지 말 것. 확인 결과를 PR 설명에 붙인다.
+- **grep 은 보조 수단이고 authoritative 하지 않다.** 정규식은 `\{\{(\w+)\}\}` 이라 `{{room_id}}` / `{{a1}}` 같은 소문자·숫자 이름도 매치한다. `[A-Z_]` grep 은 그것을 놓치므로, **상등 단언은 `PLACEHOLDER_RE.findall` 을 쓰는 테스트가 맡는다**. 눈으로 보는 것과 CI 가 지키는 것을 헷갈리지 말 것.
+- **치환 결과는 재스캔되지 않는다 — 이걸 모르면 이 이슈를 잘못 되돌린다.** `re.sub` 의 replacement 는 다시 매치 대상이 되지 않는다. 그래서 운영자가 룸 이름을 `{{NOPE}}` 로 지어도 `KeyError` 가 **아니고**, 무대는 정상 200 이다. "엄격화하면 운영자 자유 입력이 페이지를 죽인다" 는 그럴듯한 오판이므로 AC 로 못박아 둔다.
+- **호출부는 이미 준수한다 — 확인만 한다.** `_handle_stage:533-545` 가 render 를 `try` 로 감싸고 `print(f"[Stage] stage template render failed: {e!r}")` 뒤 404 + `_NOT_FOUND_HTML` 을 준다. RL-029 가 지적한 "듣는 쪽이 신호를 파괴하는" 형태는 이 경로에 해당하지 않는다(그 사례는 `app.py:491` 이었다). 다만 **그 로그가 실제로 나온다는 사실을 테스트로 고정해야** RL-029 의 prevention 을 만족한다. `except` 의 구조·문구·상태코드는 건드리지 않는다.
+- docstring 문단은 뷰어(`sse_broadcast.py:376-377`)의 *"indexing `values` (rather than `.get`) makes a mistyped placeholder fail loudly instead of leaking to the page"* 를 **같은 뜻·같은 구조**로 옮긴다. 두 곳을 다르게 쓰면 다음 리뷰어가 또 차이를 세게 된다 (RL-001).
+- **테스트는 뷰어 쪽과 같은 이름으로 붙여 대칭이 눈에 보이게 한다.** 대응쌍은 `tests/test_viewer_page.py:679 test_every_template_placeholder_is_mapped` 와 `:704 test_unmapped_placeholder_fails_loudly` 다. 임시 템플릿 주입도 같은 방식(`monkeypatch.setattr(_sb, "_STAGE_TEMPLATE_PATH", bogus)`)을 쓴다.
+- **기존 `test_all_placeholders_present(:281)` 를 삭제하지 말고, 옆에 상등 단언을 추가한다.** 그 테스트는 `in` 검사라 템플릿에 이름이 **늘어나도 통과**한다 (RL-004). 전자는 "템플릿에 있다", 후자는 "정확히 이만큼이다" 로 역할이 다르다.
+- `.pre-commit-config.yaml` 의 `ruff-format` / `black` 충돌 — `assert cond, (msg)` 레이아웃을 피한다.
+
+#### Tests
+
+- [ ] `tests/test_stage_page.py::test_unmapped_placeholder_fails_loudly` — bogus 템플릿 monkeypatch 후 `pytest.raises(KeyError) as ei`, `ei.value.args[0] == "NOPE"`
+- [ ] 같은 파일 — 라우트 레벨: 같은 상태에서 `/stage/room-1` GET → `status == 404`, `body == _NOT_FOUND_HTML`, `"NOPE" not in body`, `"KeyError" not in body`
+- [ ] 같은 파일 — **RL-029 관측 가능성**: 위 요청의 `capsys` stdout 에서 `[Stage] stage template render failed:` 로 시작하는 줄이 **정확히 1건**이고 그 줄에 `KeyError` 가 포함된다
+- [ ] 같은 파일 — `test_every_template_placeholder_is_mapped`: `set(_PLACEHOLDER_RE.findall(template))` 이 6개 이름 집합과 상등, 정상 렌더 본문의 `findall()` 이 `[]`
+- [ ] 같은 파일 — `test_room_name_cannot_expand_another_placeholder(:1168)` 의 parametrize 에 **미매핑** 이름 `"{{NOPE}}"` 추가: 200 이고 `<h1>` 에 원문 그대로 (엄격화가 룸 이름 경로를 건드리지 않는다는 대조군)
+- [ ] `tests/test_operator_bootstrap_escaping.py`(정책 가드가 이미 모여 있는 곳) — 세 렌더 함수의 `inspect.getsource` 본문에서 `values[m.group(1)]` 3건 / `values.get(` 0건. `:220` 의 "이스케이퍼 정의는 한 곳" 가드와 나란히 둔다
+- [ ] **뮤테이션 확인**(ISSUE-43 카탈로그 형식) — `values[...]` → `values.get(..., m.group(0))` 되돌리면 KeyError 테스트·라우트 404/로그 테스트·정적 가드 **3개가 RED**. `print` 한 줄을 지우면 로그 테스트 1개가 RED. **킬 카운트를 PR 설명에 적는다**
+- [ ] 회귀: `uv run pytest tests/test_stage_page.py tests/e2e/test_stage_page_e2e.py -q` 가 위 parametrize 1건 추가를 제외하고 **무수정 통과**
+
+#### Rollback
+
+`sse_broadcast.py` 의 치환 한 줄과 docstring 문단, 그리고 신규 테스트를 되돌리는 단일 커밋 revert. **스키마·프로토콜·템플릿·클라이언트 변경이 0건**이라 되돌려도 와이어 포맷과 무대 페이지의 정상 렌더 결과가 바이트 단위로 동일하다. 되돌리면 `components/stage.html` 의 오타 플레이스홀더가 다시 `const CONFIG` 블록으로 새어 들어가, 무대가 **404 대신 흰 화면**으로 죽고 서버 로그에는 아무것도 남지 않는 상태로 복귀한다 — 잃는 것은 동작이 아니라 **진단 가능성**이라는 점을 PR 설명에 남긴다.
+
+### ISSUE-61: .qr-code-caption WCAG AA 보정 — 흰 카드 backdrop 기준 4.5:1
+
+- Track: platform
+- Type: fix
+- UI: true
+- Manual: false
+- PRD-Ref: RL-018
+- Priority: P1
+- Estimate: 0.5d
+- Status: todo
+- Owner: pillip
+- Branch: issue/ISSUE-61-todo
+- GH-Issue: —
+- PR: —
+- Depends-On: none
+
+#### Goal
+`.qr-code-caption` 이 자기가 **실제로 래스터라이즈되는 backdrop**(`.qr-code-container` 의 불투명 흰 카드) 위에서 4.5:1(WCAG 2.1 §1.4.3)을 넘긴다. 그리고 그 backdrop 이 테스트에 박힌 상수가 아니라 **스타일시트에서 읽어낸 사실**이다.
+
+#### 현재 문제
+ISSUE-49 는 웰컴 텍스트 블록만 고치고 이것을 의도적으로 남겼다(`ISSUE-49 § Out`: "`.qr-code-caption` 등 — 별도 후속"). 이 이슈가 그 인수다.
+
+| 규칙 | 값 | 합성 후 전경 | 크기 | `#ffffff` 대비 | 판정 |
+|---|---|---|---|---|---|
+| `.qr-code-caption` (`components/webrtc.html:502`) | `rgba(0, 0, 0, 0.5)` | `(128,128,128)` | 12px | **3.95:1** | **미달** |
+| `.qr-code-caption strong` (`:511`) | `rgba(0, 0, 0, 0.8)` | `(51,51,51)` | 12px | 12.63:1 | 통과 |
+
+세 가지가 이 표면을 특별하게 만든다.
+
+1. **backdrop 이 ISSUE-49 가 다룬 둘 중 어느 것도 아니다.** 이 파일에서 유일하게 **어두운 글자 / 밝은 배경**인 표면이라 대비 방향이 뒤집힌다. ISSUE-49 가 근거로 삼은 안전 방향("불투명 hex 로 바꾸면 backdrop 이 어두워질수록 대비가 **올라간다**")이 여기서는 성립하지 않는다 — 여기서 불투명화는 더 **어둡게** 가야 한다. `_ALL_BACKDROPS`(`#0b0b0c`, `#000`)를 그대로 재사용하면 완전히 틀린 숫자가 나온다. RL-018 이 말하는 "backdrop 상수가 곧 검증되지 않은 가정" 의 세 번째 사례다.
+2. **large-text 완화가 없다.** 12px 는 24px(또는 18.66px bold) 문턱에서 한참 아래다. 3.95:1 은 어떤 근거로도 통과시킬 수 없다.
+3. **장식이 아니라 기능 문구다.** 웰컴 인스턴스(`:761`, `clearViewer` 재렌더 `:1626`)의 본문은 "카메라로 스캔하면 자막을 볼 수 있습니다" 이고, 그 아래 `<strong data-qr-url>` 가 QR 이 안 읽힐 때 청중이 **직접 입력해야 하는 뷰어 URL** 이다. 설정 패널 인스턴스(`:686`)는 `<strong>` 만 담는다. 즉 이 클래스는 행사장에서 청중이 자막에 도달하는 경로 전체를 나른다.
+
+**리뷰 노트가 넘긴 후보값이 재현되지 않는다 — 그대로 옮겨 적지 말 것.** 같은 산식(`tests/wcag.py`)으로 다시 계산하면 위 표의 3.95 / 12.63 은 정확히 재현되는데, 후보로 적힌 `#595959` 는 `#ffffff` 위 **7.00:1** 이다. `#ffffff` 위에서 4.54:1 인 값은 `#767676`(118,118,118) 이다. 전승된 대비 수치를 검산 없이 쓰는 것이 RL-018 의 실패 형태 그 자체이므로, 이 이슈는 **자기 후보값부터 다시 잰다.**
+
+#### Scope (In/Out)
+- In:
+  - `.qr-code-caption` 의 `color` 를 불투명 hex 로 교체하고 실측 대비를 규칙 위 주석과 PR 설명에 기록
+  - backdrop 을 하드코딩하지 않고 `_rule_hex(css, ".qr-code-container", "background")` 로 읽어 계산 — 카드가 불투명이고 같은 파일에 선언돼 있으므로 backdrop 은 구조적 사실이다
+  - 세 마크업 인스턴스의 인라인 `style` 이 `background` 를 덮지 않음을 확인하는 구조 가드 (backdrop 이 하나라는 전제의 근거)
+  - 대비 테스트는 `tests/wcag.py` 재사용 — **두 번째 계산기 금지 (RL-001, freq 5)**
+- Out:
+  - `.qr-code-caption strong` — 12.63:1 로 이미 통과. 값을 건드리지 않는다
+  - `components/webrtc.html` 의 나머지 텍스트 표면(상태 칩, FAB, `.caption-line`, `st.radio`) — ISSUE-63
+  - 대비 가드를 열거형에서 파생형으로 바꾸는 작업 — ISSUE-62
+  - QR 카드 배경색·라운딩·그림자·레이아웃·문구 변경. 시각적 변경은 **색 값 한 줄뿐**이다
+  - `.qr-code-container img` 등 비텍스트 요소 (1.4.11)
+
+#### Acceptance Criteria (DoD)
+- [ ] Given `.qr-code-caption` 의 보정된 `color`, when `_rule_hex(css, ".qr-code-container", "background")` 로 읽은 backdrop 위에서 `tests/wcag.py::_contrast_ratio` 로 계산하면, then 4.5:1 이상이다
+- [ ] Given 보정 전 값 `rgba(0, 0, 0, 0.5)`, when 같은 테스트를 실행하면, then **3.95:1** 을 보고하며 실패한다 (RED 확인, RL-004)
+- [ ] Given `.qr-code-caption` 과 `.qr-code-caption strong` 의 대비, when 두 값을 비교하면, then `strong`(12.63:1)이 더 높다 — 위계가 뒤집히지 않는다
+- [ ] Given `.qr-code-container { background }` 를 `#eeeeee` 로 바꾼 변이, when 대비 테스트를 실행하면, then 하드코딩된 `#ffffff` 가 아니라 **바뀐 값으로 다시 계산**한다 (backdrop 이 상수가 아님을 증명)
+- [ ] Given `.qr-code-container` 를 쓰는 세 마크업 인스턴스(`:686`, `:761`, `:1626`), when 각 인라인 `style` 속성을 검사하면, then `background` 를 덮는 선언이 0건이다
+- [ ] Given 최종 선택한 색, when 규칙 위 주석과 PR 설명을 읽으면, then 거기 적힌 숫자가 `tests/wcag.py` 가 실제로 낸 값이다 — 리뷰 노트의 "`#595959` = 4.54:1" 을 옮겨 적지 않았고, 재계산 결과(`#595959` = 7.00:1 / `#767676` = 4.54:1)가 근거로 남는다
+
+#### Implementation Notes
+- **위치**: `components/webrtc.html:502-511`. 웰컴·설정 패널·`clearViewer` 재렌더 세 인스턴스가 같은 클래스를 쓰므로 CSS 한 곳만 고치면 전부 덮인다. 인라인 `style` 로 색을 넣지 않는다.
+- **값 선택**: `#595959`(**7.00:1**)를 권장한다. `strong`(12.63:1)보다 어두워 밝기 위계가 유지되면서 4.5:1 위에 여유가 있다. `#767676`(**4.54:1**)은 AA 하한에 붙어 있어 다음 미세 조정 한 번에 다시 미달로 떨어진다 — ISSUE-45 가 `.welcome-room` 의 4.52:1 에서 겪은 그대로다.
+- **알파를 유지하지 말고 불투명 hex 로 간다.** ISSUE-45/47/49 가 이 파일에 확립한 패턴이다. `rgba(0,0,0,α)` 로 남기면 카드 배경이 조금이라도 바뀌는 순간 값이 다시 틀어지고, `_rule_rgba` 와 `_rule_hex` 중 어느 것으로 읽어야 하는지도 갈린다.
+- **테스트 배치**: `tests/test_webrtc_stage_launch.py` 의 대비 클래스 옆이 맞다(같은 파일의 대비 단언이 한 집에 모인다). 다만 **그 파일의 `_ALL_BACKDROPS` 를 쓰면 안 된다** — 이 규칙의 backdrop 은 그 두 어두운 색이 아니다. `_rule_hex` 로 카드 배경을 읽어 그 자리에서 backdrop 을 만든다.
+- 보정 후에는 `_rule_rgba` 가 아니라 `_rule_hex(css, ".qr-code-caption", "color")` 로 읽힌다. `_rule_rgba` 는 `rgba()` 만, `_rule_hex` 는 `#rrggbb` 만 파싱한다.
+- ISSUE-62(테스트만)·ISSUE-63(서로소인 선택자 집합)과 병렬 가능하다. 다만 같은 파일이므로 세 이슈가 동시에 열리면 `components/webrtc.html` 의 CSS 블록에서 머지 충돌이 날 수 있다 — 선택자 단위로 diff 를 좁게 유지한다.
+- pre-commit 의 `ruff-format` / `black` 충돌(ISSUE-65) — 줄바꿈된 `assert cond, (msg)` 레이아웃을 피하거나 `SKIP=ruff-format` 으로 우회한다.
+
+#### Tests
+- [ ] Given 보정된 `.qr-code-caption`, when 카드 배경을 스타일시트에서 읽어 대비를 계산하면, then 4.5:1 이상이다
+- [ ] Given `rgba(0, 0, 0, 0.5)` 로 되돌린 변이, when 같은 테스트를 실행하면, then `3.95:1` 로 실패한다
+- [ ] Given `.qr-code-container { background: #eeeeee }` 변이, when 테스트를 실행하면, then 새 backdrop 으로 재계산한 값이 메시지에 나온다
+- [ ] Given `.qr-code-caption` 과 `strong` 의 두 대비, when 비교하면, then `strong` 이 더 크다
+- [ ] Given 세 마크업 인스턴스의 인라인 `style`, when `background` 를 검색하면, then 0건이다
+
+#### Rollback
+색 리터럴 한 줄과 신규 테스트만 바뀌므로 해당 커밋 revert 로 즉시 원복된다(레이아웃·동작 변경 0). 되돌리는 순간 QR 카드의 안내 문구가 다시 **3.95:1** 로 서빙되어, QR 스캔이 실패한 청중이 직접 입력해야 할 경로의 설명이 WCAG 1.4.3 미준수 상태로 돌아간다는 점을 PR 설명에 남긴다.
+
+### ISSUE-62: 웰컴 화면 대비 가드를 열거형에서 파생형으로 전환
+
+- Track: platform
+- Type: test
+- UI: false
+- Manual: false
+- PRD-Ref: RL-018, RL-004, RL-001
+- Priority: P2
+- Estimate: 1d
+- Status: todo
+- Owner: pillip
+- Branch: issue/ISSUE-62-todo
+- GH-Issue: —
+- PR: —
+- Depends-On: ISSUE-53
+
+#### Goal
+웰컴 화면 대비 가드가 "오늘의 선택자 이름 목록" 이 아니라 **스타일시트에서 파생한 집합**을 검사한다 — 새 텍스트 규칙이 하나 늘면 가드가 조용히 통과하는 것이 아니라 **실패**한다.
+
+#### 현재 문제
+ISSUE-49 의 가드는 **오늘의 스타일시트에 대해서는 옳다.** 값도 맞고, 두 backdrop parametrize 도 맞고, RED 확인도 했다. 문제는 감사 대상이 **손으로 쓴 이름 튜플**이라는 것이다 — 오늘의 값은 고정하지만 내일의 규칙은 막지 못한다. PR #147 코드 리뷰가 변이를 넣어 실측한 네 개의 구멍:
+
+| # | 심각도 | 변이 | 정적 가드 | e2e | 실측 대비 |
+|---|---|---|---|---|---|
+| F-1 | Medium | `#viewer:fullscreen .hint { color: rgba(255,255,255,0.4) }` 추가 | **생존** | 잡음 | `#000` 위 **3.66:1** |
+| F-2 | Medium | `.welcome-note { color: rgba(255,255,255,0.4) }` 신규 규칙 | **생존** | **생존** | `#0b0b0c` 3.80 / `#000` **3.66:1** |
+| F-3 | Low | 웰컴 규칙에 `opacity` / `filter` 로 밝기를 되돌림 | **생존** | **생존** | 두 층 모두 `color` 만 본다 |
+| F-4 | Low | 규칙 **끝**에 중복 `color: #55555c` 추가 | **생존** | 잡음 | `#0b0b0c` 위 **2.66:1** / `#000` 위 2.84:1 |
+
+- **F-1** — 전체화면 가드가 `if "welcome" not in selector: continue`(`tests/test_webrtc_stage_launch.py:278`, PR #147 기준)로 거른다. `#viewer:fullscreen .hint` 는 **웰컴 노드에 걸리는 backdrop 분기**인데 선택자 문자열에 `welcome` 이 없어 필터를 그냥 빠져나간다. 지금은 e2e 가 죽이고 CI 가 e2e 를 필수 job 으로 돌리므로(`ci.yml:158`) 그물 전체는 버틴다 — 다만 정적 층은 **자기가 막는다고 적어 둔 것을 막지 못한다.**
+- **F-2 가 이 이슈의 본체다.** 새 웰컴 규칙은 **어느 층에도 걸리지 않는다.** 정적 층의 `_WELCOME_TEXT_RULES` 도 e2e 의 `_WELCOME_TEXT_NODES` 도 손으로 쓴 튜플이기 때문이다. 이것이 **RL-018 의 재발 벡터 그 자체다** — ISSUE-49 가 고친 것은 값이고, 다음 사람이 `rgba(255,255,255,0.4)` 를 한 줄 더 쓰는 것을 막는 장치는 지금 없다. RL-018 은 이미 Frequency 3 이며, 재발 경로가 열려 있는 채로 값만 고친 것은 절반이다.
+- **F-4** — 정적 파서가 `color:` 를 `re.search` 로 **첫 번째** 선언에서 뽑는데, CSS 는 **마지막** 선언을 적용한다. 규칙 끝에 어두운 색을 덧붙이면 정적 스위트 전체가 통과하고 e2e 만 2.66:1 을 보고한다.
+
+**올바른 형태는 이 저장소 안에 이미 있다.** `tests/test_viewer_page.py:1145 test_opaque_background_surfaces_are_the_enumerated_set` 은 배경 표면 집합을 스타일시트에서 **파생**하고 기록된 집합과 **양방향 상등**으로 비교해, 규칙이 하나 늘면 실패한다. 필요한 순회 헬퍼도 그 파일에 다 있다 — `_style_sheet`(`:143`), `_declarations`(`:153`), `_rules`(`:173`), `_colour_rules`(`:183`). 특히 `_declarations` 는 선언을 **목록**으로 돌려주므로 마지막 `color` 를 집는 것만으로 F-4 가 닫힌다.
+
+#### Scope (In/Out)
+- In:
+  - `_style_sheet` / `_declarations` / `_rules` / `_colour_rules`(및 `_RULE_RE`)를 `tests/wcag.py` 로 **승격** — 추가만 하고 기존 6개 함수는 손대지 않는다. `tests/test_viewer_page.py` 는 import 후 모듈 수준 별칭으로 받아 기존 호출부가 한 줄도 바뀌지 않게 한다
+  - 정적 가드를 파생형으로 재작성:
+    - 선택자 이름 필터 없이 파일의 **모든** `color` 선언을 순회한다 (F-1)
+    - 규칙마다 **마지막** `color` 선언을 채택한다 (F-4)
+    - 웰컴 표면은 두 backdrop(`#0b0b0c` / `#000`)으로 4.5:1 검사
+    - 아직 감사되지 않은 나머지 표면은 `{selector: (사유, 담당 이슈)}` **면제 맵**에 넣고 `감사 집합 ∪ 면제 맵 == 파일의 전체 color 규칙 집합` 을 **set-equality** 로 못 박는다 → 새 규칙은 양쪽 어디에도 없으므로 반드시 실패한다 (F-2)
+    - `opacity` / `filter` 가 선언된 규칙은 **감지해 실패**시킨다 — 정적 층이 조상 합성을 계산할 수 없다는 사실을 침묵이 아니라 명시적 실패로 만든다 (F-3)
+  - e2e 의 웰컴 노드 목록도 파생형으로 — 하드코딩 튜플 대신 웰컴 서브트리를 DOM 에서 훑어 텍스트 노드를 모으고 `getComputedStyle` 로 실효 색을 읽는다 (조상 `opacity` 가 여기서는 자동으로 반영된다)
+  - 네 변이(F-1~F-4)를 실제로 적용해 각각 RED 임을 확인하고 kill 표를 PR 설명에 남긴다
+- Out:
+  - `components/webrtc.html` 의 색 값 변경 — **테스트 전용 이슈**다. 면제 맵에 들어가는 미달 표면의 **수정**은 ISSUE-61 / ISSUE-63 소관
+  - 면제 맵을 비우는 것(=감사 범위를 파일 전체로 확대) — ISSUE-63
+  - `tests/wcag.py` 기존 함수의 동작·시그니처 변경. 무대/뷰어/오퍼레이터 세 대비 스위트가 그 위에 서 있고, 그 공용화 자체가 ISSUE-45 를 만든 드리프트의 해법이다
+  - `components/viewer.html` / `components/stage.html` 의 가드 — 이미 파생형이거나 별도 이슈
+  - `.streamlit` 테마가 그리는 Streamlit 위젯 — 파일 파싱 대상이 아니다 (ISSUE-63)
+
+#### Acceptance Criteria (DoD)
+- [ ] Given 스타일시트에 `.welcome-note { color: rgba(255,255,255,0.4) }` 규칙만 추가한 상태, when 정적 가드를 실행하면, then **실패**하고 메시지에 `.welcome-note` 와 실측 대비(3.80:1 / 3.66:1)가 나온다 (F-2)
+- [ ] Given `#viewer:fullscreen .hint { color: rgba(255,255,255,0.4) }` 를 추가한 상태, when 정적 가드를 실행하면, then **실패**하고 `#000` 위 **3.66:1** 을 보고한다 — 선택자에 `welcome` 이 없어도 걸린다 (F-1)
+- [ ] Given `.welcome-state .hint` 규칙 **끝**에 `color: #55555c` 를 덧붙인 상태, when 정적 가드를 실행하면, then **실패**하며 **2.66:1** 을 보고한다 — 첫 선언이 아니라 마지막 선언을 읽는다 (F-4)
+- [ ] Given 웰컴 규칙에 `opacity: 0.5` 를 추가한 상태, when 정적 가드를 실행하면, then 실패하고 "이 층은 조상 opacity 를 합성하지 못한다" 는 취지의 메시지를 낸다 (F-3)
+- [ ] Given 손대지 않은 현재 스타일시트, when 정적 가드를 실행하면, then 통과하고 `감사 집합 ∪ 면제 맵` 이 파일의 전체 `color` 규칙 집합과 **정확히 상등**이다 (부분집합 검사가 아니다)
+- [ ] Given 면제 맵의 각 항목, when 값을 읽으면, then "왜 두 backdrop 으로 잴 수 없는가" 와 담당 이슈 번호가 들어 있다 — 이 맵이 곧 ISSUE-63 의 작업 목록이 된다
+- [ ] Given 마크업에 `<div class="welcome-note">…</div>` 를 추가한 변이, when e2e 를 실행하면, then 그 노드를 **자동으로 포함**해 측정하고 실패한다 (하드코딩 목록이 아님의 증명)
+- [ ] Given `tests/wcag.py` 의 diff, when 읽으면, then 추가만 있고 기존 6개 함수의 시그니처·동작이 그대로이며, `uv run pytest tests/test_stage_page.py tests/test_viewer_page.py tests/test_webrtc_stage_launch.py -q` 가 통과한다
+- [ ] Given 네 변이, when 각각 단독 적용해 실행하면, then **4/4 가 RED** 이고 kill 표(변이 → RED 인 테스트 이름)가 PR 설명에 있다
+
+#### Implementation Notes
+- **승격 대상의 정확한 위치**: `tests/test_viewer_page.py` 의 `_RULE_RE`(`:139`), `_style_sheet`(`:143`), `_declarations`(`:153`), `_rules`(`:173`), `_colour_rules`(`:183`). **복사하지 않는다** — 두 번째 CSS 파서는 두 번째 대비 계산기와 정확히 같은 결함이고, 그것이 `tests/wcag.py` 가 존재하는 이유다 (RL-001, freq 5). 별칭으로 받는 기법은 ISSUE-48 이 `sse_broadcast` 의 `_json_for_script` / `_PLACEHOLDER_RE` 에 쓴 것과 같다 — 기존 테스트 호출부가 한 줄도 바뀌지 않았다.
+- **면제 맵의 형태는 `_KNOWN_BACKGROUNDS`(`tests/test_viewer_page.py:111`)를 그대로 따른다.** 핵심은 `assert painted == _KNOWN_BACKGROUNDS` 의 **양방향 상등**이다. `issubset` 이나 `all(x in known for x in found)` 는 새 규칙을 통과시킨다.
+- **면제 맵에 들어갈 것들**(ISSUE-63 이 비운다): `.settings-fab, .fullscreen-fab`(SVG 아이콘 → 1.4.11), `.caption-line.*`, `.status-chip*`(자기 반투명 배경 위), `.control-group label/span`, `.settings-panel h2`, `.lang-warning`(backdrop 이 `#0e0e10`), `.fs-font-label` / `.fs-font-size` / `.fs-font-btn`(조상 `.fs-font-controls { opacity: 0.6 }`), `.back-to-live`, `.qr-code-caption` / `… strong`(backdrop 이 `#ffffff` — ISSUE-61), `.stage-launch-*`(ISSUE-47 에서 감사 완료).
+- **"backdrop 이 두 개" 라는 것 자체가 가정이다.** 위 목록이 보여주듯 이 파일에는 최소 네 개의 backdrop 이 있다. 면제 맵은 그 사실을 값으로 기록하는 자리이지, 감사를 미루는 자리가 아니다.
+- **RL 번호 주의**: ISSUE-49 리뷰가 신설한 두 레슨("exhaustiveness 가드를 오늘의 이름 목록으로 쓴다", "크기가 같은 뮤턴트가 stale `.pyc` 를 재사용한다")은 이 이슈를 쓰는 시점에 `docs/review_lessons.md` 에 **아직 없다.** 파일의 마지막 번호는 **RL-034**(테스트 더블이 신뢰 경계 안쪽 — PR #149)이므로 두 레슨은 **RL-035 / RL-036** 으로 붙는다. 리뷰 노트가 적어 둔 "RL-033 / RL-034" 는 append 전 임시 번호이며 이미 다른 레슨이 차지하고 있다. 인용하기 전에 파일에서 실제 번호를 확인한다.
+- **stale `.pyc` 함정** (위 두 번째 신설 레슨): 변이를 넣었다 뺐다 하며 RED 를 확인할 때, 뮤턴트가 원본과 **바이트 수가 같으면** CPython 이 mtime/size 기반 캐시를 재사용해 이전 `.pyc` 가 그대로 실행될 수 있다. 이 이슈는 대부분 `.html` 을 변이시키고 그쪽은 매번 `read_text` 하므로 안전하지만, `tests/wcag.py` 를 변이시켜 가드의 판별력을 확인할 때는 `PYTHONDONTWRITEBYTECODE=1` 을 붙이거나 `__pycache__` 를 지운 뒤 돌린다. **크기가 같은 변이가 조용히 GREEN 을 내면 그것은 "가드가 약하다" 가 아니라 "변이가 실행되지 않았다" 다.**
+- **순서 (`Depends-On: ISSUE-53`)**: 이 의존은 기능이 아니라 **머지 순서** 제약이다. ISSUE-53(PR #146)이 `tests/wcag.py` 를 import 로 쓰고 있어, 그 PR 이 머지되기 전에 같은 파일을 확장하면 충돌한다. `tests/wcag.py` 변경을 **추가만**으로 유지하면 충돌 표면이 파일 끝으로 한정된다.
+- e2e 파일은 ISSUE-49 가 웰컴 대비 e2e 를 넣은 곳(`tests/e2e/test_operator_stage_mode_e2e.py`)이다. 로컬 실행 시 `env -u NODE_OPTIONS` 가 필요하다 — 존재하지 않는 `restore-node-options.cjs` 가 preload 되어 Playwright 의 Node 드라이버가 죽는다.
+- pre-commit 의 `ruff-format` / `black` 충돌(ISSUE-65) — 이 이슈는 assert 메시지를 많이 쓰므로 특히 잘 물린다. 줄바꿈된 `assert cond, (msg)` 를 피하거나 `SKIP=ruff-format`.
+
+#### Tests
+- [ ] Given `.welcome-note` 규칙만 추가한 변이, when 정적 가드를 실행하면, then 실패하고 선택자와 대비 수치가 메시지에 나온다
+- [ ] Given `#viewer:fullscreen .hint` 규칙 변이, when 정적 가드를 실행하면, then `#000` 위 3.66:1 로 실패한다
+- [ ] Given 규칙 끝에 `color: #55555c` 를 덧붙인 변이, when 정적 가드를 실행하면, then 2.66:1 로 실패한다
+- [ ] Given 웰컴 규칙에 `opacity: 0.5` 를 넣은 변이, when 정적 가드를 실행하면, then 실패한다
+- [ ] Given 현재 스타일시트, when set-equality 가드를 실행하면, then 감사 집합과 면제 맵의 합이 전체 `color` 규칙 집합과 상등이다
+- [ ] Given 마크업에 `.welcome-note` 노드를 추가한 변이, when e2e 를 실행하면, then 자동 포함되어 실패한다
+- [ ] Given 승격된 `tests/wcag.py`, when 기존 대비 스위트 3개를 실행하면, then 무수정 통과한다
+
+#### Rollback
+테스트 전용이라 프로덕션 영향이 0 이고, `components/webrtc.html` 은 한 줄도 바뀌지 않으므로 렌더 결과가 바이트 단위로 동일하다. 되돌리면 열거형 가드로 복귀하며, 그 순간 **F-1 / F-2 / F-4 변이가 다시 생존한다**(특히 F-2 는 정적·e2e 양쪽을 다 통과한다) — 즉 잃는 것은 오늘의 색이 아니라 **내일의 규칙에 대한 방어**라는 점을 PR 설명에 남긴다. `tests/wcag.py` 승격을 되돌릴 때는 `tests/test_viewer_page.py` 의 별칭도 함께 되살려야 그 파일이 살아난다.
+
+### ISSUE-63: components/webrtc.html 잔여 텍스트 표면 대비 감사
+
+- Track: platform
+- Type: fix
+- UI: true
+- Manual: false
+- PRD-Ref: RL-018, RL-010
+- Priority: P2
+- Estimate: 1d
+- Status: todo
+- Owner: pillip
+- Branch: issue/ISSUE-63-todo
+- GH-Issue: —
+- PR: —
+- Depends-On: none
+
+#### Goal
+`components/webrtc.html` 의 **모든** 텍스트 규칙에 대해 (a) 그 규칙이 실제로 래스터라이즈되는 backdrop 이 무엇인지, (b) 그 위에서의 대비가 얼마인지가 값으로 기록되고, (c) 미달분이 보정된다 — 이 파일에 "감사되지 않은 텍스트 표면" 이 0 이 된다.
+
+#### 현재 문제
+ISSUE-49 는 웰컴 텍스트 블록만 감사하고 나머지를 PR 설명에 **미감사로 명시**했다. 그 나머지에는 **행사 내내 화면에 떠 있는 자막 본문**이 들어 있다.
+
+아래는 플래너가 `tests/wcag.py` 와 같은 산식으로 다시 계산한 값이다(같은 산식이 ISSUE-45 의 4.52 / 4.43 과 ISSUE-61 의 3.95 / 12.63 을 정확히 재현한다). **구현자는 `tests/wcag.py` 로 재확인하고 그 숫자를 테스트 상수로 남긴다.**
+
+| 규칙 | 값 | 렌더 크기 | backdrop | 대비 | 판정 |
+|---|---|---|---|---|---|
+| `.caption-line.original` (`:285`) | `rgba(255,255,255,0.38)` | 16px (슬라이더 12~24) | `#0b0b0c` / `#000` | **3.53 / 3.39** | **미달** |
+| `.caption-line.stable` (`:299`) | `rgba(255,255,255,0.4)` | 28px (슬라이더 **18**~48) | `#0b0b0c` / `#000` | **3.80 / 3.66** | 28px 에서만 large-text(3:1) 통과, **18px 로 내리면 미달** |
+| `.fs-font-label` (`:378`) | `rgba(255,255,255,0.6)` × 조상 `opacity: 0.6` (`:366`) | 11px | `#000` (전체화면 전용) | **실효 3.14** | **미달** |
+| `.fs-font-size` (`:405`) | `rgba(255,255,255,0.7)` × 같은 opacity | 11px | `#000` | **실효 3.94** | **미달** |
+| `.caption-line.unstable` (`:339`) | `rgba(255,255,255,0.5)` | 26px | `#0b0b0c` / `#000` | 5.34 / 5.32 | 통과 |
+| `.status-chip` (`:190`) | `rgba(255,255,255,0.7)` | 13px | 합성 `rgba(255,255,255,0.05)` on `#0b0b0c` | 9.14 | 통과 |
+| `.control-group label` (`:97`) | `rgba(255,255,255,0.5)` | 12px | **`#0e0e10`** (설정 패널) | 5.31 | 통과 |
+| `.control-group span` (`:164`) | `rgba(255,255,255,0.55)` | 13px | `#0e0e10` | 6.27 | 통과 |
+| `.settings-fab, .fullscreen-fab` (`:48`) | `rgba(255,255,255,0.75)` | SVG 아이콘 | 합성 `rgba(255,255,255,0.04)` on `#0b0b0c` | 10.47 | 1.4.11 대상, 통과 |
+
+세 가지가 드러난다.
+
+1. **자막 본문이 미달이고, 자매 페이지는 이미 답을 갖고 있다.** `components/viewer.html` 의 과거 자막 줄은 ISSUE-45 에서 **4.52:1** 로 올라갔고, 그 테스트(`tests/test_viewer_page.py:1092`)는 "위계를 이유로 미달을 정당화하지 않는다" 는 주석과 함께 `past_ratio >= 4.5` 를 단언한다. 같은 역할의 텍스트를 오퍼레이터 페이지만 3.80:1 로 서빙하고 있다 — 두 페이지가 같은 결정에 다른 답을 들고 있는 상태다 (RL-001 이 말하는 드리프트의 UI 판).
+2. **`.caption-line.stable` 의 large-text 근거는 런타임에 사라진다.** 3:1 완화는 28px 기본값에서만 성립하는데, `#fontSizeSlider` 의 최소값은 **18px** 이고(`:657`) 모바일 미디어쿼리는 거기에 `× 0.82` 를 곱한다(`:584` → 기본값에서도 22.96px). 즉 **오퍼레이터가 슬라이더를 내리는 순간 근거가 없어진다.** RL-018 이 명시한 "렌더되는 크기에서 계산하라" 가 정확히 이 경우다.
+3. **`opacity` 가 대비를 바꾸는데 어떤 정적 가드도 그것을 보지 않는다.** `.fs-font-controls { opacity: 0.6 }`(`:366`)이 자손의 실효 알파를 0.6 배 한다 — `.fs-font-label` 은 0.6 × 0.6 = **0.36** 이라 `#000` 위 3.14:1 이다. hover / focus-within 에서 1.0 이 되어 7.37:1 로 올라가지만 **기본 상태가 규격을 만족해야 한다.** 그리고 이건 RL-010 이 이미 한 번 잡은 자리다 — 그때 값이 `opacity: 0.15`(1.39:1)였고 0.6 으로 **올렸을 뿐** 11px 텍스트에는 여전히 부족하다. ISSUE-62 의 F-3 이 정적 층에서 이 사각을 명시적 실패로 만든다.
+
+**남은 미측정 표면 하나 — 사이드바 `st.radio` "표시 모드"**(`app.py:199`). Streamlit 이 자체 emotion CSS 로 그리므로 **파일 파싱 대상이 아니다.** `.streamlit/config.toml` 의 `secondaryBackgroundColor = #151517` / `textColor = #fafafa` 가 backdrop 과 전경이라 라벨 본문은 17.5:1 로 보이지만, 캡션·help·`disabled` 상태의 실제 색은 Streamlit 버전이 정하고 스타일시트에서 읽을 수 없다. PR #137 UI 리뷰가 명시적으로 열어 둔 갭이며, **브라우저 `getComputedStyle` 로만 닫힌다.**
+
+#### Scope (In/Out)
+- In:
+  - 위 표의 모든 규칙 + 표에 없는 나머지 `color` 규칙을 `tests/wcag.py` 로 실측하고, **규칙별 backdrop 을 명시한 감사 표**를 테스트 상수로 남긴다 (형식은 `tests/test_viewer_page.py:123 _TEXT_COLOUR_AUDIT`)
+  - 미달 4건 보정 — `.caption-line.original`, `.caption-line.stable`, `.fs-font-label`, `.fs-font-size`
+  - `.caption-line.stable` 은 **슬라이더 최소값 18px 기준**으로 4.5:1 을 만족시킨다. large-text 완화를 근거로 통과시키지 않는다
+  - `.fs-font-controls` 의 **기본 상태**(hover 아님)에서 자손 텍스트가 4.5:1 을 넘기게 한다
+  - `st.radio` "표시 모드" 위젯의 라벨 / 옵션 / 캡션 색을 브라우저 `getComputedStyle` 로 실측하고 숫자를 기록. **미달이면서 `.streamlit/config.toml` `[theme]` 값 한 줄로 닫히는 경우에 한해** 이 이슈에서 고친다
+  - 비텍스트 규칙(1.4.11)은 감사 표에서 사유와 함께 **분리 기록** — 지워서 없애지 않는다
+- Out:
+  - `.qr-code-caption` / `.qr-code-caption strong` — **ISSUE-61** 소관 (backdrop 이 흰 카드라 계산 방향이 다르다)
+  - `.welcome-*` 블록 — ISSUE-49 완료
+  - 비텍스트 요소의 **보정**(`.welcome-state .icon`, `.status-chip::before` 상태 점, `.forming-dots`, 포커스 링) — 3:1 기준이라 판정 근거가 다르다. 측정만 하고 미달분은 별도 이슈
+  - 레이아웃 · 타이포 스케일 · 문구 변경. 시각적 변경은 **색 값들과 `opacity` 한 개**뿐이다
+  - 슬라이더 범위(18~48 / 12~24) 자체의 변경
+  - `st.radio` 가 theme 한 줄로 닫히지 않는 경우의 Streamlit CSS 오버라이드 — RL-013 이 기술한 이중 우회(`!important` + `MutationObserver`)가 필요해지면 측정값과 함께 별도 이슈로 넘긴다
+  - 대비 가드의 파생형 전환 — ISSUE-62
+
+#### Acceptance Criteria (DoD)
+- [ ] Given `components/webrtc.html` 의 모든 `color` 규칙, when 각 규칙을 **그 규칙 자신의 backdrop** 으로 `tests/wcag.py::_contrast_ratio` 에 넣으면, then 텍스트 규칙 전부가 4.5:1 이상이고, 비텍스트 규칙은 감사 표에 사유와 함께 분리돼 있다
+- [ ] Given `.caption-line.stable`, when `--translation-font-size` 를 슬라이더 최소값 **18px** 로 두고 계산하면, then 4.5:1 이상이다 (현재 3.80:1 이며 28px large-text 완화에 기대고 있다)
+- [ ] Given `.caption-line.original`, when 두 backdrop 으로 계산하면, then 4.5:1 이상이다 (현재 3.53 / 3.39)
+- [ ] Given `.fs-font-label` 과 `.fs-font-size`, when 조상 `.fs-font-controls` 의 **기본** `opacity` 를 곱한 실효 알파로 `#000` 위에서 계산하면, then 4.5:1 이상이다 (현재 3.14 / 3.94). hover 상태의 값을 근거로 통과시키지 않는다
+- [ ] Given 보정 전 네 값, when 새 테스트를 실행하면, then 각각 **3.53 / 3.80 / 3.14 / 3.94** 를 보고하며 실패한다 (RED 확인, RL-004)
+- [ ] Given 감사 표의 backdrop 값들, when 스타일시트의 실제 `background` 선언(`body`, `#viewer:fullscreen`, `.settings-panel`, `.status-chip`, `.fs-font-btn`)과 대조하면, then 전부 일치한다 — backdrop 은 상수가 아니라 검증된 사실이다
+- [ ] Given 실행 중인 오퍼레이터 페이지, when e2e 가 `st.radio` "표시 모드" 의 라벨 / 옵션 / 캡션 노드에서 `getComputedStyle(...).color` 와 조상의 실효 배경을 읽어 계산하면, then 각 값이 기록되고 4.5:1 이상이다 (미달이면 그 숫자와 함께 판정이 남는다)
+- [ ] Given 보정 후 자막 영역, when 밝기 위계를 비교하면, then `현재 줄(#ffffff, 19.67:1)` > `과거 줄` > `원문 줄` 순서가 유지된다
+- [ ] Given 보정된 선택자 목록, when `components/viewer.html` 의 대응 규칙과 비교하면, then 같은 역할의 텍스트가 같은 하한을 쓴다 (오퍼레이터 페이지만 낮게 두지 않는다)
+
+#### Implementation Notes
+- **자막 줄의 목표값은 뷰어에서 가져온다.** `tests/test_viewer_page.py:105-106` 이 실측 하한을 이미 상수로 갖고 있다 — 캔버스 `#0b0b0c` 위 알파 **0.45**(4.52:1, 0.44 는 4.34:1), 순수 `#000` 위 **0.46**(4.56:1, 0.45 는 4.43:1). 두 backdrop 을 모두 통과시키려면 알파 하한이 0.46 이고, **불투명 hex 로 가면 그 갈래 자체가 사라진다**(ISSUE-49 가 웰컴에서 쓴 방향). 이 파일은 이미 `.stage-launch-hint` 에서 `#a8a8b3`(8.35 / 8.92)를 쓰고 있다.
+- **`opacity` 는 곱셈이다.** 실효 알파 = 선언 알파 × 조상 opacity. 고치는 길은 둘 — (a) 기본 `opacity` 를 1.0 으로 올리고 위계를 색으로 표현하거나, (b) 자손 색을 올리고 opacity 를 남기거나. **(b) 를 고르면 opacity 는 여전히 곱해지므로 계산에 반드시 포함해야 한다.** (a) 가 검증 가능성이 높고 ISSUE-62 의 F-3 가드와도 부딪히지 않는다.
+- **backdrop 을 규칙별로 푸는 것이 이 이슈의 본체다.** 자기 반투명 배경을 가진 규칙은 합성 결과를 backdrop 으로 넘긴다 — `_composite((255,255,255,0.05), (11,11,12))` 처럼. 형식은 `tests/test_viewer_page.py:136` 의 `.conn-error` 항목이 그대로 보여 준다. 두 어두운 backdrop 상수를 전부에 적용하면 절반이 틀린 숫자가 된다.
+- **`st.radio` 는 파일에서 읽을 수 없다.** `tests/e2e/test_operator_stage_mode_e2e.py` 에 `getComputedStyle` 기반 측정 하나를 추가하되, 읽은 색을 **assert 상수로 굳히지 말고 계산 결과로 판정**한다 — Streamlit 버전이 올라가 색이 바뀌면 그때 실패하는 것이 맞다.
+- **로컬 e2e 트랩**: 이 샌드박스에서는 `env -u NODE_OPTIONS uv run pytest …` 로 실행한다. 존재하지 않는 `restore-node-options.cjs` 가 preload 되어 Playwright 의 Node 드라이버가 즉사한다 — 모르면 "Playwright 가 깨졌다" 로 오진한다.
+- **머지 순서**: ISSUE-62 가 먼저 들어가면 이 이슈는 "면제 맵을 비우는 작업" 이 되어 범위가 저절로 확정되고, 감사 표를 그 맵과 맞바꾸기만 하면 된다. 반대 순서도 가능하지만 그때는 ISSUE-62 가 면제 맵을 더 작게 쓰게 된다. 하드 의존은 아니다.
+- ISSUE-61 과는 선택자 집합이 서로소다(`.qr-code-*` 는 전부 ISSUE-61). 같은 파일이므로 diff 를 선택자 단위로 좁게 유지한다.
+- pre-commit 의 `ruff-format` / `black` 충돌(ISSUE-65) — 줄바꿈된 `assert cond, (msg)` 레이아웃을 피한다.
+
+#### Tests
+- [ ] Given 감사 표의 각 항목, when parametrize 한 대비 테스트를 실행하면, then 텍스트 규칙 전부가 4.5:1 이상이다
+- [ ] Given `.caption-line.stable` 을 18px(슬라이더 최소값)로 두었을 때, when 계산하면, then 4.5:1 이상이다
+- [ ] Given 보정 전 값으로 되돌린 네 변이, when 각각 실행하면, then 3.53 / 3.80 / 3.14 / 3.94 를 보고하며 실패한다
+- [ ] Given `.fs-font-controls` 의 기본 `opacity` 를 낮춘 변이, when 실효 알파 테스트를 실행하면, then 실패한다 (opacity 가 계산에 실제로 들어감의 증명)
+- [ ] Given 감사 표의 backdrop 상수, when 스타일시트의 `background` 선언과 대조하면, then 일치한다
+- [ ] Given 실행 중인 오퍼레이터 페이지, when `st.radio` 노드의 computed color 를 읽어 계산하면, then 값이 기록되고 판정이 남는다 (marker `e2e`)
+- [ ] Given 보정 후 자막 세 상태의 대비, when 크기 순으로 비교하면, then 현재 > 과거 > 원문 순서다
+
+#### Rollback
+색 값들과 `opacity` 한 개, 그리고 신규 테스트만 바뀌므로 단일 커밋 revert 로 원복된다(레이아웃·동작 변경 0). 되돌리면 **행사 내내 화면에 떠 있는 자막 스크롤백이 다시 3.53~3.80:1** 로, 전체화면 폰트 컨트롤이 3.14:1 로 돌아간다 — 그리고 그 상태는 같은 저장소의 `components/viewer.html` 이 이미 4.52:1 로 해결해 둔 문제라는 점을 PR 설명에 남긴다. `.streamlit/config.toml` 을 건드렸다면 그 한 줄은 Streamlit chrome 전체에 영향을 주므로 별도 커밋으로 분리해 둔다.
+
+### ISSUE-64: test_admin_stage_config_e2e.py 플레이키 안정화
+
+- Track: platform
+- Type: test
+- UI: false
+- Manual: false
+- PRD-Ref: RL-001, RL-004
+- Priority: P1
+- Estimate: 1d
+- Status: todo
+- Owner: pillip
+- Branch: issue/ISSUE-64-todo
+- GH-Issue: #155 https://github.com/pillip/realtime-en2ko-captions/issues/155
+- PR: —
+- Depends-On: none
+
+#### 관측 이력 (2026-09-02 P2 → P1 승격)
+세 번째 독립 관측이다. ISSUE-43 (PR #142), ISSUE-49 (PR #147), 그리고 PR #152
+(테스트 파일 한 개, 프로덕션 0줄) — 모두 이 테스트와 접점이 없는 변경에서
+`관리자 대시보드` 타이틀 대기 20초 타임아웃으로 실패했고, 코드 변경 없는
+재실행에서 통과했다.
+
+P1 로 올리는 이유는 빈도가 아니라 **성격**이다. 이 flaky 는 CI 를 판단이
+필요한 신호로 만든다 — 실패할 때마다 사람이 "진짜 회귀인가 flaky 인가" 를
+가려야 하고, 그 판단이 한 번 틀리면 진짜 회귀가 flaky 로 넘어간다. 오늘
+하루에만 두 번 그 판단을 했다.
+
+#### Goal
+`tests/e2e/test_admin_stage_config_e2e.py` 가 반복 실행에서 **결정적으로** 통과하고, e2e 레인의 baseline 이 "몇 개는 원래 깨져 있다" 가 아니라 **숫자로 고정**된다.
+
+#### 현재 문제
+PR #147 리뷰 중, **PR 변경분을 하나도 얹지 않은 base `ee409e7`** 에서 e2e 전체를 돌린 결과가 **5 failed / 111 passed / 17 errors** 였다. 같은 파일이 PR head 에서는 2 failed 였다. ISSUE-49 와 **무관한 선재 결함**이다.
+
+문제는 그것이 남기는 상태다. e2e 는 CI 의 필수 job 이고(`ci.yml:115-158`, `needs: test`, `uv run pytest tests/e2e -m e2e --no-cov -v`), 리뷰어는 **진짜로 깨진 e2e 와 이 잡음을 구별할 수 없다.** 이번 리뷰는 base 에서 대조 실행을 해서 구별했지만, 다음 사람은 그 비용을 치르지 않고 "원래 그래" 로 넘어간다 — 그 순간 e2e 게이트는 신호를 잃는다. ISSUE-62 의 F-1 이 "지금은 e2e 가 죽인다" 를 근거로 Medium 에 머문 것도 이 게이트를 믿기 때문이다.
+
+**원인 후보는 이미 코드와 문서에 적혀 있다.** `auth.get_cookie_manager()` 가 **프로세스 전역 싱글톤** `CookieManager` 를 캐시해 모든 Streamlit 세션이 공유한다(`docs/sprint_state.md:163` — "새 브라우저 세션이 직전 로그인 사용자로 복원될 수 있다", 담당 이슈 없음). 여기서 두 갈래가 나온다.
+
+1. **`tests/e2e/conftest.py:115 logged_in_page` 는 어느 계정으로 들어왔는지 확인하지 않는다.** 로그인 폼이 안 보이면 로그인을 **건너뛴다**(`:126-131`). 앞선 테스트가 **admin** 으로 로그인해 두었다면 이 fixture 는 admin 세션을 그대로 물려받고, admin 대시보드는 캡션 컴포넌트를 렌더하지 않으므로(#101) `:142` 의 `page.locator("iframe").first.wait_for(state="attached", timeout=20000)` 이 20 초 뒤 타임아웃 → **failure 가 아니라 fixture error** 다. 17 errors 의 형태가 정확히 이것이고, `docs/sprint_state.md:158` 이 `tests/e2e/test_fullscreen_e2e.py` 를 "단독 6 passed / 8 errors, 전체 런에서는 2 errors" 로 기록한 것과도 맞는다 — 단독 실행이 더 나쁜 것이 아니라 **무엇이 먼저 로그인했는지에 달린 것**이다.
+2. **`test_admin_stage_config_e2e.py:117 _open_dashboard_as` 는 이 위험을 알고 쓰였는데 방어가 타이밍 도박이다.** docstring 이 싱글톤을 명시하고 계정을 확인까지 하지만, 실제 방어는 `page.context.clear_cookies()` + **최대 2회** 반복 + 고정 `wait_for_timeout(3000 / 2000)` 이다. `clear_cookies` 는 **브라우저 쪽**만 지우므로 서버 프로세스의 싱글톤에는 아무 영향이 없다. 이 파일이 admin ↔ operator 를 왕복하는 **유일한** 파일이라, 실패가 여기 몰리는 것도 이 파일이 **다른 파일의 error 를 만드는 쪽**인 것도 같은 원인에서 나온다.
+3. **로그인 절차가 두 벌이다.** `conftest.py:115` 의 관대한 버전과 이 파일 `:117` 의 검증하는 버전. 계정 확인은 한쪽에만 있고, 정작 error 가 나는 쪽은 확인이 없는 쪽이다 (RL-001).
+
+**측정 없이 고치지 않는다.** 위는 근거 있는 가설이지 확정이 아니다 — 이 이슈의 첫 산출물은 **원인 확정**이고, 그 다음이 수정이다.
+
+#### Scope (In/Out)
+- In:
+  - **원인 확정**: base 커밋에서 (a) 이 파일 단독, (b) 전체 e2e, (c) 파일 순서를 뒤집은 전체 e2e 를 각 3회 돌려 실패·에러의 **파일별 분포와 순서 의존성**을 기록한다. `logged_in_page` 진입 시점의 사이드바 계정명을 임시 로그로 찍어 위 가설 1을 참/거짓으로 판정한다
+  - **결정적 로그인 하네스**: 어느 계정으로 들어왔는지 **항상 확인**하고, 다르면 로그아웃 후 재로그인하며, 고정 `wait_for_timeout` 대신 상태 기반 대기를 쓴다. 절차는 **한 벌**이어야 한다 — `logged_in_page` 도 같은 헬퍼를 쓴다 (RL-001)
+  - 테스트 종료 시 로그아웃하는 finalizer — 세션을 다음 테스트에 남기지 않아 순서 의존성을 제거한다
+  - `seeded_logo`(`:201`)가 쓰는 `BRANDING_DIR` 기본값(`data/branding`, **저장소 작업 트리 안**)을 테스트 전용 디렉터리로 격리 — 병렬 워크트리·동시 에이전트와 파일이 겹친다
+  - **baseline 고정**: 안정화 후 전체 e2e 를 3회 돌려 같은 숫자가 나오는 것을 확인하고 그 숫자를 `docs/sprint_state.md` 에 기록한다
+  - 이 파일 **밖**에서 같은 원인으로 죽던 error(특히 `test_fullscreen_e2e.py`)가 몇 개 사라졌는지 전/후 숫자로 기록
+- Out:
+  - `auth.get_cookie_manager()` 의 전역 싱글톤 제거 — **프로덕션 변경**이고 보안 영향(다른 브라우저 세션이 직전 사용자로 복원)이 있어 별도 이슈다. 이 이슈는 그것이 원인임을 **측정으로 확정하고 근거를 남기는 데까지**만 간다
+  - 새 e2e 커버리지 추가 — 기존 테스트의 의미를 바꾸지 않는다
+  - `pytest-xdist` 병렬화 — 세션 스코프 Streamlit 서버 하나를 공유하는 구조라 별개 설계다
+  - `verify_checkpoint.py` 의 e2e 게이트 결함(`docs/sprint_state.md:153, 157`) — kit 쪽 이슈
+  - `test_fullscreen_e2e.py` 자체의 리팩터 — 공용 로그인 하네스 교체로 낫지 않는 잔여분은 숫자와 함께 후속으로 넘긴다
+
+#### Acceptance Criteria (DoD)
+- [ ] Given base 커밋, when (a) 단독 / (b) 전체 / (c) 역순 전체를 각 3회 실행하면, then 실패·에러의 파일별 분포가 표로 기록되고 **순서 의존성의 유무가 값으로 판정**된다
+- [ ] Given `logged_in_page` 진입 직후, when 사이드바 계정명을 읽으면, then 항상 `e2e_operator` 다. 그리고 **이 단언이 안정화 전 코드에서는 실패함**을 함께 보인다 (고친 뒤에만 통과하는 단언이어야 한다 — RL-004)
+- [ ] Given 안정화 후, when `env -u NODE_OPTIONS uv run pytest tests/e2e/test_admin_stage_config_e2e.py -m e2e --no-cov -q` 를 **3회 연속** 실행하면, then 3회 모두 결과가 같고 failed / error 가 0 이다
+- [ ] Given 안정화 후, when 전체 e2e 를 3회 실행하면, then 3회 모두 같은 숫자이고 그 숫자가 `docs/sprint_state.md` 에 baseline 으로 기록된다
+- [ ] Given 로그인 절차, when 코드를 읽으면, then `conftest.py` 와 이 파일이 **같은 헬퍼**를 쓰고 계정 확인 로직이 한 곳에만 있다 (RL-001)
+- [ ] Given 임의의 단일 테스트, when 앞에 다른 계정으로 로그인한 테스트가 있는 경우와 없는 경우를 각각 실행하면, then 결과가 같다 (순서 독립)
+- [ ] Given `seeded_logo` 를 쓰는 테스트가 도중에 실패한 경우, when 저장소 작업 트리를 확인하면, then `data/branding` 아래에 테스트 파일이 남아 있지 않다
+- [ ] Given 최근 CI 의 e2e job 로그, when 확인하면, then "로컬만 빨강" 인지 "CI 도 빨강" 인지가 PR 설명에 명시돼 있다 — 두 경우는 원인도 해법도 다르다
+
+#### Implementation Notes
+- **로컬 하네스 트랩 (먼저 읽을 것)**: 이 샌드박스에서는 `env -u NODE_OPTIONS uv run pytest …` 로 실행해야 한다. 존재하지 않는 `restore-node-options.cjs` 가 `NODE_OPTIONS` 로 preload 되어 Playwright 의 Node 드라이버가 즉사한다. 모르면 이 이슈의 측정 자체를 "Playwright 가 깨졌다" 로 오진하게 된다.
+- **승격 대상은 이미 있다**: `test_admin_stage_config_e2e.py` 의 `_SIDEBAR_USERNAME_RE`(`:52`), `_sidebar_username`(`:72`), `_login_form_present`(`:84`), `_submit_login`(`:93`), `_wait_for_sidebar_username`(`:102`), `_logout`(`:111`), `_open_dashboard_as`(`:117`). 관대한 쪽(`conftest.py:115-144`)을 이 헬퍼 위에 다시 세운다.
+- **`conftest.py` 를 손대면 kit 게이트가 걸린다**: `verify_checkpoint.py:719` 가 `tests/` 아래 변경된 **모든** `.py` 에 `def test_*` 를 요구한다(`docs/sprint_state.md:153` — `tests/wcag.py` 가 같은 이유로 걸렸다). **그 게이트를 피하려고 헬퍼를 복사하지 않는다 — 그게 RL-001 이고, 이 이슈가 고치려는 것이 바로 그 복사다.** 우회는 기록으로 남기고 kit 이슈에 넘긴다. 이 파일 `:23-27` 의 주석이 "e2e 게이트 때문에 conftest 에 못 넣는다" 고 이미 적어 두었으므로, 결론이 바뀌면 그 주석도 갱신한다.
+- **고정 sleep 목록**(전부 상태 기반 대기 후보): 이 파일 `:89`(3000), `:107`(500×40), `:114`(2000), `:132`(3000), `:254`(2000); `conftest.py:120` / `:130`(3000×2). Streamlit 은 WebSocket 으로 다시 그리므로 `networkidle` 은 못 쓰지만, "사이드바에 계정명이 나타날 때까지" / "탭 패널이 붙을 때까지" 같은 **관측 가능한 상태**로는 기다릴 수 있다.
+- **가설 1 의 판정은 한 줄로 된다**: `logged_in_page` 안에서 iframe 대기 **전에** `_sidebar_username(page)` 를 찍어 본다. `e2e_admin` 이 찍히면 원인은 확정이고, 그때 20 초 타임아웃은 증상이지 원인이 아니다.
+- **CI 대조를 먼저 한다.** 위 5 failed / 17 errors 는 macOS 로컬 실측이다. ubuntu 러너에서도 같은지 최근 e2e job 로그로 확인한다 — CI 가 초록이라면 원인이 환경(타이밍·해상도·헤드리스 차이)일 수 있고, 그때는 "고정 sleep 을 상태 대기로" 가 해법의 전부일 수 있다.
+- `stage_room`(`:159`)은 session 스코프로 공유 DB 를 쓰고, `_tmp_db_dir` 도 session 스코프다. 룸·계정 시드 자체는 멱등이라 문제가 아니지만, **로그인 상태만은 세션 간에 새는 유일한 상태**라는 점이 이 이슈의 초점이다.
+- pre-commit 의 `ruff-format` / `black` 충돌(ISSUE-65) — ISSUE-49 가 정확히 `tests/e2e/test_operator_stage_mode_e2e.py` 에서 다시 물렸다. `SKIP=ruff-format` 으로 우회하거나 줄바꿈된 `assert cond, (msg)` 를 피한다.
+
+#### Tests
+- [ ] Given 안정화된 하네스, when 이 파일을 3회 연속 단독 실행하면, then 3회 모두 failed / error 0 이다
+- [ ] Given 안정화된 하네스, when 전체 e2e 를 3회 실행하면, then 3회 모두 같은 숫자다
+- [ ] Given `logged_in_page`, when 진입 직후 계정을 확인하는 단언을 안정화 **전** 코드에 얹어 실행하면, then 실패한다 (판별력 증명)
+- [ ] Given admin 로그인 테스트 직후에 실행되는 operator 테스트, when 단독 실행 결과와 비교하면, then 동일하다 (순서 독립)
+- [ ] Given `seeded_logo` 가 중간에 실패하는 시나리오, when 작업 트리를 확인하면, then 잔여 파일이 없다
+- [ ] Given 안정화 전/후, when `test_fullscreen_e2e.py` 의 error 수를 비교하면, then 감소분이 숫자로 기록된다
+
+#### Rollback
+테스트 하네스 전용이라 프로덕션 영향이 0 이고, 되돌리면 이전 하네스로 복귀한다. 되돌리는 순간 잃는 것은 테스트 하나가 아니라 **e2e 게이트의 신호**다 — 다시 "5 failed / 17 errors 가 기본값" 인 상태가 되어, 리뷰어가 매 PR 마다 base 대조 실행을 해야 진짜 회귀를 구별할 수 있게 된다. `docs/sprint_state.md` 의 baseline 줄도 함께 무효가 되므로 revert 시 그 줄을 지운다.
+
+**두 번째 독립 실측(다른 커밋, 다른 리뷰어).** ISSUE-53 UI 리뷰(head `a4c7e58`)에서 같은 파일이 **전체 `-m e2e` 를 한 프로세스로 돌릴 때 6 failed + 16 errors**, **모듈 단독 실행 시 34/34 passed** 로 갈렸다(`docs/ui_review_notes.md:1813-1817`). 같은 커밋에서 같은 파일의 결과가 실행 단위에 따라 갈린다는 것이 순서 의존성의 가장 직접적인 형태이며, 위 base 측정과 **원인이 같다는 가설을 뒷받침한다**(fixture contention). **34** 라는 숫자는 아래 AC 3 의 목표 통과 수이기도 하다 — 안정화 후 단독·전체 어느 쪽에서도 34 passed / 0 failed / 0 error 여야 한다.
+
+### ISSUE-65: pre-commit ruff-format 과 black 포매터 충돌 해소
+
+- Track: platform
+- Type: chore
+- UI: false
+- Manual: false
+- PRD-Ref: RL-025
+- Priority: P2
+- Estimate: 0.5d
+- Status: shipped
+- Owner: pillip
+- Branch: issue/ISSUE-65-todo
+- GH-Issue: #153 https://github.com/pillip/realtime-en2ko-captions/issues/153
+- PR: #154 https://github.com/pillip/realtime-en2ko-captions/pull/154
+- Depends-On: none
+
+#### Goal
+포매터 훅 때문에 커밋이 왕복하지 않는다 — 문제의 레이아웃을 담은 파일이 `SKIP=` **없이** 한 번에 커밋되고, `uv run black --check .` 과 `uv run ruff check .` 이 둘 다 깨끗하다.
+
+#### 현재 문제
+`.pre-commit-config.yaml` 이 포매터를 **둘** 돌린다 — `:24` 의 `ruff-format`(ruff v0.12.9)과 `:30` 의 `black`(25.1.0). 줄바꿈된 `assert <cond>, <long msg>` 에서 두 포매터의 선호가 정반대다:
+
+```
+ruff-format →  assert cond, (
+                   msg
+               )
+black       →  assert (
+                   cond
+               ), msg
+```
+
+서로가 서로를 되돌리므로 매 실행마다 두 훅이 "files were modified by this hook" 으로 실패하고 **수렴하지 않는다.** 커밋이 아예 불가능해진다 (`docs/sprint_state.md:156`).
+
+**최소 네 스프린트에 걸쳐 재발했고, 그동안 주인이 없었다.**
+
+| 시점 | 기록 | 대응 |
+|---|---|---|
+| stage 스프린트 | `docs/sprint_state.md:166` | 원인·해법 결론까지 나옴("CLAUDE.md §6 이 black 을 지정하므로 `ruff-format` 을 빼야 한다") |
+| ISSUE-40 | `issues.md:2654` | 구현자가 같은 곳에서 시간 손실 |
+| ISSUE-47 | `docs/sprint_state.md:207-209` | `SKIP=ruff-format` 우회, "여전히 담당 이슈 없음" |
+| ISSUE-50 | `docs/sprint_state.md:156` | assert 세 곳을 두 포매터가 동의하는 형태로 손봐 우회 |
+| ISSUE-49 | PR #147 | `tests/e2e/test_operator_stage_mode_e2e.py` 에서 또 재현 |
+
+그 결과 **회피 지침이 이슈 본문 곳곳에 복사되어 나른다** — `issues.md:2654, 2816, 3115, 3249, 3355, 3451, 3537, 3622, 3818, 3920` 이 전부 "이 구문을 피하라" 를 각자 적고 있고, `tests/e2e/test_room_id_e2e.py:31` 에는 그 회피가 **소스 주석으로 굳어** 있다("메시지를 짧게 두어 ruff-format/black 의 줄바꿈 충돌을 피한다"). 즉 이 설정 결함이 이미 테스트 코드의 **작성 방식**을 바꾸고 있다.
+
+**해법은 이미 규정에 있다.** CLAUDE.md §6 이 포매터로 **`black`** 을, 린터로 **`ruff`** 를 지정한다. `ruff-format` 훅은 그 규정에 없는 두 번째 포매터다 — 두 층이 같은 것을 서로 다른 근거로 강제하는 RL-025 의 형태이고, 여기서는 **두 근거가 애초에 화해할 수 없다.** 스타일 값은 이미 일치한다(`pyproject.toml:34` / `:57` 둘 다 `line-length = 88`) — 충돌은 값이 아니라 `assert` 문 레이아웃 규칙 자체에 있다.
+
+#### Scope (In/Out)
+- In:
+  - `.pre-commit-config.yaml` 에서 `ruff-format` 훅(`:23-24`) 제거. **`ruff`(`--fix`) 린터 훅(`:21-22`)은 유지**
+  - `pyproject.toml:76-81` 의 `[tool.ruff.format]` 처리 — 훅이 사라지면 죽은 설정이 된다. 제거하거나 "이 저장소는 `ruff format` 을 쓰지 않는다" 는 사유 주석을 남긴다 (RL-007)
+  - `uv run pre-commit run --all-files` 로 전 파일 수렴 확인, 그로 인해 생기는 재포맷 diff 를 **별도 커밋**으로 분리
+  - CLAUDE.md 동기화 — 도구 설정 변경이므로 `docs(claude): …` 커밋이 규정이고 `.githooks/pre-commit` 이 이를 강제한다 (`WATCH_PATTERNS` 에 `.pre-commit-config.yaml` 이 있다)
+  - 회귀 확인: 문제의 레이아웃을 담은 파일이 `SKIP=` 없이 실제로 커밋되는지 손으로 재현
+- Out:
+  - 반대 선택지(`black` 을 빼고 `ruff-format` 으로 통일) — CLAUDE.md §6 개정이 선행돼야 하고 전 저장소 재포맷 diff 가 발생한다. 기각 근거를 PR 설명에 한 줄로 남긴다
+  - `black` / `ruff` 버전 업그레이드
+  - `line-length` 등 스타일 값 변경 (이미 88 로 일치)
+  - 다른 훅(`trailing-whitespace`, `end-of-file-fixer` 등) 정리
+  - **다른 이슈 본문의 회피 지침 제거** — 동시 편집 중이라 손대지 않는다. 무효화됐다는 사실만 PR 설명과 `docs/sprint_state.md` 에 남긴다
+
+#### Acceptance Criteria (DoD)
+- [ ] Given `ruff-format` 을 제거한 `.pre-commit-config.yaml`, when `uv run pre-commit run --all-files` 를 **연속 2회** 실행하면, then 두 번째 실행에서 수정된 파일이 0 이고 모든 훅이 통과한다 (수렴 확인)
+- [ ] Given 두 포매터가 다투던 레이아웃(줄바꿈된 `assert <cond>, <long msg>`)을 담은 파일, when `SKIP=` 없이 `git commit` 하면, then **한 번에** 커밋된다 — 그리고 그 실행 출력이 PR 설명에 있다
+- [ ] Given 같은 파일, when `uv run black --check .` 을 실행하면, then 통과한다
+- [ ] Given 같은 파일, when `uv run ruff check .` 을 실행하면, then 통과한다 — 린터는 그대로 남아 있다
+- [ ] Given `.pre-commit-config.yaml`, when `ruff-format` 을 검색하면, then **0건**이고 `- id: ruff` 는 남아 있다
+- [ ] Given `pyproject.toml`, when `[tool.ruff.format]` 을 확인하면, then 제거됐거나 "대응 훅 없음" 사유 주석이 붙어 있다
+- [ ] Given 이 변경의 커밋 목록, when 확인하면, then `docs(claude): …` 커밋으로 CLAUDE.md §6 이 함께 갱신돼 있다 (`.githooks/pre-commit` 이 이를 강제한다)
+- [ ] Given 재포맷 diff, when `uv run pytest -q` 를 실행하면, then 무수정 통과한다
+
+#### Implementation Notes
+- **정확한 위치**: `.pre-commit-config.yaml:23-24` 의 `# Run the formatter` 주석 + `- id: ruff-format` 두 줄. `:21-22` 의 `- id: ruff` / `args: [--fix]` 는 **남긴다.** `ruff check` 는 포매팅이 아니라 린트 규칙(`E`, `W`, `F`, …)을 보므로 black 과 충돌하지 않는다.
+- **AC 2 의 "문제의 레이아웃" 은 손으로 만들어 재현해야 한다.** 예: 88자를 넘기는 메시지를 가진 `assert some_long_condition_expression, "…"` 을 임시 파일에 넣고 커밋을 시도한다. **재현하지 못하면 고쳤다는 증거가 없다** — 새 설정으로 통과하는 것만 보고 닫으면, 애초에 재현되지 않는 형태를 시험한 것일 수도 있다 (RL-024: 실제 경로로 몰아 보지 않은 "닫힘" 은 표시일 뿐이다). **먼저 현재 설정에서 교착을 재현해 두고**, 훅을 뺀 뒤 같은 파일로 다시 시도해 두 출력을 나란히 남긴다.
+- **`--all-files` 재포맷 diff 를 얕보지 말 것.** 저장소의 일부 파일은 `ruff-format` 이 마지막으로 만진 상태일 수 있다. black 단독으로 수렴시키면 diff 가 여러 파일에 퍼질 수 있으므로, **훅 설정 변경 커밋과 재포맷 커밋을 분리**해 리뷰어가 전자를 한눈에 보게 한다.
+- **`.githooks/pre-commit` 이 이 작업을 막는다 — 버그가 아니라 지켜야 할 규정이다.** `WATCH_PATTERNS` 에 `.pre-commit-config.yaml` 이 들어 있어 `claude.md`(= CLAUDE.md)를 함께 고치지 않으면 커밋이 거부된다 (CLAUDE.md §5). 이 이슈는 그 훅이 의도대로 동작하는 첫 사례가 된다.
+- **CLAUDE.md 갱신 내용**: §6 에 "포매터는 `black` 하나다. `ruff` 는 린터로만 쓰며 `ruff-format` 훅은 두지 않는다(두 포매터가 `assert` 레이아웃에서 수렴하지 않음)" 를 한 줄 추가한다. 이유를 적지 않으면 다음 사람이 "린터 설정이 반쪽" 이라고 판단해 훅을 되살린다.
+- 이 이슈가 닫히면 ISSUE-61~64 를 포함한 여러 이슈의 "이 구문을 피하라" 주석이 무효가 된다. **다른 이슈 본문은 고치지 않고**(동시 편집 중), 완료 후 `docs/sprint_state.md` 에 한 줄 남겨 다음 스프린트가 그 지침을 복사하지 않게 한다.
+- 다른 네 이슈(ISSUE-61~64)와 파일이 전혀 겹치지 않는다. **이것을 먼저 넣으면 나머지 넷의 구현자가 `SKIP=` 을 쓰지 않아도 된다.**
+
+#### Tests
+- [ ] `uv run pre-commit run --all-files` 를 연속 2회 — 두 번째 실행의 수정 파일 0
+- [ ] 교착 레이아웃을 담은 파일을 `SKIP=` 없이 커밋 성공 (수동, 변경 전/후 출력을 PR 설명에 기록)
+- [ ] `uv run black --check .` 통과
+- [ ] `uv run ruff check .` 통과
+- [ ] `uv run pytest -q` 가 재포맷 후에도 통과
+- [ ] `.pre-commit-config.yaml` 에 `ruff-format` 0건, `- id: ruff` 1건
+- [ ] `.githooks/pre-commit` 이 CLAUDE.md 미갱신 커밋을 실제로 거부하는지 한 번 확인 (규정 훅이 살아 있음의 증명)
+
+#### Rollback
+`.pre-commit-config.yaml` 두 줄 복원 + 재포맷 커밋 revert 로 원복된다. 프로덕션 코드의 **동작**은 한 줄도 바뀌지 않는다(포매팅만). 되돌리면 교착이 그대로 돌아오고 모든 에이전트가 다시 `SKIP=ruff-format` 을 쓰게 된다 — 잃는 것은 기능이 아니라 **커밋 가능성**이며, 그 상태가 이미 네 스프린트 동안 테스트 코드의 작성 방식(짧은 assert 메시지)을 바꿔 왔다는 점을 PR 설명에 남긴다.
+
+### ISSUE-66: 뷰어 종료 상태에 단말 플래그 도입 — 늦은 프레임이 끝난 세션을 되살리지 못하게 (RL-022 파리티)
+
+- Track: feature
+- Type: fix
+- UI: true
+- Manual: false
+- PRD-Ref: FR-085, NFR-030, RL-022, RL-001
+- Priority: P2
+- Estimate: 1d
+- Status: backlog
+- Owner:
+- Branch:
+- GH-Issue:
+- PR:
+- Depends-On: none
+
+#### Goal
+`components/viewer.html` 의 종료 상태가 **되돌릴 수 없다** — `session_end` 이후 도착한 어떤 서버 프레임(`message` / `control` / `error` / `open`)도 세션을 active 로 되돌리거나 새 EventSource 를 열지 못한다. 무대(`stage.html:583` 의 `sessionEnded`)와 **같은 규칙**을 같은 방식으로 갖는다.
+
+#### 현재 문제
+
+**먼저 정직하게: 이것은 지금 프로덕션에서 도달하지 않는 잠재 결함이다.** 서버는 살아 있는 스트림 한복판에 `session_end` 를 쓰지 않는다 — `sse_broadcast.py:698-708` 이 **접속 시점**에 `status == "closed"` 인 룸에 1건을 쓰고 곧바로 `write_eof()` 한다. 살아 있는 스트림에 `session_end` 가 흐르는 경로는 존재하지 않으며, 뷰어의 `session_end` 핸들러는 `closeStream()`(`viewer.html:785-793`)으로 실제 `EventSource` 를 닫으므로 **같은 태스크 배치에 이미 디스패치된 프레임만** 핸들러에 닿을 수 있다. 그 케이스는 ISSUE-53 이 `handleControl` 앞머리(`:823`)에 가드를 넣어 이미 막았다.
+
+**그럼에도 함정이다.** `session_end` 핸들러는 `_twStop()` 과 `currentLine = null` 만 하고 **종료 플래그를 세우지 않는다.** 그래서 다른 진입점은 전부 무장한 채로 남는다 — `message` 리스너(`:749`)는 `setState("active")` 를 부르고, `error` 리스너(`:795`)는 재연결 배너를 띄우며, `open` 리스너(`:746`)는 `setLive(true)` 로 라이브 점을 다시 켠다. `stage.html` 은 `sessionEnded` 플래그(`:583`)를 세우고 `message`(`:1096`)·`handleControl`(`:1070`) 양쪽에서 조기 반환한다. **뷰어에는 그 플래그가 없다.**
+
+**무엇이 이것을 실제 결함으로 만드는가 — 세 가지 중 하나면 충분하다.**
+1. `docs/review_notes.md:3201-3204` 의 후속안: `session_end` 를 control 과 같은 fan-out 에 태워 **살아 있는 스트림**에도 종료를 알리는 것. 그 순간 큐에 남아 있던 자막 프레임 하나가 종료된 컬럼을 되살린다.
+2. `closeStream()` 호출을 비동기로 옮기거나(정리 순서 변경) `session_end` 처리에 `await` 성 작업이 끼어드는 변경.
+3. 종료 이후 새 EventSource 를 여는 경로가 하나라도 생기는 것 — **ISSUE-53 이 이미 그 경로를 만들었다**(아래).
+
+**ISSUE-53 이 폭발 반경을 넓혔다 (UI 리뷰 L-2, 실측).** 종료 상태에서 늦은 `message` 하나가 세션을 되살린 **뒤에는**, 뒤이은 `control` 프레임이 `stateNodes.ended` 가드를 통과해 **두 번째 EventSource 를 열고 드롭다운을 `vi` 로 옮기고 배율 1.4 를 적용한다.** 실측 결과는 `ended:false, active:true` → 새 스트림. 새 구멍이 아니라 **옛 구멍의 결과가 커진 것**이다 — 이전에는 유령 자막 한 줄, 지금은 끝난 세션 위의 살아 있는 재구독이다.
+
+**소유권 공백.** ISSUE-46 이 `issues.md:2628` 에, ISSUE-53 이 `issues.md:3172` 에 각각 "범위 밖 · 미소유" 로 기록했고, ISSUE-53 의 개발자와 코드/UI 두 리뷰어가 모두 다시 지목했다. **이 이슈가 인수한다.**
+
+**RL-001 도 여기서 시작된다.** ISSUE-53 은 두 템플릿을 **처음으로 의미 있게 갈라놓았다** — 무대는 `sessionEnded` 불리언을, 뷰어는 `stateNodes.ended.classList.contains("active")` 라는 DOM 클래스를 읽는다(`viewer.html:823`). 강제된 차이였지만(뷰어에 플래그가 없었으므로) 드리프트가 시작되는 정확한 모양이다. 이 이슈는 두 파일을 **같은 규칙**으로 되돌린다.
+
+#### Scope (In/Out)
+- In:
+  - `components/viewer.html` 에 모듈 스코프 `let sessionEnded = false;` 도입 — `stage.html:583` 과 **같은 이름, 같은 의미**(한 번 true 가 되면 되돌아가지 않는다)
+  - `session_end` 리스너가 그 플래그를 **가장 먼저** 세운다
+  - **서버가 미는 모든 진입점**에서 조기 반환: `message`(`:749`), `control`(`:775`), `open`(`:746`), `error`(`:795`)
+  - `handleControl`(`:819`)의 종료 판정을 DOM 클래스 읽기에서 `sessionEnded` 로 교체 — 무대와 한 규칙 (RL-001)
+  - 드롭다운 `change` 핸들러(`:838`)가 종료 상태에서 **무동작** — 아래 설계 결정 참조
+  - 두 템플릿의 종료 규칙이 하나임을 못 박는 대조 테스트 (ISSUE-53 의 `test_the_range_is_one_rule_across_the_server_and_both_templates`(`tests/test_stage_page.py:1599`) 와 같은 형식)
+- Out:
+  - **서버가 살아 있는 스트림에 `session_end` 를 쓰도록 만드는 것 — 범위 밖.** `docs/review_notes.md:3201-3204` 의 후속안이며 별건이다. 이 이슈는 그 변경이 왔을 때 클라이언트가 이미 안전하도록 준비만 한다
+  - `stage.html` 변경 — 이미 옳다. **0줄 변경**이 AC 다
+  - `#state-ended` 마크업·카피·`aria-live` 소유권 — 그대로
+  - 언어 전환 시 라이브 리전 이중 쓰기 — ISSUE-67. **두 이슈가 같은 파일의 인접 구역을 만진다.** 코드 의존은 없다 — 먼저 머지되는 쪽이 파일을 정리하고 뒤에 오는 쪽이 그 위에 올린다 (ISSUE-55/56 과 같은 규약)
+  - `MAX_LINES`·타자기·스크롤 추종 규칙 — 그대로
+
+#### 설계 결정 — 종료 후 드롭다운은 왜 무동작인가
+
+플래그를 **서버 프레임에만** 걸고 드롭다운은 그대로 두면, 청중이 언어를 바꾸는 순간 `switchLanguage` → `connect(next)` 가 종료된 세션 위에 **새 EventSource 를 연다.** 룸이 닫혀 있으므로 서버는 다시 `session_end` 를 보내 자가 교정되지만, 그것은 "터미널 상태가 터미널이 아니어도 우연히 괜찮다" 는 구조이고 RL-022 가 경고하는 바로 그 형태다.
+
+**드롭다운을 무동작으로 만든다.** 종료된 세션에서 언어를 바꿔서 받을 자막이 없고, `#state-ended` 가 이미 종료 문구를 들고 있다. 무대와 의미가 완전히 같아진다(무대는 애초에 드롭다운이 없다 — NFR-025).
+
+기각한 대안: "명시적 사용자 행위는 플래그를 해제한다". 해제 조건이 하나 생기는 순간 `sessionEnded` 는 더 이상 단말 플래그가 아니고, 다음 사람이 두 번째 해제 조건을 붙인다. **단말 플래그의 가치는 예외가 0개라는 데 있다.**
+
+> 구현 시 확인할 것: 기존 뷰어 테스트 중 "닫힌 룸에서 드롭다운을 조작" 하는 것이 있으면 이 결정이 그것을 깬다. 없어야 정상이며(현재 `tests/e2e/test_viewer_page_e2e.py::test_closed_room_shows_ended_copy(:259)` 는 조작하지 않는다), 있다면 **기존 가드 수정은 경보 신호**이므로 PR 설명에 근거를 남긴다.
+
+#### Acceptance Criteria (DoD)
+- [ ] Given `session_end` 를 받아 종료 상태인 `/view/{room_id}`, when `close()` 이후에도 계속 디스패치하는 스텁으로 `message` 프레임 1건을 전달하면, then `#state-ended` 가 `.active` 를 유지하고 `#state-active` 는 `.active` 가 **아니며** `.caption-line` 개수가 **0** 이다 (현재 코드에서는 `active` 로 전환되고 라인이 1개 생긴다 — 이 단언은 오늘 실패한다)
+- [ ] Given 같은 상황에서 늦은 `message` 로 **되살리기를 시도한 직후**, when `control{"primary_lang":"vi","caption_scale":1.4}` 를 전달하면, then 생성된 EventSource 총 개수가 **1** 그대로이고 `#lang-select` 의 값이 바뀌지 않으며 `--caption-scale` 도 바뀌지 않는다 (UI 리뷰 L-2 가 실측한 전이 경로를 값으로 못 박는다 — 오늘은 EventSource 2개 + 드롭다운 `vi` + 배율 1.4 다)
+- [ ] Given 종료 상태, when 늦은 `error` 프레임을 전달하면, then `.conn-error` 가 `visible` 이 되지 않는다 — 끝난 세션에 "재연결 중…" 을 띄우지 않는다
+- [ ] Given 종료 상태, when 늦은 `open` 프레임을 전달하면, then `#live-dot` 이 `live` 클래스를 갖지 않는다
+- [ ] Given 종료 상태, when 청중이 `#lang-select` 에서 다른 언어를 고르면, then 새 EventSource 가 열리지 않고(총 개수 1 유지) `#state-ended` 가 `.active` 를 유지한다
+- [ ] Given `components/viewer.html` 소스, when `sessionEnded` 에 `true` 를 대입하는 구문을 세면, then **정확히 1건**이고 그것은 `session_end` 리스너 안이며, `false` 를 대입하는 구문은 **선언 1건 외에 0건**이다 (해제 경로가 존재하지 않는다는 것을 구조로 고정)
+- [ ] Given `handleControl`(`viewer.html:819`), when 소스를 읽으면, then 종료 판정이 `sessionEnded` 를 읽고 `stateNodes.ended.classList` 를 읽지 **않는다** — 무대와 같은 근거를 쓴다 (RL-001)
+- [ ] Given 두 템플릿, when 종료 가드 대조 테스트를 실행하면, then `stage.html` 과 `viewer.html` 이 **같은 식별자**(`sessionEnded`)로 판정하고 있음을 단언한다. 한쪽에서 이름을 바꾸면 실패한다
+- [ ] Given `components/stage.html`, when 이 이슈의 diff 를 확인하면, then **변경이 0줄**이다
+- [ ] Given 기존 뷰어 가드, when `tests/test_viewer_page.py::test_control_respects_the_ended_state`(`:1538`) 와 `tests/e2e/test_viewer_page_e2e.py::test_an_ended_session_does_not_resubscribe`(`:963`) · `::test_session_end_leaves_the_announcer_silent`(`:762`) 를 실행하면, then **무수정으로 통과**한다
+
+#### Implementation Notes
+- **플래그 선언 위치**: `let es = null; let currentLang = …; let langLocked = false;`(`viewer.html:691-699`) 옆. 무대는 `:583` 에 있고 이름이 같아야 대조 테스트가 성립한다.
+- **가드는 리스너 본문의 첫 줄이다.** `stage.html:1096`(`if (sessionEnded) return;`)의 배치를 그대로 옮긴다. 안쪽 `try` 뒤에 넣으면 파싱 비용을 치른 뒤 버리게 되고, 더 중요하게는 "진입점이 무장 해제됐다" 를 정적으로 읽기 어려워진다.
+- **`session_end` 핸들러의 순서**: `sessionEnded = true;` 를 **가장 먼저**. `setLive(false)` / `setState("ended")` 는 `syncStateAnnouncement()` 를 부르고 그 안에서 DOM 을 읽으므로, 플래그를 나중에 세우면 그 사이에 배치된 프레임이 통과할 수 있는 창이 생긴다 — 폭이 0에 가깝더라도 규칙은 "플래그 먼저" 다.
+- **e2e 스텁은 관대해야 한다 (RL-022 의 Recommended action).** `close()` 이후 디스패치를 **거부하는** 충실한 스텁을 만들면 페이지 자신의 가드를 테스트할 수 없게 된다. 기존 `test_an_ended_session_does_not_resubscribe`(`tests/e2e/test_viewer_page_e2e.py:963`) 가 쓰는 하네스가 이미 관대하다 — 재사용한다, 복사하지 않는다 (RL-001).
+- **`test_an_ended_session_does_not_resubscribe` 와 이 이슈의 AC 2 는 다른 것을 잰다.** 기존 테스트는 `session_end` 와 `control` 이 **같은 배치**로 올 때를 본다(오늘 통과). AC 2 는 그 사이에 **되살리기 한 단계**를 끼워 넣는다 — 그것이 오늘 실패하는 경로다. 두 테스트를 같은 클래스에 나란히 두어 차이가 눈에 보이게 한다.
+- **정적 단언은 문장 단위로 정확해야 한다.** 코드 리뷰가 기록한 약점(`docs/review_notes.md:3076-3079`)대로 C5/C8 계열 뮤턴트는 정적 단언 1건씩으로만 죽는다. 여기서는 **행동 e2e 가 주 그물**이고 정적 단언은 보조다 — 순서가 반대가 되지 않게 한다.
+- 뮤테이션 확인(ISSUE-43 카탈로그 형식): ① `message` 의 가드 삭제 ② `control` 의 가드 삭제 ③ `sessionEnded = true` 를 `false` 로 ④ 가드를 `if (!sessionEnded) return` 으로 뒤집기 — 네 뮤턴트의 킬 카운트를 PR 설명에 적는다.
+- `.pre-commit-config.yaml` 의 `ruff-format` / `black` 충돌(ISSUE-65 가 인수) — 아직 열려 있으면 `assert cond, (msg)` 레이아웃을 피한다.
+
+#### Tests
+- [ ] `tests/e2e/test_viewer_page_e2e.py` — 종료 후 늦은 `message`: `#state-ended.active` 유지, `#state-active` 비활성, `.caption-line` 0개. **RED 확인**: 가드를 지우면 실패해야 한다
+- [ ] 같은 파일 — 되살리기 시도 후 늦은 `control`: EventSource 총 개수 1, `#lang-select.value` 불변, `--caption-scale` 불변 (L-2 의 전이 경로)
+- [ ] 같은 파일 — 종료 후 늦은 `error`: `.conn-error` 가 `visible` 아님 / 늦은 `open`: `#live-dot` 이 `live` 아님
+- [ ] 같은 파일 — 종료 후 드롭다운 조작: EventSource 총 개수 1, 상태 ended 유지
+- [ ] `tests/test_viewer_page.py` — 정적: `sessionEnded = true` 대입 **정확히 1건**(그리고 그 오프셋이 `session_end` 리스너 본문 안), `= false` 는 선언 1건뿐
+- [ ] `tests/test_viewer_page.py` — 정적: `handleControl` 본문에 `stateNodes.ended` 가 **0건**이고 `sessionEnded` 가 있다
+- [ ] `tests/test_stage_page.py`(또는 공용 대조 파일) — 두 템플릿이 같은 종료 식별자를 쓴다는 대조. 한쪽 이름만 바꾸면 실패한다
+- [ ] 기존 3건(`test_control_respects_the_ended_state`, `test_an_ended_session_does_not_resubscribe`, `test_session_end_leaves_the_announcer_silent`) **무수정 통과**
+- [ ] `git diff --stat` 확인을 겸하는 단언 또는 PR 체크 — `components/stage.html` 변경 0줄
+
+#### Rollback
+`components/viewer.html` 의 플래그 선언·네 진입점 가드·`handleControl` 판정 교체와 그 테스트를 되돌리는 단일 커밋 revert. **서버·스키마·프로토콜·와이어 포맷 변경이 0건**이고 `stage.html` 도 0줄이라 되돌려도 프로덕션 동작이 오늘과 동일하다(결함이 잠재이므로). 되돌리는 순간 잃는 것은 **`session_end` 를 살아 있는 스트림에 태우는 후속 변경이 왔을 때의 안전망**이고, 그때 증상은 "끝난 세션이 유령 자막과 함께 되살아난다" 로 나타난다는 점을 PR 설명에 남긴다.
+
+### ISSUE-67: 뷰어 언어 전환의 라이브 리전 이중 쓰기 제거 — 옛 언어 대기 문구를 먼저 읽지 않는다
+
+- Track: feature
+- Type: fix
+- UI: true
+- Manual: false
+- PRD-Ref: FR-085, NFR-030, RL-019, RL-001
+- Priority: P2
+- Estimate: 0.5d
+- Status: backlog
+- Owner:
+- Branch:
+- GH-Issue:
+- PR:
+- Depends-On: none
+
+#### Goal
+`/view/{room_id}` 의 언어 전환이 `#caption-announcer` 에 **한 번만** 쓰고, 그 한 번이 **새 언어**의 대기 문구다 — 무대(`stage.html`)가 이미 하고 있는 그대로.
+
+#### 현재 문제
+
+언어가 바뀔 때 스크린리더 사용자는 **옛 언어의 "잠시 후 시작됩니다" 를 먼저 듣고 곧이어 새 언어의 "Sắp bắt đầu" 를 듣는다.** `#caption-announcer` 에 붙인 MutationObserver 로 **레코드 단위** 실측한 결과(UI 리뷰 L-1):
+
+| 페이지 | `ko → vi` 전환 시 announcer 레코드 |
+|---|---|
+| `/stage/` | `['+Sắp bắt đầu', '-한국어 확정 자막']` — **1회 쓰기, 새 언어** |
+| `/view/` | `['+잠시 후 시작됩니다', '-한국어 확정 자막', '+Sắp bắt đầu', '-잠시 후 시작됩니다']` — **2회 쓰기, 첫 번째가 옛 언어** |
+
+원인은 `switchLanguage`(`viewer.html:805-815`)의 순서다. `clearCaptions()`(`:666`)가 `#caption-empty` 를 **아직 옛 `currentLang`** 으로 다시 만들고 `syncStateAnnouncement()`(`:685`)로 announcer 에 쓴다. 그 다음 `connect(next)` 가 `currentLang` 을 바꾸고, 마지막에 `applyWaitingText(next)`(`:813`)가 새 언어로 다시 쓴다. 무대는 `resubscribe`(`stage.html:1037-1056`)가 `currentLang = next` 를 **DOM 을 만들기 전에** 세우므로 쓰기가 한 번이다.
+
+파일 자신도 이 순서를 알고 있다 — `viewer.html:479-484` 와 `:681-685` 에 "여기서는 아직 옛 currentLang 이고, 뒤이어 오는 `applyWaitingText(next)` 가 새 언어 문구로 다시 맞춘다" 는 주석이 **의도적으로** 적혀 있다. 즉 이것은 몰라서 생긴 것이 아니라 **의도적으로 남겨 둔 잔여물**이고, 지금 그 잔여물이 비싸졌다.
+
+**ISSUE-53 이 방아쇠를 바꿨다.** 이전에 이 경로는 청중이 **직접 드롭다운을 건드릴 때만** 돌았다 — 자기가 방금 한 행동의 결과다. ISSUE-53 이후에는 **오퍼레이터가 룸 기본 언어를 바꾸면** 잠기지 않은 모든 청중의 화면에서 **아무도 아무것도 하지 않았는데** 돈다. ISSUE-54 가 그 조작을 오퍼레이터 UI 로 노출하면 행사 중 실제로 발생하는 빈도가 된다.
+
+영향이 Low 인 이유도 정직하게 적는다: 두 쓰기가 **같은 태스크 안에서 동기적으로** 일어나므로 `aria-atomic="true"` 인 polite 리전은 실무상 마지막 값만 발화하는 경우가 많다. 그러나 **보장되지 않고**, 무엇보다 RL-019 가 "라이브 리전에 쓰는 함수는 하나" 를 규칙으로 세운 자리에서 **쓰기가 둘**이라는 사실 자체가 그 규칙의 침식이다.
+
+#### Scope (In/Out)
+- In:
+  - `clearCaptions()` 가 **명시적 `lang` 인자**를 받아 `#caption-empty` 를 그 언어로 만든다 — 모듈 변수 `currentLang` 을 읽지 않는다
+  - `switchLanguage(next)` 가 `clearCaptions(next)` 를 호출 → announcer 첫 쓰기가 곧바로 새 언어가 된다
+  - `applyWaitingText(next)` 는 그대로 둔다 — `announce()` 의 무동작 가드(`:458`)가 같은 값 재쓰기를 흡수하므로 **레코드가 늘지 않는다.** 헤더의 `#state-waiting` 문구를 갱신하는 것은 여전히 이 함수의 일이다
+  - 오해를 재생산하는 주석 두 곳(`:479-484`, `:681-685`) 갱신
+  - 두 페이지의 전환 시 announcer 레코드 수가 같다는 파리티 테스트
+- Out:
+  - `announce()` / `syncStateAnnouncement()` / 라이브 리전 소유권 구조 — **그대로**. `#state-waiting` / `#state-ended` 가 각자 자기 문구를 알리는 구조를 건드리지 않는다
+  - `components/stage.html` 변경 — 이미 옳다. **0줄 변경**이 AC 다
+  - `WAITING_MSG` 사전의 문구·언어 추가
+  - 종료 상태 단말 플래그 — ISSUE-66. **같은 파일의 인접 구역이므로 충돌한다.** 코드 의존은 없다 — 먼저 머지되는 쪽이 파일을 정리한다 (ISSUE-55/56 규약)
+  - 자막 확정 시의 announcer 쓰기(`_lockLine`) — 무관
+
+#### Acceptance Criteria (DoD)
+- [ ] Given `/view/{room_id}` 가 `ko` 를 active 상태로 구독 중이고 `#caption-announcer` 에 **레코드 단위** MutationObserver 가 붙어 있을 때, when `control{"primary_lang":"vi"}` 가 도착하면, then 기록된 레코드가 **정확히 1건**이고 그 추가 텍스트가 `"Sắp bắt đầu"` 다 (오늘은 2건이고 첫 번째가 `"잠시 후 시작됩니다"` 이므로 이 단언은 실패한다)
+- [ ] Given 같은 페이지, when 청중이 드롭다운으로 직접 `vi` 를 고르면, then **같은 결과**다 — 레코드 1건, 새 언어. 두 방아쇠가 같은 함수를 타므로 결과도 같아야 한다
+- [ ] Given `/stage/` 와 `/view/` 에서 각각 같은 `ko → vi` 전환을 일으킬 때, when 두 페이지의 announcer 레코드 수를 비교하면, then **같다**(둘 다 1) — 파리티가 값으로 고정된다
+- [ ] Given `components/viewer.html` 소스, when `clearCaptions` 의 정의와 호출부를 읽으면, then 정의가 인자를 받고 본문에서 `currentLang` 을 **읽지 않으며**, 모든 호출부가 인자를 넘긴다 (인자를 생략한 호출이 0건)
+- [ ] Given 전환 직후 DOM, when `#caption-empty` 를 세면, then **정확히 1개**이고 텍스트가 새 언어의 대기 문구이며, `#state-waiting .state-message` 도 새 언어다 (announcer 만 고치고 눈에 보이는 문구를 놓치지 않는다)
+- [ ] Given 페이지가 **waiting** 상태(자막이 한 줄도 온 적 없음)일 때, when 같은 control 이 도착하면, then announcer 레코드가 **0건**이다 — active 가 아닐 때는 announcer 가 문구를 들지 않는다는 기존 소유권 규칙이 유지된다
+- [ ] Given `aria-live` 를 가진 노드, when 전환 후 세면, then 뷰어는 `["state-waiting","state-ended","caption-announcer"]` **그대로**다 (UI 리뷰가 실측한 집합 — 리전이 늘거나 줄지 않았다)
+- [ ] Given 기존 라이브 리전 가드, when `tests/test_viewer_page.py::test_announce_is_the_only_writer_to_the_live_region`(`:1373`) · `::test_exactly_one_caption_live_region_exists`(`:1279`) · `::test_announce_runs_on_the_lock_path_and_never_on_a_tick`(`:1392`) 와 `tests/e2e/test_viewer_page_e2e.py::test_session_end_leaves_the_announcer_silent`(`:762`) 를 실행하면, then **무수정으로 통과**한다
+- [ ] Given `components/stage.html`, when 이 이슈의 diff 를 확인하면, then **변경이 0줄**이다
+
+#### Implementation Notes
+- **관측자는 반드시 레코드 단위여야 한다 — 이걸 틀리면 테스트가 오늘도 통과한다.** 두 쓰기는 같은 태스크 안에서 동기적으로 일어나므로 MutationObserver **콜백은 1회만** 호출되고 `records` 배열에 2건이 담긴다. 콜백 호출 횟수를 세면 오늘도 1이 나와 결함을 못 본다(UI 리뷰가 이 함정을 명시했다). `for (const r of records)` 로 `addedNodes`/`removedNodes` 의 텍스트를 모아 **레코드 수**를 단언한다. 이 문장을 테스트 docstring 에 남긴다 — 남기지 않으면 다음 사람이 "간결하게" 콜백 카운터로 되돌린다 (RL-004).
+- **`announce()` 의 무동작 가드가 이 수정의 핵심 지렛대다.** `viewer.html:458` 의 `announcer.textContent === text` 조기 반환 덕분에, `clearCaptions(next)` 가 이미 새 문구를 써 두면 뒤이은 `applyWaitingText(next)` → `syncStateAnnouncement()` 는 **아무 DOM 변경도 만들지 않는다.** 그러므로 `applyWaitingText` 호출을 지울 필요가 없고, 지우면 헤더 `#state-waiting .state-message` 가 옛 언어로 남는다. **호출을 지우지 말 것.**
+- **`clearCaptions` 의 호출부는 현재 1곳뿐이다**(`switchLanguage:810`). 인자를 **필수**로 만든다 — 기본값을 주면 그 기본값이 곧 옛 동작으로 돌아가는 우회로가 된다.
+- **`connect(next)` 안의 `currentLang = lang`(`:734`)은 그대로 둔다.** 무대처럼 전환 함수 앞머리로 끌어올리는 리팩터는 하지 않는다 — `connect()` 는 부트스트랩에서도 불리므로 소유권을 옮기면 두 경로가 갈라진다. 필요한 것은 `clearCaptions` 가 **자기 인자로** 언어를 아는 것뿐이다.
+- **주석을 반드시 갱신한다.** `:479-484` 와 `:681-685` 는 지금의 (틀린) 순서를 **설명하고 정당화**하고 있다. 코드만 고치고 주석을 남기면 다음 사람이 주석을 근거로 되돌린다 (RL-007 계열).
+- **`switchLanguage` 의 스크롤 추종 순서를 건드리지 말 것.** `const follow = isUserAtBottom();` 이 `clearCaptions()` **앞**에 있어야 한다(`:809`, RL-035/F-1 이 정확히 이 규칙이다). `clearCaptions` 시그니처만 바뀌고 호출 위치는 그대로다.
+- 뮤테이션 확인: `clearCaptions(next)` → `clearCaptions(currentLang)` 로 되돌리면 레코드 수 단언 2건이 RED 여야 한다. 킬 카운트를 PR 설명에 적는다.
+- `.pre-commit-config.yaml` 의 `ruff-format` / `black` 충돌(ISSUE-65 가 인수) — 아직 열려 있으면 `assert cond, (msg)` 레이아웃을 피한다.
+
+#### Tests
+- [ ] `tests/e2e/test_viewer_page_e2e.py` — control 기동 전환: announcer 레코드 **정확히 1건**, 추가 텍스트가 새 언어. **RED 확인**: `clearCaptions` 를 옛 시그니처로 되돌리면 2건이 되어 실패해야 한다
+- [ ] 같은 파일 — 드롭다운 기동 전환에서 같은 결과 (두 방아쇠 파리티)
+- [ ] 같은 파일 — waiting 상태에서 control 수신: 레코드 0건
+- [ ] `tests/e2e/` — 무대/뷰어 파리티: 같은 전환에서 두 페이지의 레코드 수가 같다
+- [ ] `tests/test_viewer_page.py` — 정적: `clearCaptions` 정의가 인자를 받고 본문에 `currentLang` 이 0건이며, 인자 없는 호출이 0건
+- [ ] `tests/e2e/test_viewer_page_e2e.py` — 전환 후 `#caption-empty` 1개 + 새 언어 텍스트, `#state-waiting .state-message` 도 새 언어, `[aria-live]` id 집합이 `["state-waiting","state-ended","caption-announcer"]`
+- [ ] 기존 4건(`test_announce_is_the_only_writer_to_the_live_region`, `test_exactly_one_caption_live_region_exists`, `test_announce_runs_on_the_lock_path_and_never_on_a_tick`, `test_session_end_leaves_the_announcer_silent`) **무수정 통과**
+- [ ] `git diff --stat` 확인을 겸하는 단언 또는 PR 체크 — `components/stage.html` 변경 0줄
+
+#### Rollback
+`components/viewer.html` 의 `clearCaptions` 시그니처·호출부·주석과 그 테스트를 되돌리는 단일 커밋 revert. **서버·프로토콜·마크업·라이브 리전 구조 변경이 0건**이라 시각적 회귀 위험이 없다. 되돌리면 스크린리더 사용자가 언어 전환 시 **옛 언어의 대기 문구를 먼저 듣는 상태**로 복귀하고, ISSUE-54 이후에는 그것이 청중의 조작 없이 발생한다는 점을 PR 설명에 남긴다.
+
+### ISSUE-68: publish_control 이 이름 없는 payload 를 자막 프레임으로 강등하지 않고 거절
+
+- Track: platform
+- Type: fix
+- UI: false
+- Manual: false
+- PRD-Ref: FR-084, RL-029, RL-004, RL-025
+- Priority: P2
+- Estimate: 0.5d
+- Status: backlog
+- Owner:
+- Branch:
+- GH-Issue:
+- PR:
+- Depends-On: none
+
+#### Goal
+`BroadcastManager.publish_control()` 이 **control 프레임으로 나갈 수 없는 payload 를 받으면 즉시 거절한다** — 조용히 `event: message` 로 강등해 아무 클라이언트도 반응하지 않는 프레임을 내보내지 않는다. 거절은 큐에 아무것도 넣기 **전에** 일어난다.
+
+#### 현재 문제
+
+**먼저 정직하게: 오늘 프로덕션에서 도달하지 않는 잠재적 계약 공백이다.** control payload 를 만드는 유일한 자리는 `build_control_payload()`(`sse_broadcast.py:77-89`)이고 그것은 `"event": "control"` 을 **항상** 넣는다. 발행 호출부도 `websocket_handler._publish_control`(`:184-198`) 하나뿐이며 그 안에서 반드시 `build_control_payload` 를 통과한다. **지금 이 결함을 밟을 수 있는 프로덕션 경로는 없다.**
+
+그래도 계약이 비어 있다. `publish_control(room_id, payload)`(`:322-335`)는 payload 를 검사하지 않고 `_ControlEnvelope` 로 감싸 큐에 넣는다. 이름 해석은 소비자 쪽(`_handle_stream:806-809`)에서 일어난다:
+
+```python
+declared = payload.get("event") if isinstance(payload, _ControlEnvelope) else None
+event_name = declared if declared in _CONTROL_EVENT_NAMES else "message"
+```
+
+`event` 키가 **없으면** `declared is None` → 허용 목록 밖 → `"message"`. 즉 `publish_control(room, {"primary_lang": "vi"})` 는 **성공적으로 자막 프레임을 방송한다.** 어떤 클라이언트의 `control` 리스너도 깨어나지 않고, 뷰어의 `message` 핸들러는 `typeof payload.text !== "string"` 으로 조용히 버린다. **아무 로그도, 아무 예외도, 아무 증상도 없다.**
+
+이것은 이미 한 번 비용을 치렀다 — UI 리뷰어가 실측 하네스를 만들다 이 동작에 걸려 **전체 실행 한 번을 진단에 썼다**(`docs/ui_review_notes.md:1764-1770`).
+
+**무엇이 이것을 실제 결함으로 만드는가.** `publish_control` 은 **공개 메서드**이고, control 채널에 두 번째 발행자가 생기는 순간이다. 가장 가까운 후보는 `docs/review_notes.md:3201-3204` 의 후속안 — `session_end` 를 control 과 같은 fan-out 에 태우는 것 — 이며, 그 payload 는 손으로 조립될 가능성이 높다. 그때 증상은 "무대 화면이 종료를 모른다" 이고, 원인은 발행 함수가 조용히 강등했다는 것이며, 어디에도 흔적이 없다.
+
+**층 사이의 권위가 이름 붙여져 있지 않은 것이 근본이다 (RL-025).** 지금 두 층이 같은 규칙을 강제하는데 서로 다른 대답을 한다 — `publish_control` 은 "무엇이든 받는다", `_handle_stream` 은 "이름 없으면 자막이다". 어느 쪽이 authoritative 인지 아무도 적지 않았다.
+
+#### Scope (In/Out)
+- In:
+  - `publish_control` 이 `payload.get("event")` 를 `_CONTROL_EVENT_NAMES` 와 대조해 통과하지 못하면 `ValueError` 를 던진다 — **큐 주입 루프에 들어가기 전에**
+  - 두 층의 권위를 docstring 에 한 문장씩 명시: `publish_control` = **생산자 계약**(control 로 나갈 수 없는 것은 애초에 발행할 수 없다), `_handle_stream` 의 허용 목록 = **전송 계약**(내용을 절대 신뢰하지 않는다). 둘 다 유지되며 서로를 대체하지 않는다
+  - 기존 가드 `tests/test_sse_broadcast.py::test_the_allow_list_bounds_even_the_control_path` 의 **주입 방식 교체** (아래 설계 결정)
+- Out:
+  - `_handle_stream` 의 허용 목록 삭제·완화 — **금지.** 코드 리뷰가 M2/M3 로 두 가드가 **각각 다른 뮤턴트를 죽인다**는 것을 확인했다(`docs/review_notes.md:2879-2890`). 이 이슈는 세 번째 층을 더하는 것이 아니라 **비어 있던 첫 번째 층을 채운다**
+  - `build_control_payload` 의 시그니처·키 구성 변경 — `room_id`/`timestamp` 삭제 논의는 코드 리뷰 C-6 에서 기각됐다
+  - `publish_control(room_id, **fields)` 로 시그니처를 바꿔 payload 조립을 안으로 옮기는 리팩터 — 아래 설계 결정에서 기각
+  - `_ControlEnvelope` 를 비공개 이름으로 일부러 import 해 우회하는 in-process 경로 — 공격 경로가 아니며 코드 리뷰가 "고치지 않는 것이 옳다" 로 판정했다(`:2892-2896`)
+  - 자막 `publish()` 경로 변경 0줄
+
+#### 설계 결정
+
+**1. 왜 `publish_control(room_id, **fields)` 로 바꾸지 않는가.** payload 조립을 발행 함수 안으로 넣으면 계약 공백이 구조적으로 사라진다. 그러나 `build_control_payload` 는 `websocket_handler._publish_control`(`:195`)과 `sse_broadcast._handle_stream`(`:739`, 접속 스냅샷) **두 모듈에서** 불린다. 스냅샷 경로는 발행이 아니라 **직접 쓰기**이므로 조립을 발행 함수 안으로 숨기면 스냅샷이 자기 사본을 갖게 되고, 그것이 정확히 RL-001 이 경고하는 모양이다. **조립은 지금 자리에 두고, 발행에 검사를 붙인다.**
+
+**2. 왜 raise 인가 — 그리고 그 raise 를 누가 듣는가 (RL-029).** 프로덕션 유일 호출자 `websocket_handler._publish_control` 은 이미 `except Exception as e: print(f"[Control] 발행 실패 (room={room_id}): {e!r}")`(`:197-198`)로 감싸고 있다. 따라서 raise 는 (a) 테스트·개발 중에는 즉시 실패로 드러나고, (b) 운영 중에는 서버 로그 한 줄로 남으며 자막 파이프라인을 죽이지 않고, (c) 클라이언트에는 아무것도 새지 않는다 (RL-006). **"fail loudly" 의 듣는 쪽이 이미 존재하고 이미 로그를 남긴다는 것을 확인했다** — RL-029 가 요구하는 두 번째 증거다.
+
+**3. 기존 가드는 지우지 않고 주입 방식을 바꾼다 — 이것이 이 이슈에서 가장 조심할 부분이다.**
+`test_the_allow_list_bounds_even_the_control_path` 는 오늘 `publish_control("r1", {"event": "session_end"})` 로 허용 목록 밖 이름을 큐에 밀어 넣고 `event: message` 로 나가는 것을 단언한다. 이 이슈 이후 그 호출은 **raise 한다.**
+- **기각한 선택 (a)**: "`event` 키가 **없을 때만** raise, 있지만 모르는 이름이면 기존대로 강등". 기존 테스트는 무수정으로 살지만 **같은 결함 종류를 절반만 닫는다** — 모르는 이름도 조용히 자막이 된다.
+- **채택**: 두 경우 모두 raise 하고, 기존 테스트의 **단언은 그대로 두되 주입 경로를 바꾼다.** `_ControlEnvelope` 를 직접 만들어 등록된 큐에 넣고 `_handle_stream` 이 여전히 강등하는지 본다. 전송 계약은 생산자 계약과 **독립적으로** 살아 있어야 하고, 그 사실이 테스트 구조에 드러난다.
+- **기존 가드를 수정했다는 사실과 그 이유를 PR 설명에 적는다.** 이 저장소에서 기존 가드 수정은 기본적으로 경보 신호다(ISSUE-53 Tests, ISSUE-57 Implementation Notes 참조). 원래 의도("자막이 자기 이벤트 이름을 정할 수 없다")가 보존됐다는 근거를 함께 남긴다.
+
+#### Acceptance Criteria (DoD)
+- [ ] Given `(room,"ko")` 와 `(room,"vi")` 두 채널에 뷰어 큐가 등록된 룸, when `publish_control(room, {"primary_lang":"vi"})`(`event` 키 없음) 를 호출하면, then `ValueError` 가 발생하고 **두 큐 모두 0건**이다 (오늘은 예외 없이 두 큐에 1건씩 들어가고 `event: message` 로 나간다 — 이 단언은 오늘 실패한다)
+- [ ] Given 같은 룸, when `publish_control(room, {"event":"session_end", "room_id":room})` 를 호출하면, then 역시 `ValueError` 이고 큐가 **0건**이다 — 허용 목록 **밖의 이름**도 조용히 강등되지 않는다
+- [ ] Given 세 채널이 등록된 룸, when 거절되는 payload 를 발행하면, then 세 큐 **모두** 0건이다 — 부분 fan-out 이 없다(검사가 루프보다 앞이다). 두 큐에만 넣고 세 번째에서 터지는 구현은 실패한다
+- [ ] Given `build_control_payload(room, {"primary_lang":"vi","caption_scale":1.2})` 의 결과, when `publish_control` 에 넘기면, then 예외 없이 통과하고 두 채널이 `event: control` 프레임을 각각 1건씩 받는다 (정상 경로 무회귀)
+- [ ] Given `_handle_stream` 의 허용 목록, when `_ControlEnvelope({"event":"session_end"})` 를 **등록된 큐에 직접** 넣고 응답 바이트를 읽으면, then `event: message` 로 나간다 — 전송 계약이 생산자 계약과 **독립적으로** 살아 있다. 허용 목록을 `declared or "message"` 로 바꾸면 이 단언이 실패한다
+- [ ] Given `websocket_handler._publish_control` 이 거절되는 fields 로 불릴 때, when 그 직후를 관찰하면, then 예외가 밖으로 새지 않고 서버 로그에 `[Control] 발행 실패` 가 **1줄** 남으며 WS 세션이 살아 있고 클라이언트에 아무 메시지도 가지 않는다 (RL-006 / RL-029)
+- [ ] Given `publish_control` 의 docstring, when 읽으면, then **어느 층이 무엇을 보증하는지** 한 문장으로 적혀 있고 `_handle_stream` 의 허용 목록 주석이 그 반대편을 가리킨다 (RL-025 — 두 층이 같은 규칙을 강제할 때 권위에 이름을 붙인다)
+- [ ] Given 자막 발행 경로, when `publish()`(`sse_broadcast.py:309-320`) 의 diff 를 확인하면, then **0줄 변경**이다 — 이 이슈는 control 경로만 만진다
+
+#### Implementation Notes
+- **검사 위치는 `_ControlEnvelope` 생성보다도 앞이다.** 함수 첫 줄에서 `declared = payload.get("event")` 를 뽑아 `_CONTROL_EVENT_NAMES` 와 대조하고, 실패하면 그 자리에서 raise 한다. 봉투를 만든 뒤 루프 안에서 검사하면 "세 번째 큐에서 터지는" 부분 fan-out 이 가능해진다.
+- **예외 메시지에 payload 내용을 넣지 않는다.** 이 메시지는 `_publish_control` 의 `{e!r}` 로 서버 로그에 흘러가고, 그 자리는 이미 클라이언트 입력을 무제한 `!r` 로 찍는 문제(코드 리뷰 S-5)가 지적된 곳이다. 이름(`declared`)과 room_id 까지만 담는다.
+- **`_CONTROL_EVENT_NAMES` 를 두 번 정의하지 않는다.** 모듈 상수 하나를 `publish_control` 과 `_handle_stream` 이 **같이** 읽는다 — 사본을 만들면 두 층이 서로 다른 허용 목록을 갖게 되고, 그것이 이 이슈가 고치려는 RL-025 의 모양 그대로다 (RL-001).
+- **`publish_control` 의 기존 호출부는 정확히 1곳**(`websocket_handler.py:194`)이다. 그 호출은 항상 `build_control_payload` 를 통과하므로 **프로덕션 동작은 이 이슈 전후로 바이트 단위 동일**해야 한다. 그 사실을 PR 설명에 적는다 — "잠재 결함을 닫았고 관측 가능한 동작은 바뀌지 않았다".
+- **기존 테스트의 새 형태**: `_ControlEnvelope` 는 비공개 이름이므로 테스트에서 import 할 때 그 사실을 docstring 에 남긴다 — "생산자 계약을 우회해 전송 계약만 시험하기 위해 의도적으로 내부 타입을 쓴다. 프로덕션 코드는 이 경로를 쓰지 않는다."
+- 뮤테이션 확인(ISSUE-43 카탈로그 형식): ① 검사 전체 삭제 ② 검사를 루프 안으로 이동(부분 fan-out) ③ `declared not in NAMES` → `declared is None` (선택지 (a) 로 후퇴) ④ raise 를 `return` 으로 — 네 뮤턴트의 킬 카운트를 PR 설명에 적는다.
+- `.pre-commit-config.yaml` 의 `ruff-format` / `black` 충돌(ISSUE-65 가 인수) — 아직 열려 있으면 `assert cond, (msg)` 레이아웃을 피한다.
+
+#### Tests
+- [ ] `tests/test_sse_broadcast.py` — `event` 키 없는 payload: `pytest.raises(ValueError)` + 등록된 모든 큐 `qsize() == 0`. **RED 확인**: 검사를 지우면 큐에 1건씩 들어가 실패해야 한다
+- [ ] 같은 파일 — 허용 목록 밖 이름(`"session_end"`, `"message"`, `""`, `None`) parametrize: 전부 raise + 큐 0건
+- [ ] 같은 파일 — 세 채널 등록 후 거절: **세 큐 모두** 0건 (부분 fan-out 금지)
+- [ ] 같은 파일 — `build_control_payload` 결과의 정상 통과: 두 채널이 각각 1건, 와이어에 `event: control`
+- [ ] 같은 파일 — **전송 계약 독립성**: `_ControlEnvelope({"event":"session_end"})` 를 큐에 직접 주입 → `event: message`. (기존 `test_the_allow_list_bounds_even_the_control_path` 의 단언을 이 주입 방식으로 옮긴 것 — 단언은 그대로, 벡터만 바뀐다)
+- [ ] `tests/test_websocket_handler.py` — `_publish_control` 이 거절되는 값으로 불릴 때: 예외 미전파, `capsys` 로 `[Control] 발행 실패` 1줄, WS 로 나간 메시지 0건
+- [ ] `tests/test_sse_broadcast.py` — 정적 또는 구조 단언: `_CONTROL_EVENT_NAMES` 가 모듈에 **1회만** 정의되고 두 소비 지점이 같은 이름을 읽는다
+
+#### Rollback
+`sse_broadcast.publish_control` 의 검사 블록과 docstring, 그리고 옮겨 놓은 테스트 벡터를 되돌리는 단일 커밋 revert. **스키마·프로토콜·와이어 포맷·클라이언트 변경이 0건**이고 프로덕션 호출부가 오늘 이미 항상 유효한 payload 를 넘기므로 **되돌려도 관측 가능한 동작이 바뀌지 않는다.** 되돌리면 control 채널에 두 번째 발행자가 생기는 날 이름 없는 payload 가 다시 조용히 자막 프레임이 되고, 증상은 "무대 화면이 반응하지 않는다" 이며 로그는 남지 않는다는 점을 PR 설명에 남긴다.
+
+### ISSUE-69: Room.update_session_languages 반환을 tri-state 로 — 중복 룸 조회와 _current_primary_lang 제거
+
+- Track: platform
+- Type: refactor
+- UI: false
+- Manual: false
+- PRD-Ref: FR-083, FR-084, RL-001, RL-004, RL-025
+- Priority: P2
+- Estimate: 1d
+- Status: backlog
+- Owner:
+- Branch:
+- GH-Issue:
+- PR:
+- Depends-On: none
+
+#### Goal
+`Room.update_session_languages` 가 **"알릴 변화가 있었는가" 에 직접 답한다** — 그 결과 `websocket_handler._current_primary_lang`(21줄)과 인증 경로의 중복 `get_by_id` 가 **동시에** 사라지고, control 발행 조건이 두 갈래가 아니라 한 값이 된다.
+
+#### 현재 문제
+
+`update_session_languages`(`database.py:1159-1230`)의 `-> bool` 은 **서로 다른 두 사실을 같은 `True` 로 뭉갠다.** docstring 이 그것을 스스로 인정한다(`:1185-1188`): "True — 세 컬럼이 요청한 값을 갖는다 (**UPDATE 를 실행했거나, 이미 같은 값이라 생략했거나**)".
+
+ISSUE-53 이 필요로 한 것은 그 둘을 가르는 것이었다. 이미 같은 값일 때 control 을 발행하면 이미 보고 있는 무대 화면이 이유 없이 재구독하고 자막이 한 프레임 끊긴다. bool 로는 답할 수 없으므로 ISSUE-53 은 **호출 직전에 룸 행을 한 번 더 읽는** 헬퍼를 새로 만들었다:
+
+```python
+previous = _current_primary_lang(room_id)          # websocket_handler.py:161-181 — get_by_id 1회
+if not _persist_session_languages(room_id, ...):   # 그 안에서 update_session_languages → get_by_id 1회
+    return
+if previous == output_lang:
+    return
+await _publish_control(...)
+```
+
+**같은 행을 한 번의 auth 에서 두 번 읽는다.** 코드 리뷰가 이것을 Over-Engineering 항목으로 기록했다(`docs/review_notes.md:3179`) — `_current_primary_lang` 21줄 + 중복 조회, **제거 가능한 약 −21줄**. TOCTOU 는 없다(두 함수 모두 동기이고 사이에 `await` 가 0건, 단일 이벤트 루프). 성능도 무시 가능하다(auth 는 세션당 1회). **문제는 형식이다** — 발행 조건이 두 곳에 흩어져 있고, 그중 한 곳은 "다른 함수가 답할 수 없어서" 존재하는 함수다.
+
+**두 호출부가 이 비용을 치른다** — `_record_session_languages`(`:201-215`)는 auth 성공 경로와 `language_update` 메시지 경로 양쪽에서 불린다. 인증 경로는 이미 3건 이상의 쿼리를 도는 자리다.
+
+**RL-025 의 형태이기도 하다.** "알릴 변화가 있었는가" 라는 하나의 질문에 두 층이 각자 답한다 — DB 층은 bool 로 반쯤, 핸들러 층은 별도 SELECT 로 나머지 반. 어느 쪽이 authoritative 인지 아무도 적지 않았고, 그래서 둘 다 지울 수 없다.
+
+#### Scope (In/Out)
+- In:
+  - `database.py` 에 `SessionLanguageWrite` **`enum.Enum`** 추가 — `PRIMARY_CHANGED` / `PRIMARY_UNCHANGED` / `REJECTED`
+  - `Room.update_session_languages` 의 반환을 그 열거형으로 교체. no-op 가드(`:1216-1221`)와 `cursor.rowcount`(`:1230`)를 그대로 쓰되 **`primary_output_lang` 의 이전 값**으로 두 성공 상태를 가른다
+  - `websocket_handler._current_primary_lang`(`:161-181`) **삭제**
+  - `_persist_session_languages`(`:145-158`)가 bool 이 아니라 열거형을 그대로 흘려보낸다. 예외 경로는 `REJECTED`
+  - `_record_session_languages`(`:201-215`)의 발행 조건이 `result is SessionLanguageWrite.PRIMARY_CHANGED` **한 줄**
+  - 열거형을 돌려주도록 테스트 fake 4곳 갱신 — `tests/test_websocket_auth.py:537`·`:649`·`:794`, `tests/test_websocket_handler.py:1270`
+  - `docs/test_plan.md` TC-071 / TC-072 의 기대값 갱신 (`False` → `REJECTED` 등)
+- Out:
+  - `rooms` 스키마·컬럼·UPDATE 문 변경 — **0건**. `primary_output_lang` 이 권위 컬럼이라는 규칙(FR-083 / RL-025)은 그대로다
+  - `rooms.output_langs` 를 건드리지 않는다는 결정(#91/#92) — 그대로
+  - 검증 규칙(`_SESSION_INPUT_LANGS` / `SUPPORTED_OUTPUT_LANGS`)·all-or-nothing 계약 — 그대로
+  - control payload 형식·SSE 와이어·클라이언트 — **0줄**
+  - `_publish_control`(`:184-198`)의 도달 불가 `if not room_id` 가드(코드 리뷰 C-4) — 별건, 미소유. 이 이슈에서 지우지 않는다
+  - `docs/review_notes.md:2914-2918` 이 기록한 "input_lang 만 바뀐 경우 발행 0회" 의 **동작 변경 — 금지.** 아래 설계 결정
+
+#### 설계 결정
+
+**1. 열거형 멤버 이름이 곧 계약이다 — "UPDATE 가 돌았는가" 로 정의하면 동작이 바뀐다.**
+순진한 tri-state(`written` = UPDATE 실행)를 쓰면 **`input_lang` 만 바뀌고 `output_lang` 은 그대로인 경우**(`auto`→`ko`, 출력은 `vi` 유지) UPDATE 가 실행되므로 `written` 이 되고 **발행이 1회 일어난다.** 오늘은 0회다(코드 리뷰가 Info 로 실측·판정했고 "동작은 개발자 쪽이 옳다" 로 결론냈다). 즉 순진한 이름은 **조용한 동작 변경**이다.
+
+**그래서 멤버는 호출자가 실제로 묻는 질문으로 이름 붙인다.**
+
+| 멤버 | 뜻 | 오늘의 bool |
+|---|---|---|
+| `PRIMARY_CHANGED` | 세 컬럼이 요청값을 갖고 **`primary_output_lang` 이 이전과 다르다** | `True` + `previous != output_lang` |
+| `PRIMARY_UNCHANGED` | 세 컬럼이 요청값을 갖지만 `primary_output_lang` 은 이전과 **같다**. UPDATE 실행 여부와 무관하다 | `True` + `previous == output_lang` |
+| `REJECTED` | 검증 실패 또는 미존재 room_id. **DB 를 건드리지 않고 예외도 던지지 않는다** | `False` |
+
+`PRIMARY_UNCHANGED` 가 "쓰기가 없었다" 를 뜻하지 **않는다**는 문장을 docstring 첫 문단에 넣는다. 그 오해가 이 열거형이 막으려는 유일한 오해다.
+
+**2. `str` 을 섞은 `StrEnum` 이 아니라 순수 `Enum` 이다.**
+`Literal["written",...]` 이나 `class X(str, Enum)` 은 모든 값이 truthy 이고 `== "written"` 이 성립하므로, 남아 있는 `if not result:` 나 `result == True` 가 **조용히 항상 거짓**이 된다. 순수 `Enum` 이면 그런 잔재는 "발행이 0회" 라는 **붉은 테스트**로 즉시 드러난다. 이 저장소의 지배적 결함 종류가 "버그에도 통과하는 단언"(RL-004, 빈도 13)이므로 실패가 시끄러운 쪽을 고른다.
+
+**3. 비교는 항상 긍정형 항등이다.** `result is SessionLanguageWrite.PRIMARY_CHANGED` 로만 발행한다. `result is not REJECTED` 같은 부정형을 쓰면, 레거시 `True` 를 돌려주는 fake 나 서드파티 repo 가 **발행 쪽으로** 열화한다 — 안전하지 않은 방향이다. 긍정형이면 모르는 값은 전부 "발행 안 함" 으로 열화한다.
+
+#### Acceptance Criteria (DoD)
+- [ ] Given `primary_output_lang="ko"` 인 룸, when `update_session_languages(room, input_lang="ko", output_lang="vi")` 를 호출하면, then `SessionLanguageWrite.PRIMARY_CHANGED` 를 돌려준다 (오늘은 `True` 이므로 이 단언은 실패한다)
+- [ ] Given 방금 그 호출 직후, when **같은 인자로** 다시 호출하면, then `SessionLanguageWrite.PRIMARY_UNCHANGED` 이고 UPDATE 문이 **0건** 실행된다 (TC-072 의 성질 유지 + 반환값 구분)
+- [ ] Given `primary_output_lang="vi"`·`input_lang="auto"` 인 룸, when `update_session_languages(room, input_lang="ko", output_lang="vi")` 를 호출하면, then UPDATE 는 **실행되지만** 반환은 `PRIMARY_UNCHANGED` 다 — 그리고 `input_lang` 컬럼은 `"ko"` 로 바뀌어 있다. **이 단언은 tri-state 를 "UPDATE 가 돌았는가" 로 정의한 구현에서 실패한다** (설계 결정 1 을 값으로 고정)
+- [ ] Given `output_lang="xx"`(지원 목록 밖) 또는 존재하지 않는 room_id, when 호출하면, then `SessionLanguageWrite.REJECTED` 이고 예외가 없고 어떤 컬럼도 바뀌지 않는다 (TC-071 의 성질 유지, 반환값만 교체)
+- [ ] Given `_record_session_languages` 를 호출 횟수를 세는 fake repo 로 **1회** 실행할 때, when `get_by_id` 호출 수를 세면, then **정확히 1회**다 (오늘은 2회 — `_current_primary_lang` 이 한 번, `update_session_languages` 내부가 한 번)
+- [ ] Given `websocket_handler.py` 소스, when `_current_primary_lang` 을 검색하면, then **0건**이다
+- [ ] Given `websocket_handler.py` 소스, when `update_session_languages` / `_persist_session_languages` 의 결과를 쓰는 자리를 읽으면, then 진위값 검사(`if not …`, `if …`)가 **0건**이고 비교가 전부 `is SessionLanguageWrite.PRIMARY_CHANGED` 형태의 **긍정형 항등**이다
+- [ ] Given repo 가 레거시 `True` 를 돌려주는 fake, when `_record_session_languages` 를 실행하면, then control 발행이 **0회**다 — 모르는 반환값은 발행하지 않는 쪽으로 열화한다 (설계 결정 3)
+- [ ] Given ISSUE-53 이 세운 발행 계약, when auth 와 `language_update` 두 경로를 각각 태우면, then **언어가 실제로 바뀐 경우에만 control 발행이 정확히 1회**이고 값 동일·검증 실패에서는 0회다 — `tests/test_websocket_handler.py` 의 기존 발행 계약 테스트가 **의미를 유지한 채** 통과한다
+- [ ] Given `database.py` 의 UPDATE 문과 컬럼 목록, when diff 를 확인하면, then SQL 이 **바이트 동일**이다 — 이 이슈는 반환 계약만 바꾼다
+- [ ] Given `components/stage.html` / `components/viewer.html` / `sse_broadcast.py`, when diff 를 확인하면, then **변경이 0줄**이다
+
+#### Implementation Notes
+- **이전 값은 이미 손에 있다.** `update_session_languages` 는 no-op 가드를 위해 `current = self.get_by_id(room_id)`(`:1209`)를 **이미** 한다. `current.get("primary_output_lang")` 을 `output_lang` 과 비교하면 두 성공 상태가 갈린다 — **새 쿼리가 0건**이다. 이것이 이 리팩터가 성립하는 이유 전부다.
+- **no-op 가드는 그대로 둔다.** `:1216-1221` 이 세 컬럼을 **모두** 비교하는 것은 미러(`output_lang`)가 어긋난 채 굳는 것을 막기 위해서다(RL-025). "primary 만 보면 되잖아" 로 줄이지 말 것 — 주석이 그 이유를 적고 있다.
+- **`cursor.rowcount > 0` 이 False 인 경로**(UPDATE 가 0행) 는 `REJECTED` 다. 존재를 이미 확인한 뒤이므로 사실상 도달하지 않지만, `PRIMARY_CHANGED` 로 열화하면 없는 룸에 대해 발행하게 된다.
+- **`_persist_session_languages` 의 예외 경로**(`:155-158`)는 `False` 대신 `REJECTED` 를 돌려준다. RL-006 대로 로그는 서버에만.
+- **fake 4곳이 이 이슈에서 가장 조용히 틀리기 쉬운 부분이다.** `tests/test_websocket_auth.py:537`(`_RecordingRoomRepo`)·`:649`·`:794`, `tests/test_websocket_handler.py:1270` 이 `-> bool` 을 흉내 낸다. 순수 `Enum` 이라 고치지 않으면 발행 단언이 **붉게** 실패한다(조용히 통과하지 않는다) — 그것이 이 선택의 이득이다. `tests/test_ws_sse_integration.py:627`·`:696` 은 **진짜 `Room`** 을 쓰고 반환값을 보지 않으므로 영향이 없다. 이 구분을 열거형의 docstring 이나 fake 근처 주석에 적어 다음 사람이 6곳을 다 고치려다 시간을 버리지 않게 한다 (ISSUE-55 가 같은 형식으로 적어 둔 것을 참고).
+- **`docs/test_plan.md` TC-071(`:302`) / TC-072(`:303`) 를 함께 갱신한다.** TC-071 의 "the unsupported code and the unknown id both return `False`" 가 이 이슈로 사실이 아니게 된다. 문서를 남겨 두면 다음 사람이 문서를 근거로 되돌린다.
+- **`_record_session_languages` 는 이제 5줄이 안 된다.** `previous` 지역 변수와 두 번째 조기 반환이 사라진다. docstring 의 "발행 조건이 두 개인 이유" 문단도 함께 정리한다 — 조건이 하나가 됐는데 설명이 둘로 남으면 다음 사람이 없어진 조건을 찾는다.
+- 뮤테이션 확인(ISSUE-43 카탈로그 형식): ① `PRIMARY_UNCHANGED` → `PRIMARY_CHANGED` (값 동일에도 발행) ② `REJECTED` → `PRIMARY_CHANGED` (검증 실패에도 발행) ③ 비교를 `is not REJECTED` 로 (부정형) ④ 이전값 비교 삭제(UPDATE 실행 여부로 판정) — 네 뮤턴트의 킬 카운트를 PR 설명에 적는다. 특히 ④ 는 AC 3 이 유일하게 잡는다.
+- `.pre-commit-config.yaml` 의 `ruff-format` / `black` 충돌(ISSUE-65 가 인수) — 아직 열려 있으면 `assert cond, (msg)` 레이아웃을 피한다.
+
+#### Tests
+- [ ] `tests/test_rooms_db.py` — 세 반환값 parametrize: 새 언어 → `PRIMARY_CHANGED`, 반복 호출 → `PRIMARY_UNCHANGED`, `output_lang="xx"`/미존재 room_id → `REJECTED`. **RED 확인**: bool 로 되돌리면 셋 다 실패한다
+- [ ] 같은 파일 — **설계 결정 1 고정**: `input_lang` 만 바뀌는 호출이 `PRIMARY_UNCHANGED` 를 돌려주고 `input_lang` 컬럼은 실제로 바뀌어 있다. "UPDATE 가 돌았는가" 구현에서 실패한다
+- [ ] 같은 파일 — TC-072 유지: 같은 값 재호출 시 UPDATE `execute` **0건**
+- [ ] 같은 파일 — TC-071 유지: `output_langs` 컬럼이 write 전후 **바이트 동일**
+- [ ] `tests/test_websocket_handler.py` — 카운터 fake repo 로 `_record_session_languages` 1회 실행 시 `get_by_id` **정확히 1회**. **RED 확인**: 오늘 코드에서는 2회다
+- [ ] 같은 파일 — 발행 계약 유지: `PRIMARY_CHANGED` → 발행 1회, `PRIMARY_UNCHANGED` → 0회, `REJECTED` → 0회 (세 케이스 각각)
+- [ ] 같은 파일 — 레거시 `True` 를 돌려주는 fake: 발행 **0회** (긍정형 항등 열화)
+- [ ] `tests/test_websocket_auth.py` — 갱신된 fake 로 auth 경로가 이전과 같은 컬럼을 기록하고 `auth_success` 에 실린 control 스냅샷이 그대로다 (ISSUE-52/53 무회귀)
+- [ ] 정적 — `websocket_handler.py` 에 `_current_primary_lang` 0건, 결과에 대한 진위값 검사 0건
+- [ ] `git diff` 확인 — `database.py` 의 UPDATE SQL 문자열 바이트 동일, `sse_broadcast.py` / 두 템플릿 0줄
+
+#### Rollback
+`database.py` 의 열거형과 반환 교체, `websocket_handler` 의 `_current_primary_lang` 삭제와 발행 조건 한 줄, 테스트 fake 4곳, `docs/test_plan.md` 두 행을 되돌리는 단일 커밋 revert. **스키마·SQL·프로토콜·와이어 포맷·클라이언트 변경이 0건**이라 마이그레이션 롤백이 없고 실행 중인 세션에 영향이 없다. 되돌리면 인증 1회당 룸 행을 다시 두 번 읽고 `_current_primary_lang` 21줄이 되살아나지만 **관측 가능한 동작은 동일**하다 — 이 revert 는 기능 손실이 아니라 형식 손실이라는 점을 PR 설명에 남긴다.
+
+### ISSUE-70: /stage/* 와 /branding/* 가 ALB 에 미등록 — 무대 합성 뷰 트랙이 프로덕션 도달 불가
+
+- Track: platform
+- Type: deploy
+- UI: false
+- Manual: true
+- PRD-Ref: FR-074, FR-077, FR-078, FR-081, NFR-028, RL-001, RL-004
+- Priority: P0
+- Estimate: 0.5d
+- Status: doing
+- Owner:
+- Branch: issue/alb-routing-stage-branding
+- GH-Issue: 156
+- PR: 157
+- Depends-On: none
+
+#### Goal
+`sse_broadcast.build_sse_app` 이 등록한 **5개 라우트 전부**가 프로덕션에서 8766 으로
+도달하고, 라우트가 추가될 때 문서·ALB 규칙 갱신 누락이 **테스트로 막힌다.**
+
+#### 현재 문제
+
+ALB HTTPS 리스너가 8766 으로 보내는 경로는 `/view/*`, `/stream/*` 둘뿐이다.
+`/stage/{room_id}` 와 `/branding/{room_id}/{filename}` 에는 규칙이 없어 기본 규칙으로
+8501(Streamlit)로 간다. **무대 합성 뷰 트랙(ISSUE-37~42, 6개 전부 `shipped`)과 룸 로고가
+프로덕션에서 도달 불가다.**
+
+실측 (2026-10-11, `https://translate.andone.agency`):
+
+| 경로 | 응답 | 어느 서버 |
+|---|---|---|
+| `/view/nonexistent` | 404, 914B HTML | 8766 ✅ |
+| `/stream/nonexistent` | 404, 9B `not found` | 8766 ✅ |
+| `/ws` | 426 | 8765 ✅ |
+| `/stage/nonexistent` | **200, 1522B** | **8501 ❌** |
+| `/branding/x/y.png` | **200, 1522B** | **8501 ❌** |
+
+1522B 는 `/` 와 바이트 수가 같은 Streamlit 앱 셸이다.
+
+영향 경로 — 오퍼레이터 "무대 화면 열기" 는 `build_stage_url` = `VIEWER_BASE_URL +
+/stage/{room_id}`(`app.py:435`) 로 가므로 빈 Streamlit 화면이 뜨고, 무대 로고는
+same-origin `img.src = "/branding/" + ...`(`components/stage.html:537`) 이므로 깨진
+이미지가 된다.
+
+**원인은 타임라인이 그대로 말한다.** `aws-alb-setup.md` 는 2026-08-09(#105)에
+`/view`·`/stream` 2경로 기준으로 작성됐고, 두 라우트는 2026-08-23 에 추가됐다
+(`/branding` #120 ISSUE-38, `/stage` #121 ISSUE-40). 문서도 규칙도 갱신되지 않았다.
+#94 는 당시 존재한 경로만 덮고 closed 됐다. 전형적인 **RL-001** — 손복사된 목록을
+라우트 등록과 묶는 테스트가 없었다.
+
+**왜 두 달간 안 보였나 — 상태 코드로 드러나지 않는다.** 미등록 경로는 404 도 500 도
+아니고 HTTP **200 + 앱 셸 HTML** 을 받는다. 에러도 로그도 없다. 상태 코드만 보는
+헬스체크·스모크 테스트는 영원히 통과한다. 검증은 "없는 룸으로 응답 주체를 식별"
+해야 한다.
+
+#### Scope (In/Out)
+- In:
+  - `aws-alb-setup.md` 포트 표 + HTTPS 리스너 규칙에 `/stage/*`, `/branding/*` 추가
+  - 200-으로-실패하는 성질 명시 + 응답 주체 식별 검증 스니펫 (§6)
+  - 배포 스크립트 경고를 `deploy-alb.sh` 까지 확장 — 이름상 이 문서의 정답
+    스크립트처럼 보이지만 `deploy-ec2.sh` 와 동일하게 깨져 있다 (→ ISSUE-72)
+  - `tests/test_alb_routing_parity.py` — `build_sse_app` 의 **라우터에서** 경로를
+    구조적으로 뽑아 문서의 두 목록과 대조, 두 목록끼리도 교차 검증
+- Out:
+  - **AWS 콘솔 리스너 규칙 실제 변경** — 수동 작업으로 남는다. 문서와 테스트만으로는
+    프로덕션이 바뀌지 않는다. 이 이슈는 "다음 사람이 규칙을 빠뜨리지 않게" 까지만 간다
+  - lazy-start (→ ISSUE-71), 배포 스크립트 삭제 (→ ISSUE-72)
+  - `sse_broadcast.py` 라우트 추가·변경 — 프로덕션 코드 0줄
+
+#### Acceptance Criteria
+- [ ] AC1 — 문서의 포트 표와 리스너 규칙이 `build_sse_app` 라우트 5개와 정합하다
+      (`/health` 는 타겟그룹 헬스체크라 §1-2 에 기재되고 리스너 규칙에서 면제)
+- [ ] AC2 — 가드가 라우트를 소스 regex 가 아니라 라우터에서 뽑아, `add_get` 호출
+      형태가 바뀌어도(루프·상수 분리·서브앱) 눈을 감지 않는다
+- [ ] AC3 — 가드를 **수정 전** 문서에 걸면 정확히 `['/branding', '/stage']` 를
+      호명하며 실패한다 (RL-004 변별력). 가짜 프리픽스 카나리아도 함께 둔다
+- [ ] AC4 — 문서 앵커(8766 행 / tg-viewer 규칙 / §1-2)를 못 찾으면 통과가 아니라 실패
+- [ ] AC5 — `/health` 면제가 "검증 안 하는 경로" 쓰레기통으로 자라지 않게, 면제 근거가
+      §1-2 에 적혀 있는지를 별도 단언이 지킨다
+- [ ] AC6 — 프로덕션 코드 변경 0줄
+
+#### Rollback
+`aws-alb-setup.md` 와 테스트 파일 1개를 되돌리는 단일 커밋 revert. 프로덕션 코드가
+0줄이라 런타임 영향이 없다. 되돌리면 ALB 규칙 누락을 막는 장치만 사라진다.
+
+### ISSUE-71: SSE/WS 서버가 st.session_state 게이트 안에 있어 컨테이너 재시작 후 뷰어가 죽어 있다
+
+- Track: platform
+- Type: fix
+- UI: false
+- Manual: true
+- PRD-Ref: NFR-028, RL-006
+- Priority: P0
+- Estimate: 1d
+- Status: todo
+- Owner:
+- Branch:
+- GH-Issue: 158
+- PR:
+- Depends-On: none
+
+#### Goal
+컨테이너가 재시작되면 **사람 개입 없이** 뷰어 SSE(8766)와 오퍼레이터 WS(8765)가
+올라온다. ALB 타겟그룹이 저절로 healthy 로 복귀한다.
+
+#### 현재 문제
+
+`app.py:294-342` 에서 두 데몬 스레드가 **`st.session_state` 게이트** 안에서 기동한다.
+`st.session_state` 는 **브라우저 세션 단위**라, 아무도 `:8501` 을 열지 않으면 스크립트가
+실행되지 않고 두 서버가 뜨지 않는다. 즉 **컨테이너 재시작 후 오퍼레이터가 Streamlit 을
+열기 전까지 `/view/*`·`/stream/*`·`/stage/*`·`/ws` 가 전부 죽어 있다.** 재배포마다 반복된다.
+
+`aws-alb-setup.md` §6 이 이것을 "알려진 함정 — lazy-start" 로 적고 "근본: 부팅 시 기동으로
+전환 (별도 이슈)" 라고 했지만 **그 이슈가 만들어진 적이 없다.** 이 이슈가 그것이다.
+
+영향:
+1. **재배포마다 뷰어 다운타임.** 복구 조건이 "운영자가 브라우저를 연다" 라는 사람 동작이다
+2. **헬스체크가 거짓을 말하는 구간.** 컨테이너는 `docker ps` 상 healthy(8501 기준)인데
+   관객이 쓰는 두 포트는 죽어 있다
+3. **행사 당일 리스크.** OOM·호스트 리부트·`restart: unless-stopped` 발동 시 무인 복구 불가
+
+**부수적 비대칭**: `start_websocket_server` 는 프로세스 전역 싱글턴 가드가 있다
+(`_WS_SERVER_STARTED`, `websocket_handler.py:1113` — #84 의 수정). 그런데
+`run_sse_server`(`sse_broadcast.py:976-1007`) 에는 없다. 두 번째 세션이 스레드를 또 띄워
+8766 바인드에 실패하면 `except Exception` 이 로그만 찍고 삼킨다. 첫 스레드가 살아 있어
+무해하지만, `st.session_state["sse_thread"].is_alive()` 검사는 **세션 간에 아무 의미가
+없다** — 세션 B 는 세션 A 의 스레드 핸들을 못 본다.
+
+#### Scope (In/Out)
+- In:
+  - 두 서버를 Streamlit 세션과 무관하게 **프로세스 기동 시점**에 올린다. `st.session_state`
+    게이트 제거
+  - `run_sse_server` 에 프로세스 전역 싱글턴 가드 — `_WS_SERVER_STARTED` 와 대칭화
+  - 바인드 실패를 **삼키지 않는다.** 현재 `except Exception` 이 성공과 구별되지 않는다.
+    RL-006 은 "클라이언트에 내부 정보 노출 금지" 이지 "서버가 실패를 모르게 하라" 가 아니다
+  - 재시작 후 `:8501` 미접속 상태에서 `/health` 가 200 인 것을 확인하는 테스트
+- Out:
+  - `auth.get_cookie_manager()` 전역 싱글턴 (ISSUE-64 의 Out 항목과 동일 — 별건)
+  - Streamlit 을 떠나는 아키텍처 변경 (ASGI 단일 프로세스 등)
+  - `WS_PORT`/`SSE_PORT` 할당 방식 — #84 로 고정된 상태 유지
+
+#### Acceptance Criteria
+- [ ] AC1 — 재시작 직후 `:8501` 에 **아무 브라우저 접속 없이** `/health`(8766) 200,
+      `/ws`(8765) 426
+- [ ] AC2 — 브라우저 세션 2개를 열어도 SSE 스레드가 하나만 산다. 두 번째 시도가 조용한
+      바인드 실패로 끝나지 않는다
+- [ ] AC3 — 포트 바인드 실패가 로그 한 줄로 삼켜지지 않고 관측 가능한 신호가 된다
+- [ ] AC4 — `aws-alb-setup.md` §6 lazy-start 문단을 "해결됨" 으로 갱신, 헬스체크 간격
+      하향 권고가 불필요해졌음을 명시
+
+#### Rollback
+`app.py` 의 기동 위치와 `sse_broadcast.run_sse_server` 의 싱글턴 가드를 되돌리는 단일 커밋
+revert. 되돌리면 lazy-start 가 복귀하고 재배포마다 수동 복구가 다시 필요해진다. 와이어
+포맷·스키마·클라이언트 변경이 0건이라 실행 중 세션에 영향이 없다.
+
+
+### ISSUE-72: deploy-ec2.sh / deploy-alb.sh 가 깨진 채 남아 있다 — 실행하면 반쯤 죽은 컨테이너가 뜬다
+
+- Track: platform
+- Type: chore
+- UI: false
+- Manual: false
+- PRD-Ref: NFR-028
+- Priority: P1
+- Estimate: 0.5d
+- Status: todo
+- Owner:
+- Branch:
+- GH-Issue: 159
+- PR:
+- Depends-On: none
+
+#### Goal
+레포에 실행 가능한 배포 경로가 **`docker-compose` 하나만** 남고, 모든 문서가 그것만
+가리킨다.
+
+#### 현재 문제
+
+두 스크립트는 스프린트 이전 단일 포트 시절 산물이고, 지금 실행하면 **조용히 반쯤 죽은
+컨테이너**가 뜬다. 이름 때문에 `deploy-alb.sh` 가 `aws-alb-setup.md` 의 정답 스크립트처럼
+보이는데 아니다.
+
+| 문제 | 결과 |
+|---|---|
+| `-p 8501:8501` 만 매핑 (`deploy-ec2.sh:81`, `deploy-alb.sh:50`) | 뷰어 SSE(8766)·WS(8765) 도달 불가 |
+| `-e OPENAI_API_KEY=...` (`deploy-ec2.sh:82`, `deploy-alb.sh:51`) | 앱은 **`OPENAI_KEY`** 를 읽는다 (`services.py:26`) → 음성 인식 사망 |
+| AWS 자격 증명 미전달 | Bedrock 번역 사망 |
+| `VIEWER_BASE_URL` 미전달 | QR 이 `http://localhost:8766` 을 가리켜 뷰어 흰 화면 |
+| `REALTIME_MODEL` 전달 (`deploy-alb.sh:52`) | GA 전환 후 미사용 — 모델은 client_secret 발급 시 서버가 고정 |
+
+전부 **에러 없이** 실패한다. 컨테이너는 뜨고 `docker ps` 는 healthy 다.
+
+ISSUE-70 에서 `aws-alb-setup.md` §5 의 경고를 두 스크립트로 확장했지만, 경고는 완화책이고
+근본은 삭제다. **배포 경로가 둘 이상 존재하는 한 누군가는 틀린 쪽을 집는다 — 그리고 틀린
+쪽이 이름상 더 정답처럼 보인다.**
+
+#### Scope (In/Out)
+- In:
+  - `deploy-ec2.sh`, `deploy-alb.sh` **삭제**
+  - `quick-deploy.sh` 검증 — `OPENAI_KEY` 는 올바르게 쓰지만(`:36`, `:47`) 포트/AWS
+    자격증명 처리를 확인해 compose 를 호출하도록 정리하거나 함께 삭제
+  - `DEPLOYMENT.md` 정리 — `your-username` 플레이스홀더 잔존(`:48`, `:55`, `:89`, `:144`),
+    "포트 8501 개방" 만 적혀 3포트 구성과 어긋남, v1.0~v1.2 이력도 현재와 무관
+  - 배포 경로를 compose 하나로 수렴
+- Out:
+  - `docker-compose.yml` 자체 변경 (현재 올바름)
+  - ALB 리스너 규칙 (ISSUE-70), lazy-start (ISSUE-71)
+  - CI 에 배포 job 추가 — 더 큰 결정, 별건
+
+#### Acceptance Criteria
+- [ ] AC1 — 레포에 실행 가능한 배포 경로가 compose 하나만 남는다
+- [ ] AC2 — `DEPLOYMENT.md` 와 `aws-alb-setup.md` 가 같은 배포 명령을 가리키고
+      `your-username` 플레이스홀더가 없다
+- [ ] AC3 — 문서에 적힌 환경변수 이름이 코드가 실제로 읽는 이름과 일치한다
+      (`OPENAI_KEY`, `AWS_*`, `WS_PORT`, `SSE_PORT`, `VIEWER_BASE_URL`, `BRANDING_DIR`).
+      이것을 묶는 테스트를 둘지 판단 — ISSUE-70 의 라우트 파리티 가드와 같은 계열이다
+- [ ] AC4 — 프로덕션 코드 변경 0줄
+
+#### Rollback
+삭제한 스크립트 복원 + 문서 revert. 프로덕션 코드가 0줄이라 런타임 영향이 없다.
