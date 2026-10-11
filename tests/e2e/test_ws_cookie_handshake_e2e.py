@@ -130,19 +130,44 @@ def _require_session_cookie(page):
 class TestTheBrowserSendsTheSessionCookieOnTheWsHandshake:
     """후보 A 의 전제를 값으로 확인한다."""
 
-    def test_the_top_level_page_has_the_session_cookie(self, logged_in_page):
-        """선행 조건 — 로그인 후 `user_session` 쿠키가 실제로 설정된다.
+    def test_the_session_cookie_has_the_attributes_candidate_a_relies_on(
+        self, logged_in_page
+    ):
+        """쿠키가 있을 때, 후보 A 가 의존하는 **속성**을 고정한다.
 
-        이것이 거짓이면 아래 두 테스트의 실패는 "iframe 문제" 가 아니라
-        "애초에 쿠키가 없다" 는 뜻이므로, 원인을 가르기 위해 먼저 단언한다.
+        "쿠키가 존재한다" 만 단언하면 `_require_session_cookie` 의 skip 조건과
+        같은 말이 되어 아무것도 증명하지 않는다. 대신 후보 A 의 성립 근거인
+        속성들을 못 박는다 — 하나라도 바뀌면 WS 핸드셰이크에 쿠키가 실리지
+        않게 될 수 있다.
+
+        실측값(Chromium):
+            domain=localhost  path=/  sameSite=Strict  secure=False
+            value=1%3Ae2e_operator%3A...   ← percent-encoded
         """
-        cookies = logged_in_page.context.cookies()
-        names = [c["name"] for c in cookies]
-        assert "user_session" in names, (
-            f"로그인 후에도 user_session 쿠키가 없다. 설정된 쿠키: {names}. "
-            "CookieManager 가 쿠키를 심지 못했다면 ISSUE-55 의 전제가 아니라 "
-            "로그인 흐름 자체를 먼저 봐야 한다."
+        _require_session_cookie(logged_in_page)
+        cookie = next(
+            c for c in logged_in_page.context.cookies() if c["name"] == "user_session"
         )
+
+        assert cookie["path"] == "/", (
+            f"path 가 '/' 가 아니다: {cookie['path']!r} — WS 핸드셰이크 경로"
+            "(`/ws` 또는 `/`)에 쿠키가 실리지 않을 수 있다"
+        )
+        assert cookie["domain"].lstrip(".") == "localhost", (
+            f"domain 이 문서 호스트와 다르다: {cookie['domain']!r}. 쿠키는 포트는 "
+            "무시하지만 **호스트는 구분한다** — WS URL 의 호스트가 문서 호스트와 "
+            "같아야 한다"
+        )
+        # Secure 쿠키는 http 로컬에서 전송되지 않는다. 운영(https)에서는 무해하나
+        # 로컬 리허설이 조용히 깨지므로 값을 고정한다.
+        assert (
+            cookie["secure"] is False
+        ), "Secure 쿠키는 http 로컬에서 전송되지 않아 로컬 WS 인증이 깨진다"
+        # 서버측 `_verify_cookie` 는 리터럴 `:` 로 서명을 떼므로, 저장값이
+        # percent-encoded 라는 사실이 곧 `unquote` 가 필요한 이유다.
+        assert (
+            "%3A" in cookie["value"] or ":" in cookie["value"]
+        ), f"쿠키 값 형식이 예상과 다르다: {cookie['value'][:40]!r}"
 
     def test_a_websocket_opened_from_the_component_iframe_carries_the_cookie(
         self, logged_in_page
@@ -161,15 +186,21 @@ class TestTheBrowserSendsTheSessionCookieOnTheWsHandshake:
             )
 
         with _HandshakeRecorder() as rec:
+            # **호스트명을 부모에서 받아 넘긴다.** 컴포넌트 iframe 은
+            # `about:srcdoc` 이라 `location.hostname` 이 빈 문자열이고
+            # `location.origin` 이 `"null"`(opaque) 이다 — 실측. iframe 안에서
+            # 호스트를 유도하려 하면 `ws://:1234` 같은 깨진 URL 이 만들어져
+            # 연결이 실패하고, 그 실패가 "쿠키가 안 실린다" 로 오독된다.
+            host = logged_in_page.evaluate("() => location.hostname")
             frame.evaluate(
-                """(port) => {
+                """([host, port]) => {
                     try {
-                        new WebSocket(`ws://${location.hostname}:${port}`);
+                        new WebSocket(`ws://${host}:${port}`);
                     } catch (e) {
                         window.__wsError = String(e);
                     }
                 }""",
-                rec.port,
+                [host, rec.port],
             )
             assert rec.connected.wait(timeout=10), (
                 "iframe 에서 연 WebSocket 이 서버에 도달하지 않았다 — "
