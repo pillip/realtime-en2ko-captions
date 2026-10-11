@@ -39,7 +39,12 @@ from tests.e2e.conftest import (
     TEST_OPERATOR_USERNAME,
     TEST_PASSWORD,
     TEST_USERNAME,
+    open_page_as,
+    sidebar_account,
 )
+
+# ISSUE-64: 로컬 사본이던 계정 판정기를 공유 헬퍼로 대체한다 (RL-001).
+_sidebar_username = sidebar_account
 
 pytestmark = pytest.mark.e2e
 
@@ -69,81 +74,28 @@ _PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
 # ---------------------------------------------------------------------------
 # 로그인 / 계정 전환
 # ---------------------------------------------------------------------------
-def _sidebar_username(page):
-    """사이드바에 표시된 현재 로그인 계정. 로그인 전이면 ``None``.
-
-    ``text_content`` 로 읽어 사이드바가 접혀 있어도 값을 얻는다.
-    """
-    sidebar = page.locator(_SIDEBAR)
-    if sidebar.count() == 0:
-        return None
-    match = _SIDEBAR_USERNAME_RE.search(sidebar.first.text_content() or "")
-    return match.group(1) if match else None
-
-
-def _login_form_present(page):
-    """로그인 폼이 떠 있는지 확인 (Streamlit 렌더 지연을 한 번 더 기다린다)."""
-    username_input = page.locator('input[aria-label="사용자명"]')
-    if username_input.count() > 0:
-        return True
-    page.wait_for_timeout(3000)
-    return username_input.count() > 0
-
-
-def _submit_login(page, username):
-    """로그인 폼을 채우고 제출한다."""
-    page.locator('input[aria-label="사용자명"]').fill(username)
-    password_input = page.locator('input[aria-label="비밀번호"]')
-    password_input.wait_for(state="visible", timeout=5000)
-    password_input.fill(TEST_PASSWORD)
-    page.locator('button:has-text("로그인")').click()
-
-
-def _wait_for_sidebar_username(page, username, attempts=40):
-    """사이드바 계정이 ``username`` 이 될 때까지 폴링 (최대 20초)."""
-    for _ in range(attempts):
-        if _sidebar_username(page) == username:
-            return True
-        page.wait_for_timeout(500)
-    return False
-
-
-def _logout(page):
-    """사이드바 로그아웃 후 로그인 폼이 다시 뜰 때까지 대기."""
-    page.locator(f'{_SIDEBAR} button:has-text("로그아웃")').first.click()
-    page.wait_for_timeout(2000)
-
-
+# ---------------------------------------------------------------------------
+# ISSUE-64: 로그인 헬퍼 6개가 여기 있었고, `tests/e2e/conftest.py` 로 승격됐다.
+#
+# 이 파일은 전역 `CookieManager` 문제를 **로컬에서 이미 해결**해 두었는데
+# (`clear_cookies` → 계정 확인 → 다르면 로그아웃 후 재로그인), `conftest` 의
+# `logged_in_page` 는 그 수정을 받지 못한 채 "로그인 폼이 보이면 로그인" 에
+# 머물러 있었다. 한쪽만 고쳐진 사본이 둘 있으면 고쳐지지 않은 쪽에서 플레이키가
+# 계속 난다 — 정확히 RL-001 이다. 이제 구현은 conftest 한 곳뿐이다.
+# ---------------------------------------------------------------------------
 def _open_dashboard_as(page, base_url, username, *, clear_cookies=True):
     """관리자 대시보드를 **정확히** ``username`` 계정으로 연다.
 
-    CookieManager 가 프로세스 전역 싱글톤이라(auth.get_cookie_manager) 새
-    브라우저 컨텍스트에서도 직전 계정 세션이 복원될 수 있다. "로그인 폼이
-    보이면 로그인" 만으로는 다른 역할로 조용히 실행돼 역할 분기 단언이
-    무의미해지므로(RL-002/RL-004), 실제로 어느 계정으로 들어왔는지 확인하고
-    다르면 로그아웃 후 다시 로그인한다.
-
-    ``clear_cookies=False`` 는 새로고침(같은 브라우저 세션 유지) 용도다.
+    구현은 `conftest.open_page_as` 다 (ISSUE-64, RL-001). 이 래퍼는 대시보드
+    경로를 붙이는 것만 한다.
     """
-    if clear_cookies:
-        page.context.clear_cookies()
-    page.goto(f"{base_url}{_DASHBOARD_PATH}", wait_until="domcontentloaded")
-    # Streamlit은 WebSocket을 사용하므로 networkidle 대신 domcontentloaded 사용
-    page.wait_for_timeout(3000)
-
-    for _ in range(2):
-        current = _sidebar_username(page)
-        if current == username:
-            break
-        if current is not None:
-            _logout(page)
-        if _login_form_present(page):
-            _submit_login(page, username)
-            _wait_for_sidebar_username(page, username)
-
-    landed = _sidebar_username(page)
-    assert landed == username, f"의도한 계정으로 로그인하지 못했다 (현재={landed!r})"
-    return page
+    return open_page_as(
+        page,
+        f"{base_url}{_DASHBOARD_PATH}",
+        username,
+        TEST_PASSWORD,
+        clear_cookies=clear_cookies,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -247,11 +199,40 @@ def operator_page(page, streamlit_server, stage_room):
 # 공통 로케이터 헬퍼
 # ---------------------------------------------------------------------------
 def _open_room_tab(page, label):
-    """룸 관리 탭을 선택한다 — 탭을 고르기 전에는 패널이 보이지 않는다."""
+    """룸 관리 탭을 선택한다 — 탭을 고르기 전에는 패널이 보이지 않는다.
+
+    ISSUE-64: 클릭 뒤 고정 2초 sleep 을 쓰던 자리다. Streamlit 이 느린 실행에서
+    패널을 그 안에 못 그리면 뒤따르는 단언이 **아직 시드되지 않은** 위젯을 읽는다.
+    탭 패널이 실제로 나타날 때까지 기다리는 상태 대기로 바꿨다.
+    """
     tab = page.get_by_role("tab", name=label)
     tab.wait_for(state="visible", timeout=20000)
     tab.click()
+    # NOTE: 여기서 "탭 패널이 보일 때까지" 로 바꿔 보았으나
+    # `[data-baseweb="tab-panel"]` 가 이 Streamlit 버전의 실제 마크업과 맞지
+    # 않아 5건이 타임아웃했다(실측). 탭 전환 자체는 아래 각 단언의
+    # `wait_for(state="visible")` 가 이미 기다리므로, 짧은 정착 대기만 남긴다.
+    # 잔여 플레이키의 실제 원인은 "보인다 ≠ 시드됐다" 였고 그쪽은
+    # `_wait_for_input_value` 로 고쳤다.
     page.wait_for_timeout(2000)
+
+
+def _wait_for_input_value(locator, expected, timeout_ms=20000):
+    """입력란 값이 ``expected`` 가 될 때까지 폴링한다 (ISSUE-64).
+
+    `wait_for(state="visible")` 는 **보인다**만 보장하고 Streamlit 이 DB 값으로
+    위젯을 다시 채우는 것(`_seed_stage_form_state`)까지 기다려 주지 않는다.
+    보인 직후 `input_value()` 를 한 번 읽으면 빈 값이나 직전 값을 읽을 수 있고,
+    그것이 이 파일의 잔여 플레이키(3회 중 1회)의 원인이었다.
+    """
+    deadline = time.time() + timeout_ms / 1000
+    last = None
+    while time.time() < deadline:
+        last = locator.input_value()
+        if last == expected:
+            return True, last
+        time.sleep(0.25)
+    return False, last
 
 
 def _stage_section(page):
@@ -350,7 +331,11 @@ class TestStageConfigVisibleToAdmin:
 
         restored = admin_page.locator('input[aria-label="행사 타이틀"]')
         restored.wait_for(state="visible", timeout=20000)
-        assert restored.input_value() == _EVENT_TITLE
+        ok, observed = _wait_for_input_value(restored, _EVENT_TITLE)
+        assert ok, (
+            f"새로고침 후 폼이 저장값으로 복원되지 않았다 — 관측값={observed!r}, "
+            f"기대값={_EVENT_TITLE!r}"
+        )
 
 
 def _asset_exists(filename):
