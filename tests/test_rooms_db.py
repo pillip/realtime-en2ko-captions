@@ -22,9 +22,11 @@ import json
 import sqlite3
 import sys
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
+
+from tests.ws_harness import make_websocket
 
 # websocket_handler -> auth -> streamlit 의존성 mock
 if "streamlit" not in sys.modules:
@@ -514,10 +516,10 @@ class TestWebSocketAuthClosedRoom:
     """AC: closed 상태의 룸은 WebSocket 접속이 거부된다 (generic message)."""
 
     def _make_websocket(self, msg):
-        ws = AsyncMock()
-        ws.recv = AsyncMock(return_value=json.dumps(msg))
-        ws.send = AsyncMock()
-        return ws
+        # ISSUE-55: 쿠키를 붙이는 자리는 tests/ws_harness.py 한 곳이다 (RL-001).
+        # 유효 서명 쿠키가 기본으로 붙으므로 이 테스트는 쿠키 게이트를 통과해
+        # 원래 검증 대상인 **closed 룸 거절**(RL-006)에 도달한다.
+        return make_websocket(msg)
 
     def _sent(self, ws):
         return [json.loads(c.args[0]) for c in ws.send.call_args_list]
