@@ -285,19 +285,35 @@ def _logout(page) -> None:
     )
 
 
-def ensure_logged_in_as(page, username: str, password: str) -> None:
-    """`username` 으로 **검증된** 세션을 만든다 — 쿠키까지 확인한다.
+def ensure_logged_in_as(
+    page, username: str, password: str, *, require_cookie: bool = False
+) -> None:
+    """`username` 으로 **검증된** 세션을 만든다.
 
-    서버가 "이미 인증됨" 이라고 말하더라도, 계정이 다르거나 이 브라우저
-    컨텍스트에 `user_session` 쿠키가 없으면 로그아웃하고 실제로 로그인한다.
-    전역 `CookieManager` 싱글턴이 있는 채로도 결정적이게 만드는 지점이다.
+    서버가 "이미 인증됨" 이라고 말하더라도 계정이 다르면 로그아웃하고 실제로
+    로그인한다. 전역 `CookieManager` 싱글턴이 있는 채로도 **신원이** 결정적이게
+    만드는 지점이다.
+
+    `require_cookie=True` 면 이 브라우저 컨텍스트에 `user_session` 쿠키가
+    실제로 있을 것까지 요구하고, 없으면 로그아웃 후 재로그인해 쿠키를 심는다.
+
+    **기본값이 `False` 인 이유 — CI 가 가르쳐 줬다.** 처음엔 쿠키 조건을 모든
+    테스트에 걸었다. 전역 싱글턴 때문에 새 브라우저 컨텍스트에는 쿠키가 없으므로
+    결과적으로 **198개 테스트 전부가 매번 로그아웃 → 재로그인**을 했다. 로컬
+    3회 연속 198 passed 였지만 GitHub 러너에서는 그 리런 폭풍이 컴포넌트 iframe
+    마운트를 불안정하게 만들어, 스크립트 준비 대기가 45초에도 끝나지 않는
+    fixture error 가 났다 (상한을 올려도 줄지 않았다 — 느림이 아니라 churn 이
+    원인이다).
+
+    쿠키가 **반드시** 필요한 것은 ISSUE-55 의 전제 실측 3건뿐이다. 그 3건만
+    `freshly_logged_in_page` 로 비용을 치르고, 나머지는 신원 검증까지만 한다.
     """
     _wait_for_app_shell(page)
 
     needs_login = (
         page.locator('input[aria-label="사용자명"]').count() > 0
         or _sidebar_account(page) != username
-        or not _has_session_cookie(page)
+        or (require_cookie and not _has_session_cookie(page))
     )
 
     if needs_login:
@@ -418,6 +434,29 @@ def logged_in_page(page, streamlit_server):
 
     # 세션 누수 제거 — 다음 테스트가 이 세션을 물려받지 않게 한다. 실패해도
     # 테스트 결과를 덮지 않도록 조용히 넘긴다.
+    with contextlib.suppress(Exception):
+        _logout(page)
+
+
+@pytest.fixture()
+def freshly_logged_in_page(page, streamlit_server):
+    """`user_session` 쿠키가 **이 브라우저 컨텍스트에 실제로 있는** 세션.
+
+    ISSUE-55 의 전제 실측(WS 핸드셰이크에 쿠키가 실리는가)만 이 fixture 를
+    쓴다. 전역 `CookieManager` 싱글턴 때문에 쿠키를 보장하려면 로그아웃 후
+    실제 로그인이 필요하고, 그 비용(Streamlit 리런 왕복)을 **198개 전부**에
+    물리면 CI 에서 컴포넌트 마운트가 불안정해진다 — 실측으로 확인했다.
+    그래서 필요한 소수만 치른다.
+    """
+    page.goto(streamlit_server, wait_until="domcontentloaded")
+    ensure_logged_in_as(
+        page, TEST_OPERATOR_USERNAME, TEST_PASSWORD, require_cookie=True
+    )
+    page.locator("iframe").first.wait_for(state="attached", timeout=_UI_TIMEOUT_MS)
+    _wait_for_component_script(page)
+
+    yield page
+
     with contextlib.suppress(Exception):
         _logout(page)
 
