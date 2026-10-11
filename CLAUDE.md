@@ -75,6 +75,23 @@ This mirrors the global rules §6, which names `black` as the formatter and
 half-finished, it is intentional. `tests/test_precommit_formatter_policy.py`
 guards this and carries the conflicting layout as a live canary.
 
+### Large-file hook limit — 1 MB, not the default 500 KB
+
+`check-added-large-files` runs with `--maxkb=1024`. The default 500 KB rejects
+`issues.md`, a deliberately large living document (502 KB / 69 issue blocks as of
+2026-10-11) that is the project's issue SSOT and belongs in the repo. The raised
+limit keeps the hook doing its real job — blocking a stray SQLite file,
+screenshot, or binary — while letting the SSOT through.
+
+The proper fix is to split shipped issues into an archive, mirroring
+`docs/sprint_state_archive_2026-08-31.md`: 54 of 69 blocks are `shipped`. Once
+that happens the limit can come back down. Don't raise it further instead.
+
+Related: `.gitignore` now ignores `data/` wholesale. It previously listed only
+`data/app.db` and `data/*.db`, which missed `data/app.db.bak.*` (no `.db` suffix)
+and `data/branding/<room_id>/*` (real customer logos) — both were committable.
+`data/` is the docker-compose runtime volume; nothing under it belongs in git.
+
 ## Essential Environment Variables
 
 - `AWS_ACCESS_KEY_ID`: Required for AWS service authentication (server-side only)
