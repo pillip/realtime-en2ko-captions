@@ -77,6 +77,13 @@ guards this and carries the conflicting layout as a live canary.
 
 ## Essential Environment Variables
 
+- `SESSION_SECRET`: **Required in production** (ISSUE-55). HMAC key that signs the
+  `user_session` cookie (`auth._sign_cookie`). Since ISSUE-55 the WebSocket handshake
+  authenticates against this *same* signed cookie, so leaving it unset no longer
+  means merely "sessions don't survive a restart" — it means **captions cannot be
+  broadcast after a restart** until an operator logs in again, because the
+  auto-generated secret differs per process and invalidates every cookie issued
+  before it. Generate with `python -c "import secrets; print(secrets.token_hex(32))"`.
 - `AWS_ACCESS_KEY_ID`: Required for AWS service authentication (server-side only)
 - `AWS_SECRET_ACCESS_KEY`: Required for AWS service authentication (server-side only)
 - `AWS_REGION`: Optional, defaults to `ap-northeast-2` (Seoul). Bedrock translation uses `global.` cross-region inference profiles (translation.py), which are callable from any commercial region — Seoul has no `apac.` profile for the Claude 4.5 generation, so the `global.` prefix is required there.

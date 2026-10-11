@@ -28,7 +28,12 @@ def _get_session_secret() -> str:
         os.environ["SESSION_SECRET"] = secret
         warnings.warn(
             "SESSION_SECRET not set. Auto-generated a random secret. "
-            "Sessions will not survive server restarts.",
+            "Sessions will not survive server restarts. "
+            "Since ISSUE-55 the WebSocket handshake is authenticated with this "
+            "same signed cookie, so an unset secret now means captions cannot "
+            "be broadcast after a restart (not merely a re-login) — the "
+            "operator must log in again before any session can start. "
+            "Set SESSION_SECRET in production.",
             stacklevel=2,
         )
     return secret
