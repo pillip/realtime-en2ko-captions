@@ -4,16 +4,18 @@ OpenAI Realtime API 통합, 번역 처리, 사용량 추적
 """
 
 import asyncio
+import http.cookies
 import json
 import math
 import os
 import socket
 import time
+import urllib.parse
 
 import boto3
 import websockets
 
-from auth import check_usage_limit, update_user_session
+from auth import _verify_cookie, check_usage_limit, update_user_session
 from database import get_usage_log_model, get_user_model
 from room_manager import DEFAULT_ROOM_ID, RoomManager
 from services import (
@@ -215,8 +217,82 @@ async def _record_session_languages(room_id, language_settings):
     await _publish_control(room_id, primary_lang=output_lang)
 
 
+def _session_user_id_from_handshake(websocket):
+    """핸드셰이크 쿠키의 HMAC 서명을 검증해 user_id 문자열을 돌려준다 (ISSUE-55).
+
+    쿠키가 없거나 서명이 깨졌거나 형식이 다르면 ``None``. **호출자는 ``None`` 을
+    즉시 거절로 다뤄야 한다** — 이 함수는 "모른다" 와 "위조" 를 구분하지 않는다.
+    구분해서 다른 응답을 주면 그 자체가 열거 오라클이 된다 (RL-006).
+
+    브라우저는 WS 핸드셰이크에도 쿠키를 싣고, **쿠키는 포트를 구분하지 않으므로**
+    ``:8501`` 에서 ``CookieManager`` 가 ``document.cookie`` 로 설정한
+    ``user_session`` 이 ``ws://host:8765`` 로도 간다. 배포 환경에서는 ALB 가 같은
+    호스트의 ``/ws`` 로 라우팅하므로 동일하다.
+
+    ``websockets`` 15.0.1 주의: top-level ``serve`` 는
+    ``websockets.asyncio.server.serve`` 로 매핑되고(``websockets/__init__.py:153``)
+    핸들러 인자는 ``ServerConnection`` 이다. 핸드셰이크 헤더는
+    ``connection.request.headers`` 다 — legacy ``WebSocketServerProtocol`` 의
+    ``.request_headers`` 와 이름이 다르니 예제를 그대로 옮기면 ``AttributeError``
+    가 난다.
+
+    서명 검증은 ``auth._verify_cookie`` 를 **그대로** 쓴다. 사본을 만들면
+    RL-001 이 경고한 상황이 재현된다 — 이미 ``tests/test_hmac_cookie.py`` 가
+    7개 케이스로 검증해 둔 함수다. 모듈 경계를 넘는 private 이름이지만, 같은
+    서명 체계를 두 군데에 적는 것보다 이쪽이 안전하다.
+    """
+    try:
+        raw = websocket.request.headers.get("Cookie")
+    except (AttributeError, TypeError):
+        # 핸드셰이크 정보가 없는 연결(테스트 하네스 포함)은 인증 불가로 둔다.
+        return None
+    if not raw or not isinstance(raw, str):
+        return None
+
+    # 직접 split 하지 않는다 — user_session 값에 `:` 가 들어 있어 손으로 자르면
+    # 반드시 틀린다. 형식: user_id:username:token:hmac
+    try:
+        jar = http.cookies.SimpleCookie()
+        jar.load(raw)
+    except http.cookies.CookieError:
+        return None
+
+    morsel = jar.get("user_session")
+    if morsel is None:
+        return None
+
+    # **percent-decoding 이 필수다.** 쿠키를 심는 쪽은
+    # `extra_streamlit_components.CookieManager` 의 JS 이고, 그 구현이
+    # `encodeURIComponent` 를 거치므로 브라우저 저장값은 구분자 `:` 가 `%3A` 로
+    # 바뀐 형태다. 실측값(e2e):
+    #   user_session=1%3Ae2e_operator%3A<token>%3A<hmac>
+    # `auth._verify_cookie` 는 `rsplit(":", 1)` 로 서명을 떼므로, 디코드하지
+    # 않으면 리터럴 `:` 가 0개여서 **모든 실제 오퍼레이터가 거절된다.**
+    # `SimpleCookie` 는 quoted-string 만 풀고 percent-encoding 은 건드리지 않는다.
+    #
+    # 서버가 직접 만든 값(리터럴 `:`)에 `unquote` 를 걸어도 무해하다 — `%` 가
+    # 없으면 그대로다. 그래서 두 형태를 모두 받아들인다.
+    verified = _verify_cookie(urllib.parse.unquote(morsel.value))
+    if verified is None:
+        return None
+    user_id, _username, _token = verified
+    return user_id
+
+
 async def _authenticate_client(websocket):
     """WebSocket 클라이언트 인증 처리
+
+    인증은 **서버가 이미 발급한 비밀**(HMAC 서명 세션 쿠키)을 제시할 때만
+    성립한다 (ISSUE-55). auth 프레임의 ``user`` 블록은 교차 확인용이고 신원의
+    근거가 아니다.
+
+    ISSUE-55 이전에는 ① id 가 ``users`` 에 존재 ② ``is_active`` ③ ``username``
+    일치 세 가지만 봤다 — 비밀번호도 토큰도 쿠키도 Origin 도 검사하지 않았으므로
+    **사용자명 하나만 알면 프레임 하나로 인증**됐다. 서버는 ``0.0.0.0:8765`` 에
+    바인딩되고 배포 환경에서 ALB 가 ``/ws`` 를 공개하므로 원격 악용이 가능했다.
+
+    검증 순서가 중요하다 — **쿠키 검증이 DB 조회보다 먼저다.** 인증되지 않은
+    소켓이 ``users`` 테이블을 때리는 경로를 남기지 않는다.
 
     Validates claimed identity against the database (RL-002).
     Never trusts client-supplied role — always uses DB record.
@@ -226,6 +302,20 @@ async def _authenticate_client(websocket):
         first_message = await asyncio.wait_for(websocket.recv(), timeout=5.0)
         data = json.loads(first_message)
         if data.get("type") == "auth":
+            # ISSUE-55: 신원의 근거는 서버가 발급한 서명 쿠키다. DB 조회보다
+            # 먼저 검증해, 인증되지 않은 소켓이 users 테이블을 때리지 못하게
+            # 한다. 실패 문구는 기존 것을 재사용한다 — "쿠키 없음" 전용 문구를
+            # 새로 만들면 그 자체가 열거 오라클이 된다 (RL-006).
+            session_user_id = _session_user_id_from_handshake(websocket)
+            if session_user_id is None:
+                print("[Auth] 인증 실패: 유효한 세션 쿠키 없음")
+                await websocket.send(
+                    json.dumps(
+                        {"type": "auth_error", "message": "인증에 실패했습니다."}
+                    )
+                )
+                return None
+
             user_info = data.get("user")
             if not user_info or "id" not in user_info:
                 print("[Auth] 인증 실패: 사용자 정보 누락")
@@ -235,6 +325,22 @@ async def _authenticate_client(websocket):
                             "type": "auth_error",
                             "message": "사용자 정보가 누락되었습니다.",
                         }
+                    )
+                )
+                return None
+
+            # ISSUE-55: 쿠키가 말하는 신원과 프레임이 주장하는 신원이 같아야
+            # 한다. 쿠키는 문자열 user_id 를 담고 프레임은 JSON number 를 담으므로
+            # str() 로 정규화해 비교한다. 여기서도 DB 조회 **전**에 거절해,
+            # 남의 id 를 주장하는 소켓이 users 테이블에 닿지 않게 한다.
+            if str(user_info["id"]) != session_user_id:
+                print(
+                    f"[Auth] 인증 실패: 세션 쿠키와 주장 신원 불일치 "
+                    f"(cookie={session_user_id}, claimed={user_info['id']})"
+                )
+                await websocket.send(
+                    json.dumps(
+                        {"type": "auth_error", "message": "인증에 실패했습니다."}
                     )
                 )
                 return None
