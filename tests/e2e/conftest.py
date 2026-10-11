@@ -213,6 +213,12 @@ _ACCOUNT_RE = re.compile(r"아이디\s*[:：]\s*([A-Za-z0-9._@-]+)")
 # 대신 이 값을 상한으로 두고 **관측 가능한 상태**를 기다린다.
 _UI_TIMEOUT_MS = 20000
 
+# 컴포넌트 iframe 의 **인라인 스크립트 평가**까지의 상한. UI 상한보다 넉넉한
+# 이유는 이 대기가 "Streamlit 리런 → 컴포넌트 마운트 → 1400줄 인라인 스크립트
+# 평가" 전체 뒤에 오기 때문이다. GitHub 러너에서 20초가 한 번 부족했다
+# (`updateFsFont 미정의` fixture error 1건). 로컬에서는 재현되지 않는다.
+_COMPONENT_READY_TIMEOUT_MS = 45000
+
 
 def sidebar_account(page) -> str | None:
     """사이드바가 표시하는 현재 계정명 (판정 불가면 None).
@@ -346,7 +352,7 @@ def _wait_for_component_script(page) -> None:
     origin 이 `"null"`(opaque) 이라 접근이 차단된다. Playwright 의 Frame API 로
     프레임 자신의 컨텍스트에서 확인한다.
     """
-    deadline = time.time() + _UI_TIMEOUT_MS / 1000
+    deadline = time.time() + _COMPONENT_READY_TIMEOUT_MS / 1000
     while time.time() < deadline:
         for frame in page.frames:
             if frame == page.main_frame:
