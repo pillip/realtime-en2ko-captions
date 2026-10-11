@@ -323,6 +323,51 @@ def ensure_logged_in_as(page, username: str, password: str) -> None:
     )
 
 
+def _wait_for_component_script(page) -> None:
+    """컴포넌트 iframe 의 **인라인 스크립트가 평가될 때까지** 기다린다.
+
+    `iframe` 이 `attached` 인 것만으로는 부족하다. `components/webrtc.html` 은
+    `#viewer` 를 `:812` 에, `function updateFsFont` 를 `:1380` 에 두므로 DOM 이
+    붙은 시점에 스크립트가 아직 안 돌았을 수 있다.
+
+    **이 대기는 ISSUE-64 가 만든 회귀를 막는다.** 매 테스트에서 로그아웃 →
+    재로그인을 하게 되면서 컴포넌트 iframe 이 **새로 마운트**되는데, 기존
+    fixture 는 `attached` 까지만 기다렸다. CI(로컬보다 느림)에서
+    `test_fullscreen_e2e.py` 5건이 `ReferenceError: updateFsFont is not defined`
+    와 `Frame was detached` 로 깨졌다 — 로컬 3회 실행에서는 재현되지 않았고
+    CI 가 잡았다.
+
+    준비 신호로 `updateFsFont` 를 쓰는 이유는 그것이 **스크립트의 끝부분**에
+    선언된 함수여서, 존재하면 인라인 스크립트가 끝까지 평가됐다는 뜻이기
+    때문이다. 함수 선언은 호이스팅되므로 선언 위치까지 평가가 도달하면 바로
+    보인다.
+
+    부모 JS 로 `contentWindow` 를 들여다볼 수는 **없다** — srcdoc 프레임의
+    origin 이 `"null"`(opaque) 이라 접근이 차단된다. Playwright 의 Frame API 로
+    프레임 자신의 컨텍스트에서 확인한다.
+    """
+    deadline = time.time() + _UI_TIMEOUT_MS / 1000
+    while time.time() < deadline:
+        for frame in page.frames:
+            if frame == page.main_frame:
+                continue
+            try:
+                ready = frame.evaluate(
+                    "() => typeof updateFsFont === 'function'",
+                )
+            except Exception:
+                # 프레임이 교체되는 중이면 evaluate 가 던진다 — 다시 돈다.
+                continue
+            if ready:
+                return
+        time.sleep(0.1)
+
+    raise AssertionError(
+        "컴포넌트 iframe 의 스크립트가 준비되지 않았다 (updateFsFont 미정의). "
+        "오퍼레이터 화면이 렌더되지 않았거나 스크립트가 깨졌다."
+    )
+
+
 def open_page_as(
     page,
     url: str,
@@ -361,6 +406,7 @@ def logged_in_page(page, streamlit_server):
 
     # 메인 페이지 로드 대기 (iframe이 나타날 때까지)
     page.locator("iframe").first.wait_for(state="attached", timeout=_UI_TIMEOUT_MS)
+    _wait_for_component_script(page)
 
     yield page
 
