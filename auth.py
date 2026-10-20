@@ -27,12 +27,12 @@ def _get_session_secret() -> str:
         secret = secrets.token_hex(32)
         os.environ["SESSION_SECRET"] = secret
         warnings.warn(
-            "SESSION_SECRET not set. Auto-generated a random secret. "
-            "Sessions will not survive server restarts. "
-            "Since ISSUE-55 the WebSocket handshake is authenticated with this "
-            "same signed cookie, so an unset secret now means captions cannot "
-            "be broadcast after a restart (not merely a re-login) — the "
-            "operator must log in again before any session can start. "
+            "SESSION_SECRET not set. Auto-generated a random secret, shared "
+            "process-wide (Streamlit, WebSocket and SSE threads all read the "
+            "same os.environ), so the current run works normally. What breaks "
+            "is restarts: every cookie issued before one becomes invalid, so "
+            "the operator must log in again before a session can be started — "
+            "and since ISSUE-55 that re-login also gates WebSocket auth. "
             "Set SESSION_SECRET in production.",
             stacklevel=2,
         )
