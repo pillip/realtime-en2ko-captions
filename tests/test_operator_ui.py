@@ -570,3 +570,83 @@ class TestBootstrapPayloadKeySetIsFrozen:
             room_id=None,
         )
         assert set(payload) == _BOOTSTRAP_KEYS_AS_OF_ISSUE_47
+
+
+class TestIssue55DoesNotTouchTheBootstrapPayload:
+    """ISSUE-55 가 후보 A(핸드셰이크 쿠키)를 채택했으므로 BOOT 는 바뀌지 않는다.
+
+    후보 B(서버 발행 토큰)를 택했다면 토큰이 `{{BOOTSTRAP_JSON}}` 에 들어가고,
+    그 문자열이 바뀌는 순간 Streamlit 컴포넌트 iframe 의 `srcdoc` 이 교체돼
+    문서가 리마운트된다 — `RTCPeerConnection`·마이크 스트림·WS·자막 스크롤백이
+    전부 사라진다 (RL-028). 후보 A 는 그 경로를 아예 타지 않는다.
+
+    **집합 상등으로 단언한다.** 기존
+    `test_existing_fields_are_untouched_by_the_new_kwargs` 는 고정 키 튜플을
+    순회하므로 키가 **늘어도** 통과한다 — 증가를 잡지 못한다 (RL-004).
+    """
+
+    # ISSUE-47 이후 ~ ISSUE-55 시점의 BOOT 키 집합. 여기에 키를 추가하려면
+    # RL-028(iframe 리마운트) 영향을 먼저 판정해야 한다.
+    EXPECTED_KEYS = frozenset(
+        {
+            "action",
+            "openai_session",
+            "service",
+            "websocket_port",
+            "user_info",
+            "room_id",
+            "room_name",
+            "view_url",
+            "qr_data_url",
+            "display_mode",
+            "stage_url",
+        }
+    )
+
+    @staticmethod
+    def _payload(**overrides):
+        from operator_ui import build_bootstrap_payload
+
+        base = {
+            "action": "start",
+            "openai_session": {"client_secret": "ek_x"},
+            "websocket_port": 8765,
+            "user_info": {"id": 7, "username": "op7"},
+            "room_id": "r1",
+            "room_name": "A홀",
+        }
+        base.update(overrides)
+        return build_bootstrap_payload(**base)
+
+    def test_the_bootstrap_key_set_is_exactly_what_it_was(self):
+        """키 집합이 정확히 같다 — 추가도 삭제도 0건."""
+        actual = frozenset(self._payload())
+        assert actual == self.EXPECTED_KEYS, (
+            f"BOOT 키 집합이 바뀌었다. 추가됨: {sorted(actual - self.EXPECTED_KEYS)}, "
+            f"사라짐: {sorted(self.EXPECTED_KEYS - actual)}. 키를 늘리려면 RL-028 "
+            "(컴포넌트 iframe 리마운트) 영향을 먼저 판정할 것."
+        )
+
+    def test_the_key_set_does_not_depend_on_the_display_mode(self):
+        """무대 모드에서도 키 집합이 같다."""
+        caption = frozenset(self._payload())
+        stage = frozenset(
+            self._payload(display_mode="stage", stage_url="http://h/stage/r1")
+        )
+        assert caption == stage == self.EXPECTED_KEYS
+
+    def test_repeated_calls_render_byte_identical_json(self):
+        """같은 입력으로 두 번 부르면 `json.dumps` 결과가 **동일 문자열**이다.
+
+        후보 B 였다면 매 rerun 마다 새 토큰이 생기지 않는지를 이 단언이 지켰다.
+        후보 A 에서도 유지한다 — BOOT 에 비결정적 값이 새로 들어오는 것을 막는
+        범용 가드다.
+        """
+        import json
+
+        first = json.dumps(self._payload(), sort_keys=True, ensure_ascii=False)
+        second = json.dumps(self._payload(), sort_keys=True, ensure_ascii=False)
+        assert first == second, (
+            "같은 입력에 대해 BOOT 가 두 번 다른 문자열을 냈다 — 비결정적 값이 "
+            "들어 있으면 매 rerun 이 컴포넌트 iframe 을 리마운트한다 (RL-028)"
+        )

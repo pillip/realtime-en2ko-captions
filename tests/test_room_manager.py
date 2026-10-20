@@ -17,6 +17,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests.ws_harness import make_websocket
+
 # websocket_handler -> auth -> streamlit / extra_streamlit_components
 # 시스템 Python에 해당 패키지가 없을 수 있으므로 미리 mock 등록
 if "streamlit" not in sys.modules:
@@ -313,10 +315,9 @@ class TestAuthRoomRouting:
                 "language_settings": {"input_lang": "en", "output_lang": "ko"},
             }
         )
-        ws = AsyncMock()
+        # ISSUE-55: 유효 서명 쿠키를 공유 하네스가 붙인다 (RL-001).
+        ws = make_websocket(json.loads(auth_msg))
         ws.remote_address = ("127.0.0.1", 1)
-        ws.recv = AsyncMock(return_value=auth_msg)
-        ws.send = AsyncMock()
 
         with patch("websocket_handler.get_user_model", return_value=db_with_user):
             with patch("websocket_handler._room_manager", rm):
@@ -346,10 +347,9 @@ class TestAuthRoomRouting:
                 },
             }
         )
-        ws = AsyncMock()
+        # ISSUE-55: 유효 서명 쿠키를 공유 하네스가 붙인다 (RL-001).
+        ws = make_websocket(json.loads(auth_msg))
         ws.remote_address = ("127.0.0.1", 2)
-        ws.recv = AsyncMock(return_value=auth_msg)
-        ws.send = AsyncMock()
 
         with patch("websocket_handler.get_user_model", return_value=db_with_user):
             with patch("websocket_handler._room_manager", rm):
@@ -380,10 +380,9 @@ class TestAuthRoomRouting:
                 "room_id": "non-existent-room",
             }
         )
-        ws = AsyncMock()
+        # ISSUE-55: 유효 서명 쿠키를 공유 하네스가 붙인다 (RL-001).
+        ws = make_websocket(json.loads(auth_msg))
         ws.remote_address = ("127.0.0.1", 3)
-        ws.recv = AsyncMock(return_value=auth_msg)
-        ws.send = AsyncMock()
 
         with patch("websocket_handler.get_user_model", return_value=db_with_user):
             with patch("websocket_handler._room_manager", rm):

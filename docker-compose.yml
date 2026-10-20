@@ -18,6 +18,12 @@ services:
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
       - AWS_REGION=${AWS_REGION:-ap-northeast-2}
       - SSE_PORT=${SSE_PORT:-8766}
+      # 세션 쿠키 HMAC 서명 키 (ISSUE-55). compose 의 environment 는 **열거한
+      # 키만** 컨테이너에 넣으므로, 이 줄이 없으면 .env 에 적어도 앱에 도달하지
+      # 않는다 — ISSUE-55 가 이 변수를 운영 필수로 승격했는데 배포 경로가 그걸
+      # 전달할 수 없는 상태였다. 미설정이면 컨테이너 기동마다 무작위 생성되어
+      # 재시작 시 기존 로그인 세션이 모두 무효가 된다.
+      - SESSION_SECRET=${SESSION_SECRET:-}
       # QR 코드에 들어갈 뷰어 base URL — 미설정 시 http://localhost:{SSE_PORT} (로컬 전용)
       - VIEWER_BASE_URL=${VIEWER_BASE_URL:-}
     volumes:
