@@ -478,8 +478,19 @@ def logged_in_page(page, streamlit_server):
     ensure_logged_in_as(page, TEST_OPERATOR_USERNAME, TEST_PASSWORD)
 
     # 메인 페이지 로드 대기 (iframe이 나타날 때까지)
+    #
+    # **`_wait_for_component_script` 를 여기서는 쓰지 않는다.** 그 게이트는
+    # ISSUE-64 가 "모든 테스트에서 로그아웃 → 재로그인" 을 하던 시절 컴포넌트
+    # iframe 이 매번 리마운트되며 생긴 `ReferenceError: updateFsFont is not
+    # defined` 를 막기 위한 것이었다. 그 churn 은 `require_cookie=False` 기본값으로
+    # 제거됐고(원인을 없앴다), 게이트만 남으니 **그 자체가 새 실패면**이 됐다 —
+    # CI 에서 `test_fullscreen_e2e.py` 3건이 45초 대기 초과로 에러났다.
+    #
+    # 원인을 없앤 뒤에도 방어를 겹쳐 두면, 그 방어가 깨질 때 원래 없던 실패가
+    # 생긴다. 리마운트를 **실제로** 일으키는 경로(`freshly_logged_in_page`)에만
+    # 남긴다. 이 fixture 는 #164 이전과 같은 대기로 돌아가고, 그 상태가 CI 에서
+    # 녹색이었다는 실측 근거가 있다.
     page.locator("iframe").first.wait_for(state="attached", timeout=_UI_TIMEOUT_MS)
-    _wait_for_component_script(page)
 
     yield page
 
