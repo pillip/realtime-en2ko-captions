@@ -330,63 +330,12 @@ def ensure_logged_in_as(
             """(expected) => {
                 const sidebar = document.querySelector('[data-testid="stSidebar"]');
                 if (!sidebar) return false;
-                // `innerText` 가 아니라 `textContent` — 사이드바가 **접혀 있으면**
-                // innerText 는 빈 문자열이라 이 대기가 영원히 끝나지 않는다.
-                // `sidebar_account()` 는 같은 이유로 이미 text_content 를 쓰는데
-                // 이 자리만 어긋나 있었다. require_cookie=True 로 로그인을
-                // 강제하는 경로에서 20초 타임아웃으로 드러났다.
-                // 문자 클래스가 `\\S+` 가 아니라 `[A-Za-z0-9._@-]+` 인 것이 핵심이다.
-                // `textContent` 는 인접 요소를 **구분자 없이** 이어 붙이므로
-                // ("e2e_operator로그아웃") `\\S+` 는 뒤의 한글까지 삼켜 비교가
-                // 영원히 실패한다. 파이썬측 `_ACCOUNT_RE` 와 같은 클래스를 쓴다.
-                const m = sidebar.textContent.match(
-                    /아이디\\s*[:：]\\s*([A-Za-z0-9._@-]+)/
-                );
+                const m = sidebar.innerText.match(/아이디\\s*[:：]\\s*(\\S+)/);
                 return !!m && m[1] === expected;
             }""",
             arg=username,
             timeout=_UI_TIMEOUT_MS,
         )
-
-        if require_cookie:
-            # **계정명이 보이는 것과 쿠키가 도착한 것은 다른 사건이다.**
-            # `auth.set_session_cookie` 는 `CookieManager` 를 거치고, 그것은
-            # Streamlit **컴포넌트**라 쿠키 쓰기가 컴포넌트 왕복 뒤에 일어난다.
-            # 사이드바 계정명은 서버측 세션이 세워진 시점에 이미 보이므로, 거기서
-            # 멈추면 쿠키가 아직 없는 상태로 테스트가 시작된다.
-            #
-            # 로컬에서는 빨라서 늘 통과했고 **CI 에서만** 깨졌다
-            # (`cookies: ['_streamlit_xsrf']`). 계정명 대기만으로 충분하다고 본
-            # 것이 오판이었다.
-            cookie_deadline = time.time() + _UI_TIMEOUT_MS / 1000
-            while time.time() < cookie_deadline:
-                if _has_session_cookie(page):
-                    break
-                page.wait_for_timeout(250)
-            else:
-                # **실패가 아니라 skip 이다 — 이 PR 이 통제할 수 없는 전제다.**
-                #
-                # `auth.get_cookie_manager()` 는 모듈 전역 싱글턴이고
-                # `CookieManager` 는 Streamlit **컴포넌트**다. 컴포넌트 인스턴스는
-                # 그것을 처음 만든 세션의 프런트엔드에 묶이므로, 두 번째 이후
-                # 브라우저 컨텍스트에서는 `set_session_cookie()` 가 그 컨텍스트의
-                # 쿠키 항아리에 **도달하지 못할 수 있다.** 기다려서 해결되는
-                # 종류가 아니다 — 실제로 CI 에서 `['_streamlit_xsrf']` 로 떨어졌다.
-                #
-                # 그 싱글턴 제거는 프로덕션 변경이고 보안 영향(새 브라우저 세션이
-                # 직전 사용자로 복원)이 있어 ISSUE-55/ISSUE-64 양쪽에서 명시적으로
-                # 범위 밖이다 (→ #165).
-                #
-                # 쿠키가 도착하는 실행에서는 측정이 **실제로** 돌고, 못 하는
-                # 실행에서는 조용히 건너뛴다. 측정 전제를 이유로 보안 수정을
-                # 빨갛게 만들지 않는다.
-                names = [c["name"] for c in page.context.cookies()]
-                pytest.skip(
-                    f"user_session 쿠키가 이 브라우저 컨텍스트에 도착하지 않았다: "
-                    f"{names}. 전역 CookieManager 싱글턴이 컴포넌트를 첫 세션에 "
-                    "묶어 두기 때문이며(#165), 후보 A 의 전제가 깨진 것이 아니다 "
-                    "— 쿠키가 있는 실행에서는 핸드셰이크에 정상적으로 실린다."
-                )
 
     # AC2 — 이 단언은 안정화 **전** 코드에서 실패한다. 측정 당시 모든 컨텍스트가
     # `cookies=['_streamlit_xsrf']` 였으므로 쿠키 조건이 곧바로 깨진다.
@@ -478,19 +427,8 @@ def logged_in_page(page, streamlit_server):
     ensure_logged_in_as(page, TEST_OPERATOR_USERNAME, TEST_PASSWORD)
 
     # 메인 페이지 로드 대기 (iframe이 나타날 때까지)
-    #
-    # **`_wait_for_component_script` 를 여기서는 쓰지 않는다.** 그 게이트는
-    # ISSUE-64 가 "모든 테스트에서 로그아웃 → 재로그인" 을 하던 시절 컴포넌트
-    # iframe 이 매번 리마운트되며 생긴 `ReferenceError: updateFsFont is not
-    # defined` 를 막기 위한 것이었다. 그 churn 은 `require_cookie=False` 기본값으로
-    # 제거됐고(원인을 없앴다), 게이트만 남으니 **그 자체가 새 실패면**이 됐다 —
-    # CI 에서 `test_fullscreen_e2e.py` 3건이 45초 대기 초과로 에러났다.
-    #
-    # 원인을 없앤 뒤에도 방어를 겹쳐 두면, 그 방어가 깨질 때 원래 없던 실패가
-    # 생긴다. 리마운트를 **실제로** 일으키는 경로(`freshly_logged_in_page`)에만
-    # 남긴다. 이 fixture 는 #164 이전과 같은 대기로 돌아가고, 그 상태가 CI 에서
-    # 녹색이었다는 실측 근거가 있다.
     page.locator("iframe").first.wait_for(state="attached", timeout=_UI_TIMEOUT_MS)
+    _wait_for_component_script(page)
 
     yield page
 
