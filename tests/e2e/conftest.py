@@ -330,7 +330,18 @@ def ensure_logged_in_as(
             """(expected) => {
                 const sidebar = document.querySelector('[data-testid="stSidebar"]');
                 if (!sidebar) return false;
-                const m = sidebar.innerText.match(/아이디\\s*[:：]\\s*(\\S+)/);
+                // `innerText` 가 아니라 `textContent` — 사이드바가 **접혀 있으면**
+                // innerText 는 빈 문자열이라 이 대기가 영원히 끝나지 않는다.
+                // `sidebar_account()` 는 같은 이유로 이미 text_content 를 쓰는데
+                // 이 자리만 어긋나 있었다. require_cookie=True 로 로그인을
+                // 강제하는 경로에서 20초 타임아웃으로 드러났다.
+                // 문자 클래스가 `\\S+` 가 아니라 `[A-Za-z0-9._@-]+` 인 것이 핵심이다.
+                // `textContent` 는 인접 요소를 **구분자 없이** 이어 붙이므로
+                // ("e2e_operator로그아웃") `\\S+` 는 뒤의 한글까지 삼켜 비교가
+                // 영원히 실패한다. 파이썬측 `_ACCOUNT_RE` 와 같은 클래스를 쓴다.
+                const m = sidebar.textContent.match(
+                    /아이디\\s*[:：]\\s*([A-Za-z0-9._@-]+)/
+                );
                 return !!m && m[1] === expected;
             }""",
             arg=username,

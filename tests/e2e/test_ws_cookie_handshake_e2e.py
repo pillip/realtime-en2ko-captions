@@ -103,35 +103,30 @@ def _component_frame(page):
 
 
 def _require_session_cookie(page):
-    """`user_session` 이 이 브라우저 컨텍스트에 심어졌는지 — 아니면 skip.
+    """`user_session` 이 이 브라우저 컨텍스트에 있음을 **단언**한다.
 
-    **왜 실패가 아니라 skip 인가.** `auth.get_cookie_manager()` 가 프로세스 전역
-    싱글턴이라, 같은 서버에 두 번째 브라우저 컨텍스트가 붙으면 서버가 "이미
-    로그인됨" 으로 보고 `set_session_cookie()` 를 건너뛸 수 있다. 그러면 **새
-    컨텍스트의 쿠키 항아리는 비어 있는데** 로그인은 된 상태가 된다 — 이것이
-    ISSUE-64(#155)가 측정으로 확정하려는 바로 그 순서 의존성이다.
+    한때 이것은 `pytest.skip` 이었다. 구 로그인 하네스는 전역
+    `auth.get_cookie_manager()` 싱글턴 때문에 두 번째 이후 브라우저 컨텍스트에서
+    로그인을 건너뛰었고, 그러면 **서버는 인증됨으로 보는데 쿠키 항아리는 비어
+    있는** 상태가 됐다. 그 상태의 실패는 "후보 A 의 전제가 깨졌다" 는 잘못된
+    결론을 낳으므로(실제로 한 번 그렇게 오독했다) 측정 불가를 실패와 분리했다.
 
-    그 상태에서 이 파일이 실패하면 "후보 A 의 전제가 깨졌다" 는 **잘못된 결론**을
-    낸다. 실제로 이 테스트를 처음 돌릴 때 그 혼동이 일어났고, 단독 프로브로
-    확인해 보니 쿠키가 있을 때는 `user_session` 이 핸드셰이크에 **정상적으로
-    실렸다.** 그래서 전제가 측정 불가인 경우를 명시적으로 분리한다.
-
-    ISSUE-64 가 로그인 하네스를 결정적으로 만들면 이 skip 은 사라진다.
+    ISSUE-64(#164)가 `freshly_logged_in_page` 로 쿠키를 보장하면서 그 분리가
+    필요 없어졌다. 이제 쿠키 부재는 **하네스 계약 위반**이므로 실패로 다룬다 —
+    skip 으로 남겨 두면 하네스가 퇴행해도 조용히 초록이 된다.
     """
     names = [c["name"] for c in page.context.cookies()]
-    if "user_session" not in names:
-        pytest.skip(
-            "이 브라우저 컨텍스트에 user_session 쿠키가 없다 — 전역 CookieManager "
-            f"싱글턴이 로그인을 건너뛴 경우다 (ISSUE-64/#155). 쿠키: {names}. "
-            "후보 A 의 전제가 깨진 것이 아니라 측정이 불가한 상태다."
-        )
+    assert "user_session" in names, (
+        f"freshly_logged_in_page 가 쿠키를 보장하지 못했다. 쿠키: {names}. "
+        "ISSUE-64 의 require_cookie 경로가 퇴행했는지 확인할 것."
+    )
 
 
 class TestTheBrowserSendsTheSessionCookieOnTheWsHandshake:
     """후보 A 의 전제를 값으로 확인한다."""
 
     def test_the_session_cookie_has_the_attributes_candidate_a_relies_on(
-        self, logged_in_page
+        self, freshly_logged_in_page
     ):
         """쿠키가 있을 때, 후보 A 가 의존하는 **속성**을 고정한다.
 
@@ -144,9 +139,11 @@ class TestTheBrowserSendsTheSessionCookieOnTheWsHandshake:
             domain=localhost  path=/  sameSite=Strict  secure=False
             value=1%3Ae2e_operator%3A...   ← percent-encoded
         """
-        _require_session_cookie(logged_in_page)
+        _require_session_cookie(freshly_logged_in_page)
         cookie = next(
-            c for c in logged_in_page.context.cookies() if c["name"] == "user_session"
+            c
+            for c in freshly_logged_in_page.context.cookies()
+            if c["name"] == "user_session"
         )
 
         assert cookie["path"] == "/", (
@@ -170,15 +167,15 @@ class TestTheBrowserSendsTheSessionCookieOnTheWsHandshake:
         ), f"쿠키 값 형식이 예상과 다르다: {cookie['value'][:40]!r}"
 
     def test_a_websocket_opened_from_the_component_iframe_carries_the_cookie(
-        self, logged_in_page
+        self, freshly_logged_in_page
     ):
         """**핵심 실측** — 컴포넌트 iframe 에서 연 WS 가 쿠키를 싣는다.
 
         여기가 후보 A 의 성립/불성립이 갈리는 지점이다. 실패하면 후보 B
         (서버 발행 토큰 + BOOT 전달)로 가야 하고, 그때는 RL-028 제약이 따라온다.
         """
-        _require_session_cookie(logged_in_page)
-        frame = _component_frame(logged_in_page)
+        _require_session_cookie(freshly_logged_in_page)
+        frame = _component_frame(freshly_logged_in_page)
         if frame is None:
             pytest.skip(
                 "컴포넌트 iframe 을 찾지 못했다 — 오퍼레이터 화면이 렌더되지 "
@@ -191,7 +188,7 @@ class TestTheBrowserSendsTheSessionCookieOnTheWsHandshake:
             # `location.origin` 이 `"null"`(opaque) 이다 — 실측. iframe 안에서
             # 호스트를 유도하려 하면 `ws://:1234` 같은 깨진 URL 이 만들어져
             # 연결이 실패하고, 그 실패가 "쿠키가 안 실린다" 로 오독된다.
-            host = logged_in_page.evaluate("() => location.hostname")
+            host = freshly_logged_in_page.evaluate("() => location.hostname")
             frame.evaluate(
                 """([host, port]) => {
                     try {
@@ -216,16 +213,16 @@ class TestTheBrowserSendsTheSessionCookieOnTheWsHandshake:
                 "후보 A 의 전제가 깨졌다 → 후보 B 로 전환할 것."
             )
 
-    def test_the_cookie_crosses_the_port_boundary(self, logged_in_page):
+    def test_the_cookie_crosses_the_port_boundary(self, freshly_logged_in_page):
         """쿠키가 포트를 구분하지 않는다는 성질을 명시적으로 고정한다.
 
         임시 서버는 `:8501` 이 아닌 OS 할당 포트에 떠 있다. 그 포트로 쿠키가
         갔다는 것은 `ws://host:8765` 로도 간다는 뜻이다 — ISSUE-55 가 `:8765`
         에서 쿠키를 읽을 수 있는 근거다.
         """
-        _require_session_cookie(logged_in_page)
+        _require_session_cookie(freshly_logged_in_page)
         with _HandshakeRecorder() as rec:
-            logged_in_page.evaluate(
+            freshly_logged_in_page.evaluate(
                 "(port) => { new WebSocket(`ws://${location.hostname}:${port}`); }",
                 rec.port,
             )
