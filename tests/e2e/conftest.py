@@ -330,7 +330,21 @@ def ensure_logged_in_as(
             """(expected) => {
                 const sidebar = document.querySelector('[data-testid="stSidebar"]');
                 if (!sidebar) return false;
-                const m = sidebar.innerText.match(/아이디\\s*[:：]\\s*(\\S+)/);
+                // `innerText` 가 아니라 `textContent` — 사이드바가 **접혀 있으면**
+                // innerText 는 빈 문자열이라 이 대기가 끝나지 않는다.
+                // `sidebar_account()` 는 같은 이유로 이미 text_content 를 쓰는데
+                // 이 자리만 어긋나 있었다 (require_cookie=True 로 로그인을
+                // 강제하는 경로에서 20초 타임아웃으로 드러났다).
+                //
+                // 문자 클래스도 `\\S+` 가 아니라 `[A-Za-z0-9._@-]+` 여야 한다.
+                // textContent 는 인접 요소를 **구분자 없이** 이어 붙이므로
+                // ("e2e_operator로그아웃") `\\S+` 는 뒤의 한글까지 삼켜 비교가
+                // 영원히 실패한다. innerText 는 블록 사이에 개행을 넣어 줘서
+                // `\\S+` 가 우연히 동작했던 것이고, textContent 로 바꾸는 순간
+                // 그 우연이 사라진다. 파이썬측 `_ACCOUNT_RE` 와 같은 클래스다.
+                const m = sidebar.textContent.match(
+                    /아이디\\s*[:：]\\s*([A-Za-z0-9._@-]+)/
+                );
                 return !!m && m[1] === expected;
             }""",
             arg=username,
@@ -427,8 +441,19 @@ def logged_in_page(page, streamlit_server):
     ensure_logged_in_as(page, TEST_OPERATOR_USERNAME, TEST_PASSWORD)
 
     # 메인 페이지 로드 대기 (iframe이 나타날 때까지)
+    #
+    # **`_wait_for_component_script` 를 호출하지 않는다.** 그 게이트는 ISSUE-64
+    # 중간 설계가 **모든 테스트에서 로그아웃 → 재로그인**을 하던 시절, 컴포넌트
+    # iframe 이 매번 리마운트되며 생긴 `ReferenceError: updateFsFont is not
+    # defined` 를 막기 위한 것이었다. 그 churn 은 쿠키 요구를 걷어내며 **원인째**
+    # 제거됐는데 게이트만 남아, 원인이 없어진 뒤에도 방어가 **새 실패면**으로
+    # 작동했다 — main 에서 `test_fullscreen_e2e.py` 가 45초 대기 초과로 fixture
+    # error 를 냈다 (197 passed, 1 error).
+    #
+    # 원인을 없앤 뒤 방어를 겹쳐 두면, 그 방어가 깨질 때 원래 없던 실패가 생긴다.
+    # 게이트 자체는 `freshly_logged_in_page`(리마운트를 실제로 일으키는 경로)에만
+    # 남긴다.
     page.locator("iframe").first.wait_for(state="attached", timeout=_UI_TIMEOUT_MS)
-    _wait_for_component_script(page)
 
     yield page
 
