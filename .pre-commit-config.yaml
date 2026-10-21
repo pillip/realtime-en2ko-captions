@@ -6,7 +6,15 @@ repos:
       - id: trailing-whitespace
       - id: end-of-file-fixer
       - id: check-yaml
+      # 기본 상한 500 KB 는 `issues.md` 가 넘어선다 (2026-10-11 기준 502 KB,
+      # 이슈 블록 69개). 이 파일은 의도적으로 큰 living document 이고 저장소에
+      # 들어와야 하는 SSOT 다. 상한을 1 MB 로 올려 가드의 본래 목적(실수로 들어온
+      # SQLite·이미지·바이너리 차단)은 유지한다.
+      # 근본 해결은 shipped 이슈를 아카이브로 분리하는 것이다
+      # (`docs/sprint_state_archive_2026-08-31.md` 와 같은 패턴 — 69개 중 54개가
+      # shipped). 그때 이 상한을 다시 내릴 수 있다.
       - id: check-added-large-files
+        args: ["--maxkb=1024"]
       - id: check-case-conflict
       - id: check-merge-conflict
       - id: check-json

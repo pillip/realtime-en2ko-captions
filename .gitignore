@@ -66,3 +66,27 @@ env/
 ehthumbs.db
 Thumbs.db
 users.db
+
+# claude-dev-kit: per-worktree freeze marker (never track)
+.claude-kit/freeze-dir.txt
+
+# 런타임 데이터 볼륨 (docker-compose 가 ./data 로 마운트).
+# 기존에 `data/app.db` / `data/*.db` 두 줄만 있어서 **운영 SQLite 백업과 고객
+# 로고가 커밋 가능한 상태**였다 — `data/app.db.bak.20260608` 은 `.db` 로 끝나지
+# 않아 패턴에 안 걸리고, `data/branding/<room_id>/*` 는 아예 대상이 아니었다.
+# 디렉터리 전체를 무시한다. 룸별 로고는 BRANDING_DIR 아래 런타임 산출물이고
+# (branding_assets.py, ISSUE-38) 저장소에 들어갈 물건이 아니다.
+data/
+
+# git worktree 작업 트리 (scripts/worktree.sh). 저장소 안에 중첩 체크아웃이
+# 생기므로 추적하면 안 되고, 린터가 중복 사본까지 검사하게 된다.
+.worktrees/
+
+# claude-dev-kit 이 설치하는 린터 설정 심볼릭 링크 — 원본은 .claude-kit/linters/
+/ruff.toml
+/.prettierrc.json
+/scripts
+
+# Claude Code 런타임 상태 및 개인 설정
+.claude/run/
+.claude/settings.local.json
