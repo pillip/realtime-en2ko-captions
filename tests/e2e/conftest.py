@@ -455,12 +455,20 @@ def logged_in_page(page, streamlit_server):
     # 남긴다.
     page.locator("iframe").first.wait_for(state="attached", timeout=_UI_TIMEOUT_MS)
 
-    yield page
-
-    # 세션 누수 제거 — 다음 테스트가 이 세션을 물려받지 않게 한다. 실패해도
-    # 테스트 결과를 덮지 않도록 조용히 넘긴다.
-    with contextlib.suppress(Exception):
-        _logout(page)
+    # **teardown 로그아웃을 두지 않는다.**
+    #
+    # 처음엔 "세션 누수 제거" 목적으로 넣었는데 두 가지 이유로 뺀다.
+    #
+    # 1. **효과가 중복이다.** `ensure_logged_in_as` 가 진입 시점에 계정을 확인하고
+    #    다르면 로그아웃 후 재로그인하므로, 누수가 다음 테스트를 오염시킬 수 없다.
+    # 2. **teardown 의 로그아웃이 Streamlit 리런을 일으켜 컴포넌트 iframe 을
+    #    분리한다.** 그것이 CI 에서 `test_fullscreen_e2e.py` 2건을
+    #    `Frame.evaluate: Frame was detached` 로 깨뜨렸다. 이 스위트에서
+    #    iframe 리마운트는 반복적으로 실패의 원천이었다 — 같은 파일이 게이트가
+    #    있으면 `updateFsFont 미정의`, 없으면 `Frame was detached` 로 깨졌다.
+    #
+    # 이득 없는 방어를 위해 리마운트 기회를 늘리지 않는다.
+    return page
 
 
 @pytest.fixture()
