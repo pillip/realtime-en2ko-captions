@@ -16,7 +16,12 @@ from admin import show_admin_dashboard
 st.set_page_config(page_title="관리자 대시보드", page_icon="🔧", layout="wide")
 
 # 인증 초기화 (쿠키에서 세션 복원 포함)
-from auth import display_login_form, init_session_state, is_authenticated
+from auth import (
+    display_login_form,
+    flush_pending_session_cookie,
+    init_session_state,
+    is_authenticated,
+)
 
 init_session_state()
 
@@ -29,3 +34,7 @@ if not is_authenticated():
 
 # 관리자 대시보드 표시
 show_admin_dashboard()
+
+# 로그인 직후 예약된 쿠키 쓰기를 스크립트 끝에서 소비한다 (#165).
+# 관리자 페이지에는 캡션 컴포넌트가 없지만, 순서 규칙을 app.py 와 동일하게 둔다.
+flush_pending_session_cookie()

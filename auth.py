@@ -68,16 +68,39 @@ def _verify_cookie(cookie_data: str) -> tuple[str, str, str] | None:
         return None
 
 
-# 쿠키 매니저 지연 초기화 (렌더링 방지)
-_cookie_manager = None
+# CookieManager 는 **세션 단위**로 보관한다 (#165). 모듈 전역 캐시는 금지.
+_COOKIE_MANAGER_STATE_KEY = "_auth_cookie_manager"
+
+# 다음 런에서 한 번 더 써야 할 쿠키 값 (#165). `set_session_cookie` 가 예약하고,
+# **엔트리포인트 스크립트의 맨 끝**(`app.py` / `pages/admin_dashboard.py`)에서
+# `flush_pending_session_cookie()` 가 소비한다.
+_PENDING_COOKIE_STATE_KEY = "_auth_pending_cookie"
 
 
 def get_cookie_manager():
-    """CookieManager 지연 초기화"""
-    global _cookie_manager
-    if _cookie_manager is None:
-        _cookie_manager = CookieManager(key="auth_cookie_manager")
-    return _cookie_manager
+    """현재 Streamlit **세션**의 CookieManager를 반환한다 (지연 초기화).
+
+    **모듈 전역으로 캐시하면 안 된다.** `CookieManager.__init__` 은
+    ``getAll`` 컴포넌트를 한 번 렌더하고 그 결과를 ``self.cookies`` 에
+    **인스턴스 속성으로 캐시**한다(라이브러리 구현). 따라서 전역으로 공유하면
+    모든 세션이 **맨 처음 세션의 쿠키 항아리**를 돌려받는다.
+
+    그 결과가 두 가지였고 둘 다 실측했다 (#165):
+
+    1. **보안** — 새 브라우저가 로그인 없이 직전 사용자 세션으로 복원된다.
+       `restore_session_from_cookie()` 가 남의 쿠키 값을 읽기 때문이다.
+    2. **기능** — 첫 세션이 아닌 컨텍스트에서는 로그인해도 `user_session`
+       쿠키가 그 브라우저에 심기지 않는다. ISSUE-55 이후 WS 인증이 이 쿠키에
+       의존하므로, 그 상태의 오퍼레이터는 자막을 **시작할 수 없다**.
+
+    세션 단위로 만들면 각 세션이 자기 `getAll` 결과를 갖는다 — Streamlit 에서
+    위젯 key 는 세션 스코프라 같은 key 를 그대로 써도 충돌하지 않는다.
+    """
+    manager = st.session_state.get(_COOKIE_MANAGER_STATE_KEY)
+    if manager is None:
+        manager = CookieManager(key="auth_cookie_manager")
+        st.session_state[_COOKIE_MANAGER_STATE_KEY] = manager
+    return manager
 
 
 def generate_session_token(user_id: int, username: str) -> str:
@@ -86,12 +109,50 @@ def generate_session_token(user_id: int, username: str) -> str:
 
 
 def set_session_cookie(user_info: dict):
-    """세션 쿠키 설정 (HMAC 서명 포함, CookieManager 사용)"""
+    """세션 쿠키 설정 (HMAC 서명 포함, CookieManager 사용).
+
+    **쓰기를 두 번 건다** — 지금 한 번, 다음 런에 한 번 (#165).
+
+    `CookieManager.set()` 은 컴포넌트를 렌더해 브라우저에 "이 쿠키를 써라" 를
+    보내는 것이고, 그 지시는 **그 런의 델타가 전달될 때** 비로소 실행된다.
+    그런데 이 함수의 호출 경로는 `login_user` ← `display_login_form` 이고,
+    거기서는 성공 직후 `st.rerun()` 을 부른다. `st.rerun()` 은 즉시
+    `RerunException` 을 던져 **그 런의 델타를 버리므로**, 쿠키 쓰기 지시가
+    브라우저에 도달하지 못한다.
+
+    실측(#165): 그 결과 로그인은 됐는데 `user_session` 쿠키만 없는 상태가 되고,
+    ISSUE-55 이후 WS 인증이 이 쿠키에 의존하므로 오퍼레이터가 자막을 **시작할 수
+    없다**.
+
+    `st.rerun()` 을 걷어내는 쪽도 시도해 봤지만 로그인 UI 흐름이 바뀌어 e2e 가
+    광범위하게 깨졌다. 대신 **다음 런에서 한 번 더 쓰도록 예약**한다 —
+    `init_session_state()` 가 그 런 시작에 flush 하고, 그 런은 정상 종료하므로
+    델타가 전달된다. 같은 값을 두 번 쓰는 것은 무해하다(멱등).
+    """
     token = generate_session_token(user_info["id"], user_info["username"])
     signed_cookie = _sign_cookie(user_info["id"], user_info["username"], token)
 
     # 24시간 유효 (max_age는 초 단위)
     get_cookie_manager().set("user_session", signed_cookie, max_age=86400)
+    # 호출자가 곧바로 rerun 해 위 델타가 버려질 경우를 대비한 예약.
+    st.session_state[_PENDING_COOKIE_STATE_KEY] = signed_cookie
+
+
+def flush_pending_session_cookie():
+    """예약된 쿠키 쓰기를 **런 시작 시점**에 한 번 실행한다 (#165).
+
+    `init_session_state()` 가 부른다. 런 시작에서 쓰면 그 뒤로 스크립트가
+    정상 종료하므로 델타가 브라우저에 전달된다. 예약이 없으면 아무 일도
+    하지 않는다.
+    """
+    pending = st.session_state.pop(_PENDING_COOKIE_STATE_KEY, None)
+    if not pending:
+        return
+    try:
+        get_cookie_manager().set("user_session", pending, max_age=86400)
+    except Exception as e:  # noqa: BLE001
+        # 쿠키 재시도 실패가 로그인 자체를 깨뜨려서는 안 된다 (RL-006).
+        print(f"[Auth] 예약된 쿠키 쓰기 실패: {e!r}")
 
 
 def get_session_cookie() -> str | None:

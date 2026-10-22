@@ -207,6 +207,21 @@ def streamlit_server(_tmp_db_dir, branding_dir):
 # 그 성질이 있는 채로도 결정적으로 동작한다.
 # ---------------------------------------------------------------------------
 SIDEBAR = '[data-testid="stSidebar"]'
+
+# 캡션 컴포넌트 iframe 셀렉터 (#165 에서 배운 것).
+#
+# `iframe.first` 를 쓰면 안 된다. 페이지에는 캡션 말고도 iframe 이 있다 —
+# `extra_streamlit_components.CookieManager` 가 높이 0 의 숨은 iframe 을 렌더한다.
+# 그 개수와 **순서**는 로그인 직후 쿠키를 쓰느냐에 따라 달라지므로, 첫 iframe 이
+# 캡션이라는 보장이 없다. 실제로 쿠키 쓰기 위치를 옮겼더니 `iframe.first` 가
+# 쿠키 프레임을 잡아 `updateFsFont is not defined` / `Frame was detached` 로
+# 무너졌다.
+#
+# 둘은 렌더 방식이 다르다:
+#   - 캡션 컴포넌트: `st.components.v1.html(...)` → `<iframe srcdoc="...">`
+#   - CookieManager: `components.declare_component(...)` → `<iframe src="...">`
+# 그래서 `srcdoc` 속성으로 정확히 가를 수 있다. 순서에 의존하지 않는다.
+CAPTION_IFRAME = "iframe[srcdoc]"
 _ACCOUNT_RE = re.compile(r"아이디\s*[:：]\s*([A-Za-z0-9._@-]+)")
 
 # 로그인 폼 / 사이드바가 Streamlit 리런을 거쳐 나타날 때까지의 상한. 고정 sleep
@@ -440,20 +455,25 @@ def logged_in_page(page, streamlit_server):
     page.goto(streamlit_server, wait_until="domcontentloaded")
     ensure_logged_in_as(page, TEST_OPERATOR_USERNAME, TEST_PASSWORD)
 
-    # 메인 페이지 로드 대기 (iframe이 나타날 때까지)
+    # 메인 페이지 로드 대기 — `attached` **그리고** 스크립트 평가 완료까지.
     #
-    # **`_wait_for_component_script` 를 호출하지 않는다.** 그 게이트는 ISSUE-64
-    # 중간 설계가 **모든 테스트에서 로그아웃 → 재로그인**을 하던 시절, 컴포넌트
-    # iframe 이 매번 리마운트되며 생긴 `ReferenceError: updateFsFont is not
-    # defined` 를 막기 위한 것이었다. 그 churn 은 쿠키 요구를 걷어내며 **원인째**
-    # 제거됐는데 게이트만 남아, 원인이 없어진 뒤에도 방어가 **새 실패면**으로
-    # 작동했다 — main 에서 `test_fullscreen_e2e.py` 가 45초 대기 초과로 fixture
-    # error 를 냈다 (197 passed, 1 error).
+    # 이 게이트는 한 번 제거됐다가 되돌아왔고, 그 경위가 중요하다.
+    #   - ISSUE-64 중간 설계(모든 테스트가 로그아웃 → 재로그인)에서 iframe 이
+    #     매번 리마운트되며 `ReferenceError: updateFsFont is not defined` 가 났다
+    #     → 게이트 도입
+    #   - 그 churn 을 원인째 제거(#166)하자 게이트만 남아 **그 자체가 새 실패면**이
+    #     됐다 (45초 대기 초과) → 호출 제거
+    #   - **#165 가 근거를 되살렸다.** 로그인 성공 시 `st.rerun()` 대신 같은 런에서
+    #     앱을 렌더하므로(쿠키 쓰기 델타를 살리기 위해), 컴포넌트 iframe 이
+    #     로그인과 **같은 런의 뒤쪽**에서 마운트된다. `attached` 시점에 인라인
+    #     스크립트가 아직 평가되지 않아 로컬에서도 6건이 재현됐다.
     #
-    # 원인을 없앤 뒤 방어를 겹쳐 두면, 그 방어가 깨질 때 원래 없던 실패가 생긴다.
-    # 게이트 자체는 `freshly_logged_in_page`(리마운트를 실제로 일으키는 경로)에만
-    # 남긴다.
-    page.locator("iframe").first.wait_for(state="attached", timeout=_UI_TIMEOUT_MS)
+    # 즉 지금은 "churn 이 만든 가짜 문제" 가 아니라 **렌더 순서가 만든 실제 경합**을
+    # 기다린다. 원인이 있으면 방어를 둔다.
+    page.locator(CAPTION_IFRAME).first.wait_for(
+        state="attached", timeout=_UI_TIMEOUT_MS
+    )
+    _wait_for_component_script(page)
 
     # **teardown 로그아웃을 두지 않는다.**
     #
@@ -485,7 +505,9 @@ def freshly_logged_in_page(page, streamlit_server):
     ensure_logged_in_as(
         page, TEST_OPERATOR_USERNAME, TEST_PASSWORD, require_cookie=True
     )
-    page.locator("iframe").first.wait_for(state="attached", timeout=_UI_TIMEOUT_MS)
+    page.locator(CAPTION_IFRAME).first.wait_for(
+        state="attached", timeout=_UI_TIMEOUT_MS
+    )
     _wait_for_component_script(page)
 
     yield page
@@ -497,4 +519,4 @@ def freshly_logged_in_page(page, streamlit_server):
 @pytest.fixture()
 def caption_iframe(logged_in_page):
     """로그인 후 캡션 iframe의 FrameLocator 반환"""
-    return logged_in_page.frame_locator("iframe").first
+    return logged_in_page.frame_locator(CAPTION_IFRAME).first
