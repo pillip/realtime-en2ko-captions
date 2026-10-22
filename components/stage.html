@@ -1154,6 +1154,10 @@
       const logoBar = $("logo-bar");
       const cardLogos = $("card-logos");
       const groups = Array.isArray(cfg.logo_groups) ? cfg.logo_groups : [];
+      // `!== false` 로 읽는다 — 키가 없는(이 옵션 도입 이전) 설정은 종전처럼
+      // 라벨이 보여야 한다. `Boolean(cfg.show_logo_labels)` 로 쓰면 키 부재가
+      // "끄기" 가 되어 기존 무대 화면이 말없이 바뀐다.
+      const showLogoLabels = cfg.show_logo_labels !== false;
       let shown = 0;
       groups.forEach(function (group) {
         const assets = Array.isArray(group && group.assets) ? group.assets : [];
@@ -1161,10 +1165,16 @@
         const label = String((group && group.label) || "");
         const wrap = document.createElement("div");
         wrap.className = "logo-group";
-        const caption = document.createElement("span");
-        caption.className = "logo-group-label";
-        caption.textContent = label;
-        wrap.appendChild(caption);
+        // 관리자가 끌 수 있는 그룹 라벨 글자. 끄더라도 **로고 alt 텍스트는
+        // 그대로 둔다** — 화면에서 글자를 빼는 선택이지 스크린 리더 사용자가
+        // 그룹을 구분하지 못하게 하려는 것이 아니다.
+        // 키가 없는 기존 룸은 true 로 읽혀 종전 화면이 유지된다.
+        if (showLogoLabels) {
+          const caption = document.createElement("span");
+          caption.className = "logo-group-label";
+          caption.textContent = label;
+          wrap.appendChild(caption);
+        }
         assets.forEach(function (name, i) {
           wrap.appendChild(makeLogoImage(name, i === 0 ? label + " 로고" : ""));
           cardLogos.appendChild(makeLogoImage(name, "")); // 타이틀 카드는 장식 반복

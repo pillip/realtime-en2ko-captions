@@ -117,6 +117,7 @@ in application code.
 | `event_title` | str | `""` | Header bar primary line. Max 120 chars. Empty → the stage page falls back to the room name while keeping the bar's height. |
 | `event_subtitle` | str | `""` | Header bar secondary line. Max 80 chars. |
 | `caption_ratio` | str | `"1/4"` | Caption column width. Enum: `"1/4"` (25%) or `"1/3"` (33.333%). Any other value is rejected by `validate_stage_config` and normalised to `"1/4"` on read. |
+| `show_logo_labels` | bool | `true` | Whether the stage logo bar renders the group names (`주최` / `주관` / `후원`) as visible text. Admin toggle. **A missing key reads as `true`**, not `false` — rooms saved before this key existed were showing labels, and treating absence as "off" would silently change their stage screen. Non-bool values are rejected by `validate_stage_config`; on read they degrade to `true`. Turning it off hides the text only — logo `alt` text keeps the group name for screen readers. |
 | `logo_groups` | list[object] | 3 empty groups | Fixed order, fixed label set: `주최`, `주관`, `후원`. Unknown labels and non-object elements are discarded on normalise. |
 | `logo_groups[].label` | str | — | One of `주최` / `주관` / `후원`. |
 | `logo_groups[].assets` | list[str] | `[]` | **Filenames only**, never paths. Each name resolves against `data/branding/{room_id}/`. Max 12 assets per room across all groups. |
@@ -128,6 +129,7 @@ Example:
   "event_title": "2026 개발자 콘퍼런스",
   "event_subtitle": "A홀 기조연설",
   "caption_ratio": "1/4",
+  "show_logo_labels": true,
   "logo_groups": [
     {"label": "주최", "assets": ["host-1.png"]},
     {"label": "주관", "assets": []},

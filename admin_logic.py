@@ -489,6 +489,7 @@ def build_stage_config_from_form(
     event_subtitle: str,
     caption_ratio: str,
     logo_groups: dict[str, list[str]] | None,
+    show_logo_labels: bool = True,
 ) -> dict[str, Any]:
     """폼 입력을 ``stage_config`` 후보 dict 로 조립한다 (검증은 하지 않는다).
 
@@ -498,6 +499,9 @@ def build_stage_config_from_form(
         caption_ratio: 자막 컬럼 비율 라디오 선택값. **보정하지 않고 그대로**
             담는다 — 잘못된 값은 ``validate_stage_config`` 가 사유와 함께
             거절해야 관리자가 무엇이 틀렸는지 알 수 있다.
+        show_logo_labels: 로고 바에 "주최/주관/후원" 글자를 띄울지. 기본값이
+            True 인 것은 이 옵션 도입 이전 동작과 같게 두기 위해서다 —
+            호출자가 빠뜨려도 기존 무대 화면이 바뀌지 않는다.
         logo_groups: ``{그룹 라벨: [파일명, ...]}``. 알려진 라벨 3종이 항상
             고정 순서로 먼저 오고, 알 수 없는 라벨이 있으면 뒤에 덧붙인다.
             그룹 안의 중복 파일명은 순서를 지키며 하나로 합친다
@@ -518,6 +522,7 @@ def build_stage_config_from_form(
         "event_title": _clean_text(event_title),
         "event_subtitle": _clean_text(event_subtitle),
         "caption_ratio": caption_ratio,
+        "show_logo_labels": bool(show_logo_labels),
         "logo_groups": [
             {"label": label, "assets": _dedupe_preserving_order(groups.get(label))}
             for label in ordered_labels

@@ -1287,3 +1287,86 @@ class TestStageFormHelpText:
         assert len(helps) == 2
         assert "7자" in helps[0]
         assert "5자" in helps[1]
+
+
+class TestLogoLabelToggleReachesTheConfig:
+    """관리자 체크박스 → `stage_config` 배선 (주최/주관/후원 글자 on/off)."""
+
+    @staticmethod
+    def _build(**overrides):
+        from admin_logic import build_stage_config_from_form
+
+        kwargs = {
+            "event_title": "행사",
+            "event_subtitle": "",
+            "caption_ratio": "1/4",
+            "logo_groups": {"주최": ["a.png"]},
+        }
+        kwargs.update(overrides)
+        return build_stage_config_from_form(**kwargs)
+
+    def test_toggle_off_is_carried_into_the_config(self):
+        assert self._build(show_logo_labels=False)["show_logo_labels"] is False
+
+    def test_toggle_on_is_carried_into_the_config(self):
+        assert self._build(show_logo_labels=True)["show_logo_labels"] is True
+
+    def test_default_is_on_when_caller_omits_it(self):
+        """호출자가 빠뜨려도 종전 동작(표시)이 유지된다."""
+        assert self._build()["show_logo_labels"] is True
+
+    def test_value_is_coerced_to_bool(self):
+        """체크박스는 bool 을 주지만, 저장 경로에 다른 타입이 새지 않게 한다.
+
+        `validate_stage_config` 가 bool 이 아니면 거절하므로, 여기서 bool 로
+        확정하지 않으면 관리자가 영문 모를 저장 실패를 겪는다.
+        """
+        result = self._build(show_logo_labels=1)
+        assert result["show_logo_labels"] is True
+        assert isinstance(result["show_logo_labels"], bool)
+
+    def test_built_config_passes_validation(self):
+        from stage_config import validate_stage_config
+
+        for value in (True, False):
+            assert validate_stage_config(self._build(show_logo_labels=value)) == (
+                True,
+                "",
+            )
+
+
+class TestAdminFormExposesTheToggle:
+    """폼 위젯과 시드가 실제로 존재하는지 — 배선 가드.
+
+    설정 키와 렌더러만 고치고 폼을 빠뜨리면 관리자가 토글할 방법이 없다.
+    """
+
+    @staticmethod
+    def _source() -> str:
+        return (pathlib.Path(__file__).resolve().parent.parent / "admin.py").read_text(
+            encoding="utf-8"
+        )
+
+    def test_form_has_a_checkbox(self):
+        src = self._source()
+        assert "_STAGE_SHOW_LABELS_KEY" in src, "폼에 토글 위젯이 없다"
+        assert "st.checkbox(" in src, "체크박스 위젯이 없다"
+
+    def test_form_seeds_the_current_value(self):
+        """저장된 값이 폼에 다시 채워져야 한다 — 안 그러면 매번 기본값으로 보인다."""
+        src = self._source()
+        assert 'config.get("show_logo_labels", True)' in src, (
+            "폼 시드가 저장값을 읽지 않는다. 기본값을 True 로 두는 것도 중요하다 "
+            "— 키 없는 기존 룸이 '꺼짐' 으로 보이면 관리자가 오해한다."
+        )
+
+    def test_save_path_passes_the_toggle(self):
+        """`build_stage_config_from_form` 호출부가 값을 넘긴다.
+
+        preflight 와 최종 저장 **두 곳** 모두 넘겨야 한다 — 한쪽만 넘기면
+        검증과 저장이 다른 설정을 본다.
+        """
+        src = self._source()
+        assert (
+            src.count('show_logo_labels=values["show_logo_labels"]') == 2
+        ), "preflight/저장 두 호출부 모두에서 토글을 넘겨야 한다"
