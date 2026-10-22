@@ -280,13 +280,17 @@ def _wait_for_app_shell(page) -> None:
 
 
 def _submit_login(page, username: str, password: str) -> None:
-    username_input = page.locator('input[aria-label="사용자명"]')
+    # **`.first` 를 붙이는 이유** — Streamlit 리런 도중에는 같은 위젯이 잠깐
+    # 둘로 보일 수 있다. 그때 strict mode 가 걸리면
+    # `strict mode violation: ... resolved to 2 elements` 로 터진다(main 실측).
+    # 로그인 폼은 한 벌만 의미가 있으므로 첫 번째를 쓴다.
+    username_input = page.locator('input[aria-label="사용자명"]').first
     username_input.wait_for(state="visible", timeout=_UI_TIMEOUT_MS)
     username_input.fill(username)
-    password_input = page.locator('input[aria-label="비밀번호"]')
+    password_input = page.locator('input[aria-label="비밀번호"]').first
     password_input.wait_for(state="visible", timeout=_UI_TIMEOUT_MS)
     password_input.fill(password)
-    page.locator('button:has-text("로그인")').click()
+    page.locator('button:has-text("로그인")').first.click()
 
 
 def _logout(page) -> None:
@@ -295,7 +299,7 @@ def _logout(page) -> None:
     if logout.count() == 0:
         return
     logout.click()
-    page.locator('input[aria-label="사용자명"]').wait_for(
+    page.locator('input[aria-label="사용자명"]').first.wait_for(
         state="visible", timeout=_UI_TIMEOUT_MS
     )
 
