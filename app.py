@@ -9,7 +9,6 @@
 
 import asyncio
 import os
-import threading
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -22,6 +21,8 @@ from auth import (
     init_session_state,
     is_authenticated,
 )
+from background_servers import get_state as get_background_state
+from background_servers import start_background_servers
 from database import get_room_model
 from operator_ui import (
     DISPLAY_MODES,
@@ -39,19 +40,9 @@ from services import (
     get_aws_access_key_id,
     get_aws_secret_access_key,
 )
-from sse_broadcast import run_sse_server
-from websocket_handler import (
-    attach_broadcast_metrics_repo,
-    get_broadcast_manager,
-    start_websocket_server,
-)
 
 # Load environment variables
 load_dotenv()
-
-# WebSocket 포트를 dict로 관리 (스레드 간 공유)
-if "websocket_port_ref" not in st.session_state:
-    st.session_state["websocket_port_ref"] = {"port": None}
 
 # 사이드바 상태 관리
 if "sidebar_state" not in st.session_state:
@@ -89,6 +80,22 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+# === 백그라운드 서버 (WS 8765 / SSE 8766) ===
+#
+# 기동은 `background_servers` 가 **프로세스 단위 멱등**으로 책임진다 (#158).
+# 예전에는 이 자리에서 `st.session_state` 게이트로 띄웠는데, session_state 는
+# **브라우저 세션 단위**라 아무도 :8501 을 열지 않으면 두 서버가 아예 뜨지
+# 않았다 — 컨테이너 재시작 후 오퍼레이터가 접속할 때까지 뷰어/무대가 죽어
+# 있었다.
+#
+# 운영 경로(`serve.py`)는 Streamlit 보다 **먼저** 이 함수를 부르므로 브라우저와
+# 무관하게 포트가 열린다. 개발 경로(`streamlit run app.py`)에서는 여기가 첫
+# 호출이 되어 예전과 같은 시점에 뜬다 — 동작은 같고 게이트만 프로세스 단위다.
+_bg = start_background_servers()
+st.session_state["websocket_port_ref"] = _bg["websocket_port_ref"]
+st.session_state["sse_port"] = _bg["sse_port"]
+
 
 # 사용자 인증 체크
 init_session_state()
@@ -283,64 +290,11 @@ with st.sidebar:
         st.markdown("---")
         st.subheader("연결 정보")
         st.code(f"WebSocket: ws://localhost:{ws_port}")
-        if (
-            st.session_state.get("websocket_thread")
-            and st.session_state["websocket_thread"].is_alive()
-        ):
+        _ws_thread = get_background_state().get("websocket_thread")
+        if _ws_thread is not None and _ws_thread.is_alive():
             st.success("WebSocket 서버 실행 중")
         else:
             st.warning("WebSocket 서버 대기 중")
-
-
-# === WebSocket 서버 스레드 ===
-if (
-    "websocket_thread" not in st.session_state
-    or not st.session_state["websocket_thread"].is_alive()
-):
-    if "websocket_thread" in st.session_state:
-        if st.session_state["websocket_thread"].is_alive():
-            print("[WebSocket] 기존 스레드가 여전히 실행 중입니다.")
-        else:
-            print("[WebSocket] 기존 스레드 정리 중...")
-
-    print("[WebSocket] 새로운 WebSocket 스레드 시작 중...")
-    port_ref = st.session_state["websocket_port_ref"]
-    st.session_state["websocket_thread"] = threading.Thread(
-        target=start_websocket_server,
-        args=(port_ref,),
-        daemon=True,
-    )
-    st.session_state["websocket_thread"].start()
-    print("[WebSocket] WebSocket 스레드 시작됨")
-
-
-# === SSE 뷰어 브로드캐스트 서버 (ISSUE-30) ===
-# 별도 daemon thread 로 aiohttp 기반 viewer SSE 엔드포인트를 구동한다.
-# 포트는 SSE_PORT 환경변수, 기본 8766.
-if (
-    "sse_thread" not in st.session_state
-    or not st.session_state["sse_thread"].is_alive()
-):
-    print("[SSE] viewer 브로드캐스트 서버 스레드 시작 중...")
-    sse_port = int(os.getenv("SSE_PORT", "8766"))
-    sse_repo = get_room_model()
-    sse_mgr = get_broadcast_manager()
-    # ISSUE-33: attach the metrics_repo so SSE register/unregister
-    # persists cumulative + peak viewer counts to rooms.total_viewers /
-    # rooms.peak_viewers. Idempotent — safe to call across reruns.
-    attach_broadcast_metrics_repo(sse_repo)
-    st.session_state["sse_thread"] = threading.Thread(
-        target=run_sse_server,
-        kwargs={
-            "broadcast_manager": sse_mgr,
-            "room_repo": sse_repo,
-            "port": sse_port,
-        },
-        daemon=True,
-    )
-    st.session_state["sse_thread"].start()
-    st.session_state["sse_port"] = sse_port
-    print(f"[SSE] viewer 브로드캐스트 서버 스레드 시작됨 (port={sse_port})")
 
 
 # === Session state ===

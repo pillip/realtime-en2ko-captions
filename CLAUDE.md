@@ -10,6 +10,18 @@ Real-time multilingual caption system for conference scenarios. Browser connects
 
 ## Development Commands
 
+### 컨테이너 엔트리포인트 — `serve.py` (#158)
+
+Docker 는 `streamlit run app.py` 가 **아니라** `python serve.py` 로 띄운다.
+Streamlit 은 스크립트를 브라우저 세션 단위로 실행하므로, `streamlit run` 으로는
+아무도 `:8501` 을 열기 전까지 `app.py` 가 실행되지 않고 뷰어 SSE(8766)/오퍼레이터
+WS(8765) 도 뜨지 않는다. `serve.py` 는 두 서버를 먼저 띄우고 **같은 프로세스에서**
+Streamlit 을 돌린다 — WS 핸들러와 SSE 브로드캐스터가 모듈 전역 상태를 공유하므로
+프로세스를 쪼갤 수 없다. 기동 로직은 `background_servers.start_background_servers()`
+(프로세스 단위 멱등)에 있고 `app.py` 도 같은 함수를 부르므로 개발 경로
+(`streamlit run app.py`)도 그대로 동작한다. `tests/test_background_servers.py` 가
+이 부팅 경로를 가드한다 — CMD 를 `streamlit run` 으로 되돌리면 실패한다.
+
 ```bash
 # Project setup
 uv init --python 3.11

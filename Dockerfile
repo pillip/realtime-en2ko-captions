@@ -30,4 +30,14 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 EXPOSE 8501
 
 # 필수 환경변수 체크 및 실행
-CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0", "--server.headless=true", "--server.enableCORS=false"]
+# `streamlit run app.py` 가 아니라 `serve.py` 다 (#158).
+#
+# Streamlit 은 스크립트를 **브라우저 세션 단위**로 실행하므로, `streamlit run`
+# 으로 띄우면 아무도 :8501 을 열기 전까지 `app.py` 가 실행되지 않고 뷰어
+# SSE(8766)/오퍼레이터 WS(8765) 도 뜨지 않는다. 컨테이너 재시작마다 관객이
+# 흰 화면을 보는 원인이었다.
+#
+# `serve.py` 는 두 서버를 먼저 띄우고 **같은 프로세스에서** Streamlit 을 돌린다.
+# 같은 프로세스여야 하는 이유는 WS 핸들러와 SSE 브로드캐스터가 모듈 전역 상태를
+# 공유하기 때문이다. 서버 설정은 serve.py 가 STREAMLIT_* 환경변수 기본값으로 준다.
+CMD ["python", "serve.py"]
