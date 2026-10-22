@@ -5,6 +5,7 @@ Streamlit 서버를 subprocess로 시작하고, 테스트용 DB/계정을 설정
 
 import contextlib
 import os
+import pathlib
 import re
 import shutil
 import subprocess
@@ -89,6 +90,18 @@ def streamlit_server(_tmp_db_dir, branding_dir):
         "AWS_SECRET_ACCESS_KEY": "test_secret",
     }
 
+    # **PIPE 를 쓰지 않는다 — 고전적 교착이다.**
+    #
+    # `subprocess.PIPE` 로 열어 두고 아무도 읽지 않으면, 자식이 찍는 출력이
+    # 파이프 버퍼(보통 64KB)를 채우는 순간 **write 에서 블록**한다. 그러면
+    # Streamlit 이 멈춰 테스트가 통째로 타임아웃한다. 출력량이 늘어날 때마다
+    # 조용히 되살아나는 종류의 결함이라(#158 에서 기동 로그가 늘자 전체 e2e 가
+    # 181 passed + 17 errors / 518s 로 무너졌다) 파일로 돌린다.
+    #
+    # 진단용으로는 파일이 PIPE 보다 낫다 — 실패했을 때 전체 로그가 남는다.
+    log_path = os.path.join(_tmp_db_dir, "streamlit-server.log")
+    log_file = open(log_path, "wb")  # noqa: SIM115 — 프로세스 수명과 함께 닫는다
+
     proc = subprocess.Popen(
         [
             "uv",
@@ -104,8 +117,8 @@ def streamlit_server(_tmp_db_dir, branding_dir):
             "false",
         ],
         env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
     )
 
     base_url = f"http://localhost:{STREAMLIT_PORT}"
@@ -121,11 +134,14 @@ def streamlit_server(_tmp_db_dir, branding_dir):
         time.sleep(0.5)
     else:
         proc.terminate()
-        stdout = proc.stdout.read().decode() if proc.stdout else ""
-        stderr = proc.stderr.read().decode() if proc.stderr else ""
-        pytest.fail(
-            f"Streamlit server failed to start\nstdout: {stdout}\nstderr: {stderr}"
-        )
+        log_file.close()
+        try:
+            output = pathlib.Path(log_path).read_text(
+                encoding="utf-8", errors="replace"
+            )
+        except OSError:
+            output = "(로그 파일을 읽지 못했다)"
+        pytest.fail(f"Streamlit server failed to start\n{output}")
 
     # 캡션 UI E2E 는 operator 계정으로 수행한다 (#101: admin 은 관리 전용이라
     # 캡션 컴포넌트를 렌더하지 않음). 서버와 동일한 DB 파일에 operator 를
@@ -153,6 +169,7 @@ def streamlit_server(_tmp_db_dir, branding_dir):
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
         proc.kill()
+    log_file.close()
 
 
 # ---------------------------------------------------------------------------
