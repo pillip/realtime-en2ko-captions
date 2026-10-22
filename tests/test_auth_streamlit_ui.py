@@ -462,11 +462,22 @@ class TestGetSessionCookieErrorPath:
             assert get_session_cookie() is None
 
 
-class TestGetCookieManagerLazyInit:
-    """get_cookie_manager 의 지연 초기화 분기."""
+class TestGetCookieManagerIsSessionScoped:
+    """`get_cookie_manager` 가 **세션 단위**인지 (#165).
 
-    def test_lazy_init_creates_manager_on_first_call(self, mock_streamlit, monkeypatch):
-        """첫 호출에서만 CookieManager 가 인스턴스화되고, 이후 호출은 동일 객체 반환."""
+    이 클래스는 "지연 초기화 분기" 테스트를 대체한다. 옛 테스트는 사라진
+    `auth._cookie_manager` 모듈 글로벌을 세팅하고 `first is second` 만 봤는데,
+    그 단언은 **전역 싱글턴에서도 세션 스코프에서도 똑같이 참**이라 수정의
+    핵심을 전혀 검증하지 못했다 (RL-004).
+
+    핵심은 "같은 세션에서 같은 객체" 가 아니라 **"다른 세션에서 다른 객체"** 다.
+    전역 싱글턴이면 `CookieManager.__init__` 이 한 번만 돌아 **첫 세션의
+    쿠키 항아리**(`self.cookies`)를 모든 세션이 공유하고, 그래서 새 브라우저가
+    직전 사용자로 복원된다.
+    """
+
+    @staticmethod
+    def _install_fake_cookie_manager(monkeypatch):
         import sys
 
         instances = []
@@ -475,26 +486,91 @@ class TestGetCookieManagerLazyInit:
             def __init__(self, key):
                 instances.append(self)
                 self.key = key
+                # 실제 구현은 여기서 getAll 컴포넌트를 렌더해 결과를 인스턴스에
+                # 캐시한다. 그 캐시가 세션 간에 새는 것이 #165 의 기전이다.
+                self.cookies = {}
 
-        # extra_streamlit_components 의 CookieManager 만 교체.
         fake_module = MagicMock()
         fake_module.CookieManager = _FakeCookieManager
         monkeypatch.setitem(sys.modules, "extra_streamlit_components", fake_module)
         sys.modules.pop("auth", None)
+        return instances
 
-        # auth 모듈의 _cookie_manager 모듈 글로벌이 None 으로 초기화됐는지 확인.
-        import auth as auth_module
+    def test_same_session_reuses_one_instance(self, mock_streamlit, monkeypatch):
+        """같은 세션 안에서는 한 번만 인스턴스화된다 (멱등)."""
+        instances = self._install_fake_cookie_manager(monkeypatch)
         from auth import get_cookie_manager
-
-        auth_module._cookie_manager = None
 
         first = get_cookie_manager()
         second = get_cookie_manager()
 
         assert first is second
-        # 정확히 한 번만 instantiate 돼야 한다 (race-free 멱등).
         assert len(instances) == 1
         assert instances[0].key == "auth_cookie_manager"
+
+    def test_a_different_session_gets_its_own_instance(
+        self, mock_streamlit, monkeypatch
+    ):
+        """**다른 세션은 다른 인스턴스를 받는다** — 이것이 #165 의 수정 지점.
+
+        전역 싱글턴 구현에서는 이 단언이 실패한다: 두 번째 세션이 첫 세션의
+        객체를 그대로 받고, 따라서 첫 세션의 `cookies` 를 읽는다.
+        """
+        instances = self._install_fake_cookie_manager(monkeypatch)
+        from auth import get_cookie_manager
+
+        first = get_cookie_manager()
+
+        # 새 브라우저 세션 = 새 session_state
+        mock_streamlit.session_state = SessionState()
+        second = get_cookie_manager()
+
+        assert first is not second, (
+            "두 세션이 같은 CookieManager 를 공유한다 — 전역 싱글턴이 남아 있다. "
+            "그러면 두 번째 브라우저가 첫 번째의 쿠키 항아리를 읽는다 (#165)."
+        )
+        assert len(instances) == 2
+
+    def test_one_sessions_cookie_jar_does_not_leak_into_another(
+        self, mock_streamlit, monkeypatch
+    ):
+        """세션 A 의 쿠키 값이 세션 B 에 보이지 않는다 — 보안 성질 그 자체."""
+        self._install_fake_cookie_manager(monkeypatch)
+        from auth import get_cookie_manager
+
+        session_a = get_cookie_manager()
+        session_a.cookies["user_session"] = "A 의 서명 쿠키"
+
+        mock_streamlit.session_state = SessionState()
+        session_b = get_cookie_manager()
+
+        assert "user_session" not in session_b.cookies, (
+            "세션 B 가 세션 A 의 쿠키를 보고 있다 — 새 브라우저가 직전 사용자로 "
+            "복원되는 경로다 (#165)."
+        )
+
+    def test_no_module_level_cache_remains(self, mock_streamlit, monkeypatch):
+        """모듈 전역 캐시가 되살아나지 않았는지 — 회귀 가드.
+
+        이름만 바꿔 전역에 캐시하면 위 단언들을 통과하면서도 같은 결함이
+        돌아올 수 있으므로, 모듈 네임스페이스에 CookieManager 인스턴스가
+        남지 않는 것을 직접 센다.
+        """
+        self._install_fake_cookie_manager(monkeypatch)
+        import auth as auth_module
+        from auth import get_cookie_manager
+
+        get_cookie_manager()
+
+        leaked = [
+            name
+            for name, value in vars(auth_module).items()
+            if type(value).__name__ == "_FakeCookieManager"
+        ]
+        assert leaked == [], (
+            f"CookieManager 인스턴스가 모듈 전역에 캐시됐다: {leaked}. "
+            "세션 간 공유가 되살아난다."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -531,6 +607,10 @@ class TestDisplayLoginFormSubmittedFlow:
         - markdown / info 가 호출되어 로딩 화면이 표시되고
         - login_user() 가 True 반환 시 temp_* / login_submitted 가 정리되고
         - st.rerun 이 호출돼야 한다.
+
+        **이 rerun 은 쿠키 쓰기 델타를 버린다** — 그 손실은 `set_session_cookie`
+        가 다음 런에 예약해 두고 `init_session_state` 가 flush 하는 것으로
+        보상한다 (#165). 로그인 UI 흐름 자체는 그대로 둔다.
         """
         # time.sleep 을 모킹해 테스트 시간 단축.
         import auth as _auth_preview  # noqa: F401  -- ensure we import a fresh copy
@@ -857,3 +937,132 @@ class TestInitSessionState:
             init_session_state()
 
         restore_mock.assert_not_called()
+
+
+class TestPendingCookieSurvivesRerun:
+    """로그인 직후 `st.rerun()` 이 버리는 쿠키 쓰기를 다음 런이 보상하는지 (#165).
+
+    `CookieManager.set()` 은 컴포넌트를 렌더해 브라우저에 쿠키 쓰기를 **지시**할
+    뿐이고, 그 지시는 그 런의 델타가 전달돼야 실행된다. 그런데 `display_login_form`
+    은 성공 직후 `st.rerun()` 을 부르고, `st.rerun()` 은 그 런의 델타를 버린다.
+
+    실측(#165): 그 결과 로그인은 됐는데 `user_session` 쿠키만 없는 상태가 되고,
+    ISSUE-55 이후 WS 인증이 이 쿠키에 의존하므로 오퍼레이터가 자막을 시작할 수
+    없다. 그래서 `set_session_cookie` 가 **다음 런에 다시 쓰도록 예약**한다.
+    """
+
+    def test_set_session_cookie_reserves_a_pending_write(
+        self, mock_streamlit, mock_cookie_manager
+    ):
+        """즉시 쓰기 + 다음 런용 예약을 **둘 다** 한다."""
+        mock_streamlit.session_state = SessionState()
+
+        with patch("auth.get_cookie_manager", return_value=mock_cookie_manager):
+            from auth import _PENDING_COOKIE_STATE_KEY, set_session_cookie
+
+            set_session_cookie({"id": 7, "username": "op7"})
+
+        mock_cookie_manager.set.assert_called_once()
+        pending = mock_streamlit.session_state.get(_PENDING_COOKIE_STATE_KEY)
+        assert (
+            pending
+        ), "다음 런용 예약이 없다 — rerun 이 쓰기를 버리면 복구 수단이 없다"
+        # 예약된 값은 즉시 쓰기와 **같은 서명 쿠키**여야 한다.
+        assert mock_cookie_manager.set.call_args.args[1] == pending
+
+    def test_flush_writes_the_reserved_cookie_and_clears_it(
+        self, mock_streamlit, mock_cookie_manager
+    ):
+        """flush 가 예약분을 쓰고 예약을 지운다 — 두 번 호출해도 한 번만 쓴다."""
+        mock_streamlit.session_state = SessionState()
+
+        with patch("auth.get_cookie_manager", return_value=mock_cookie_manager):
+            from auth import flush_pending_session_cookie, set_session_cookie
+
+            set_session_cookie({"id": 7, "username": "op7"})
+            mock_cookie_manager.set.reset_mock()
+
+            flush_pending_session_cookie()
+            assert mock_cookie_manager.set.call_count == 1
+
+            flush_pending_session_cookie()
+            assert (
+                mock_cookie_manager.set.call_count == 1
+            ), "예약이 소비되지 않아 매 런마다 쿠키를 다시 쓴다"
+
+    def test_flush_is_a_noop_without_a_reservation(
+        self, mock_streamlit, mock_cookie_manager
+    ):
+        """예약이 없으면 아무것도 쓰지 않는다 (매 런 호출되므로 중요)."""
+        mock_streamlit.session_state = SessionState()
+
+        with patch("auth.get_cookie_manager", return_value=mock_cookie_manager):
+            from auth import flush_pending_session_cookie
+
+            flush_pending_session_cookie()
+
+        mock_cookie_manager.set.assert_not_called()
+
+    def test_flush_failure_does_not_break_the_run(
+        self, mock_streamlit, mock_cookie_manager
+    ):
+        """쿠키 재시도 실패가 로그인/렌더 자체를 깨뜨리지 않는다 (RL-006)."""
+        mock_streamlit.session_state = SessionState()
+        mock_cookie_manager.set.side_effect = RuntimeError("component gone")
+
+        with patch("auth.get_cookie_manager", return_value=mock_cookie_manager):
+            from auth import flush_pending_session_cookie, set_session_cookie
+
+            with pytest.raises(RuntimeError):
+                set_session_cookie({"id": 7, "username": "op7"})
+            # 예약은 남아 있고, flush 는 삼킨다.
+            flush_pending_session_cookie()  # 예외가 새어 나오면 실패
+
+    def test_entrypoints_flush_at_the_end_of_the_script(self):
+        """엔트리포인트가 **스크립트 끝에서** flush 하는지 — 배선 + 순서 가드.
+
+        예약만 하고 아무도 소비하지 않으면 이 수정은 아무 효과가 없다. 그리고
+        소비 **위치**도 중요하다: `init_session_state()`(앱 최상단) 안에서 flush
+        하면 CookieManager 가 숨은 iframe 을 **캡션 컴포넌트보다 먼저** 렌더해
+        DOM 의 첫 iframe 이 캡션이 아니게 되고, `iframe.first` 로 캡션 프레임을
+        잡는 e2e 가 무너진다 (실측: 198 passed → 3 failed + 2 errors).
+        """
+        import pathlib
+
+        repo = pathlib.Path(__file__).resolve().parent.parent
+        for rel in ("app.py", "pages/admin_dashboard.py"):
+            src = (repo / rel).read_text(encoding="utf-8")
+            calls = [
+                i
+                for i, line in enumerate(src.splitlines())
+                if line.strip() == "flush_pending_session_cookie()"
+            ]
+            assert calls, f"{rel} 이 예약된 쿠키를 소비하지 않는다 — 수정이 무효다"
+
+            body = [
+                i
+                for i, line in enumerate(src.splitlines())
+                if line.strip() and not line.lstrip().startswith("#")
+            ]
+            assert calls[-1] >= body[-1], (
+                f"{rel} 의 flush 가 스크립트 끝이 아니다. 앞쪽에서 부르면 쿠키 "
+                "iframe 이 캡션 컴포넌트보다 먼저 렌더된다 (#165)."
+            )
+
+    def test_init_session_state_does_not_flush(
+        self, mock_streamlit, mock_cookie_manager
+    ):
+        """`init_session_state` 는 flush 하지 **않는다** — 위 순서 규칙의 짝."""
+        mock_streamlit.session_state = SessionState()
+
+        with patch("auth.get_cookie_manager", return_value=mock_cookie_manager):
+            from auth import _PENDING_COOKIE_STATE_KEY, init_session_state
+
+            mock_streamlit.session_state[_PENDING_COOKIE_STATE_KEY] = "1:op:tok:sig"
+            init_session_state()
+
+            assert (
+                mock_streamlit.session_state.get(_PENDING_COOKIE_STATE_KEY)
+                == "1:op:tok:sig"
+            ), "init_session_state 가 예약을 소비했다 — 쿠키 iframe 이 앞서 렌더된다"
+        mock_cookie_manager.set.assert_not_called()

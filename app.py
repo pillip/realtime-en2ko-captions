@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 from auth import (
     display_login_form,
     display_user_info,
+    flush_pending_session_cookie,
     get_current_user,
     init_session_state,
     is_authenticated,
@@ -496,3 +497,16 @@ else:
         # 템플릿 누락/직렬화 불가 payload 도 여기로 모이므로 구분이 필요하다.
         print(f"[Bootstrap] 컴포넌트 렌더 실패: {e!r}")
         st.error("시스템을 로드할 수 없습니다.")
+
+# 로그인 직후 예약된 쿠키 쓰기를 **스크립트 맨 끝에서** 소비한다 (#165).
+#
+# `display_login_form` 은 성공 직후 `st.rerun()` 을 부르고, 그 rerun 이 쿠키 쓰기
+# 델타를 버린다. 그래서 `set_session_cookie` 가 다음 런에 다시 쓰도록 예약해 두고
+# 여기서 flush 한다.
+#
+# **왜 맨 끝인가.** `init_session_state()` 안에서 flush 하면 CookieManager 가
+# 숨은 iframe 을 **캡션 컴포넌트보다 먼저** 렌더해, DOM 의 첫 iframe 이 캡션이
+# 아니게 된다. e2e 가 `iframe.first` 로 캡션 프레임을 잡으므로 그 순간
+# `updateFsFont is not defined` / `Frame was detached` 로 무너진다(실측: 198 passed
+# → 3 failed + 2 errors). 맨 끝에서 쓰면 순서가 보존된다.
+flush_pending_session_cookie()
