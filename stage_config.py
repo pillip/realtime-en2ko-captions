@@ -52,6 +52,12 @@ DEFAULT_STAGE_CONFIG: dict[str, Any] = {
     "event_title": "",
     "event_subtitle": "",
     "caption_ratio": DEFAULT_CAPTION_RATIO,
+    # 로고 바에 "주최/주관/후원" 글자를 띄울지 (관리자 토글).
+    # **기본값이 True 인 이유**: 이 키가 도입되기 전에 저장된 룸의
+    # `stage_config` 에는 이 키가 없다. 그 룸들은 지금까지 라벨이 보이는 화면을
+    # 쓰고 있었으므로, 키 부재를 "끄기" 로 읽으면 **기존 무대 화면이 말없이
+    # 바뀐다**. 부재 = 종전 동작으로 둔다.
+    "show_logo_labels": True,
     "logo_groups": [{"label": label, "assets": []} for label in LOGO_GROUP_LABELS],
 }
 
@@ -77,6 +83,7 @@ def normalize_stage_config(raw: Any) -> dict[str, Any]:
         "event_title": _as_text(data.get("event_title")),
         "event_subtitle": _as_text(data.get("event_subtitle")),
         "caption_ratio": _as_caption_ratio(data.get("caption_ratio")),
+        "show_logo_labels": _as_show_logo_labels(data.get("show_logo_labels")),
         "logo_groups": _as_logo_groups(data.get("logo_groups")),
     }
 
@@ -113,6 +120,12 @@ def validate_stage_config(cfg: Any) -> tuple[bool, str]:
                 False,
                 f"{label}은(는) 최대 {limit}자까지 입력할 수 있습니다 (현재 {len(value)}자).",
             )
+
+    # 키가 **없는** 것은 허용한다 — 이 키 도입 이전에 저장된 설정이 그렇고,
+    # `normalize_stage_config` 가 True 로 채운다. 다만 들어 있다면 bool 이어야
+    # 한다: 쓰기 경로는 조용히 고치지 않고 사유와 함께 거절한다.
+    if "show_logo_labels" in cfg and not isinstance(cfg["show_logo_labels"], bool):
+        return False, "로고 라벨 표시 여부는 참/거짓 값이어야 합니다."
 
     groups = cfg.get("logo_groups", [])
     if not isinstance(groups, list):
@@ -159,6 +172,32 @@ def _as_text(value: Any) -> str:
 
 def _as_caption_ratio(value: Any) -> str:
     return value if value in CAPTION_RATIOS else DEFAULT_CAPTION_RATIO
+
+
+def _as_show_logo_labels(raw: Any) -> bool:
+    """로고 그룹 라벨 표시 여부를 bool 로 정규화한다. 예외를 던지지 않는다.
+
+    **키가 없으면 True** — 이 키 도입 이전에 저장된 룸을 조용히 바꾸지 않기
+    위해서다 (`DEFAULT_STAGE_CONFIG` 주석 참고).
+
+    JSON 왕복을 거치므로 `true/false` 외에 문자열이 들어올 수 있다. 관리자
+    폼은 bool 만 보내지만, `rooms.stage_config` 는 컬럼 레벨 스키마가 없는
+    JSON-in-TEXT 라 언제든 손으로 들어간 값이 있을 수 있다. 읽기 경로는 항상
+    문서화된 기본값으로 degrade 한다.
+    """
+    if raw is None:
+        return True
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        lowered = raw.strip().lower()
+        if lowered in ("false", "0", "no", "off"):
+            return False
+        # 알 수 없는 문자열은 종전 동작(표시)으로 degrade 한다.
+        return True
+    if isinstance(raw, int | float):
+        return bool(raw)
+    return True
 
 
 def _as_logo_groups(value: Any) -> list[dict[str, Any]]:

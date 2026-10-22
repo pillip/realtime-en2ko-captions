@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import json
+import pathlib
 import re
 import sys
 from pathlib import Path
@@ -1743,3 +1744,68 @@ class TestStageTemplatePlaceholders:
         )
         left = _PLACEHOLDER_RE.findall(body)
         assert left == [], f"unsubstituted placeholders: {left}"
+
+
+class TestLogoLabelToggleInTheRenderer:
+    """`components/stage.html` 이 `show_logo_labels` 를 존중하는지.
+
+    서버 렌더가 아니라 **클라이언트 JS** 가 로고 바를 그리므로, 설정 키만
+    추가하고 템플릿을 고치지 않으면 토글이 아무 일도 하지 않는다. 그 배선을
+    구조적으로 고정한다.
+    """
+
+    @staticmethod
+    def _source() -> str:
+        return (
+            pathlib.Path(__file__).resolve().parent.parent / "components" / "stage.html"
+        ).read_text(encoding="utf-8")
+
+    def test_renderer_reads_the_flag(self):
+        src = self._source()
+        assert "show_logo_labels" in src, (
+            "stage.html 이 show_logo_labels 를 읽지 않는다 — 관리자 토글이 "
+            "화면에 아무 영향을 주지 못한다."
+        )
+
+    def test_absent_flag_keeps_labels_visible(self):
+        """`!== false` 로 읽어야 한다 — 키 부재가 '끄기' 가 되면 안 된다.
+
+        `Boolean(cfg.show_logo_labels)` 나 `cfg.show_logo_labels === true` 로
+        쓰면 이 옵션 도입 **이전에 저장된 룸**의 라벨이 말없이 사라진다. 그
+        룸들의 설정에는 키 자체가 없기 때문이다.
+        """
+        src = self._source()
+        assert "cfg.show_logo_labels !== false" in src, (
+            "키 부재를 종전 동작(표시)으로 읽지 않는다. `!== false` 가 아니면 "
+            "기존 룸의 무대 화면이 조용히 바뀐다."
+        )
+
+    def test_label_span_is_conditional(self):
+        """라벨 span 생성이 조건 안에 들어 있다."""
+        src = self._source()
+        # `logo-group-label` 은 CSS 선언에도 나오므로 **JS 쪽**을 특정한다.
+        idx = src.find('caption.className = "logo-group-label"')
+        assert idx != -1, "라벨 span 생성 코드가 사라졌다"
+        window = src[max(0, idx - 400) : idx]
+        assert (
+            "if (showLogoLabels)" in window
+        ), "라벨 span 이 조건 없이 항상 생성된다 — 토글이 동작하지 않는다."
+
+    def test_alt_text_is_not_gated_by_the_toggle(self):
+        """**접근성**: 라벨을 꺼도 로고 alt 텍스트는 남는다.
+
+        이 토글은 화면에서 글자를 빼는 선택이지, 스크린 리더 사용자가 그룹을
+        구분하지 못하게 하려는 것이 아니다. alt 를 같이 지우면 시각적 정리가
+        곧 접근성 후퇴가 된다 (RL-019 계열).
+        """
+        src = self._source()
+        alt_idx = src.find('label + " 로고"')
+        assert alt_idx != -1, "로고 alt 텍스트 구성이 사라졌다"
+        cond_idx = src.find("if (showLogoLabels)")
+        assert cond_idx != -1
+        # alt 구성이 조건 블록 **밖**이어야 한다: 조건 블록은 span 생성까지만.
+        block_end = src.find("}", src.find("wrap.appendChild(caption)", cond_idx))
+        assert alt_idx > block_end, (
+            "alt 텍스트가 라벨 토글 조건 안에 들어갔다 — 라벨을 끄면 스크린 "
+            "리더가 그룹을 구분할 수 없게 된다."
+        )

@@ -725,6 +725,7 @@ def _render_admin_room_create(room_model, user_model, current_user):
 _STAGE_TITLE_KEY = "stage_cfg_title"
 _STAGE_SUBTITLE_KEY = "stage_cfg_subtitle"
 _STAGE_RATIO_KEY = "stage_cfg_ratio"
+_STAGE_SHOW_LABELS_KEY = "stage_cfg_show_logo_labels"
 _STAGE_SEEDED_ROOM_KEY = "stage_cfg_seeded_room"
 # 업로더 초기화용 nonce — key 가 바뀌면 Streamlit 이 위젯 상태를 버린다.
 # 저장에 반영된 파일이 폼에 남아 다음 저장 때 중복 업로드되는 것을 막는다.
@@ -815,6 +816,10 @@ def _seed_stage_form_state(room_id, config):
     st.session_state[_STAGE_TITLE_KEY] = config.get("event_title", "")
     st.session_state[_STAGE_SUBTITLE_KEY] = config.get("event_subtitle", "")
     st.session_state[_STAGE_RATIO_KEY] = config.get("caption_ratio", CAPTION_RATIOS[0])
+    # 키가 없는 기존 룸은 True — 라벨이 보이던 종전 동작을 유지한다.
+    st.session_state[_STAGE_SHOW_LABELS_KEY] = bool(
+        config.get("show_logo_labels", True)
+    )
 
 
 def _warn_stage_asset_drift(config, disk_names):
@@ -1021,6 +1026,15 @@ def _render_stage_config_form(room_id):
             horizontal=True,
             help="무대 화면 오른쪽 자막 컬럼이 차지할 가로 비율입니다.",
         )
+        show_logo_labels = st.checkbox(
+            "로고 바에 주최/주관/후원 글자 표시",
+            key=_STAGE_SHOW_LABELS_KEY,
+            help=(
+                "끄면 무대 화면 하단 로고 바에서 그룹 이름 글자가 사라지고 "
+                "로고 이미지만 남습니다. 로고 자체와 그룹 구분은 그대로이며, "
+                "스크린 리더용 대체 텍스트도 유지됩니다."
+            ),
+        )
         for label in LOGO_GROUP_LABELS:
             uploads[label] = st.file_uploader(
                 f"{label} 로고 추가",
@@ -1034,6 +1048,7 @@ def _render_stage_config_form(room_id):
         "event_title": title,
         "event_subtitle": subtitle,
         "caption_ratio": ratio,
+        "show_logo_labels": show_logo_labels,
         "uploads": uploads,
     }
 
@@ -1081,6 +1096,7 @@ def _save_stage_config(room_model, room_id, current_config, values):
         event_title=values["event_title"],
         event_subtitle=values["event_subtitle"],
         caption_ratio=values["caption_ratio"],
+        show_logo_labels=values["show_logo_labels"],
         logo_groups=existing,
     )
     ok, reason = validate_stage_config(preflight)
@@ -1102,6 +1118,7 @@ def _save_stage_config(room_model, room_id, current_config, values):
         event_title=values["event_title"],
         event_subtitle=values["event_subtitle"],
         caption_ratio=values["caption_ratio"],
+        show_logo_labels=values["show_logo_labels"],
         logo_groups={
             label: existing.get(label, []) + accepted_by_label.get(label, [])
             for label in LOGO_GROUP_LABELS

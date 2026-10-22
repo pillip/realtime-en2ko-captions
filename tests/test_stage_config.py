@@ -40,6 +40,7 @@ class TestDefaultStageConfig:
             "event_title": "",
             "event_subtitle": "",
             "caption_ratio": "1/4",
+            "show_logo_labels": True,
             "logo_groups": [
                 {"label": "주최", "assets": []},
                 {"label": "주관", "assets": []},
@@ -155,6 +156,7 @@ class TestNormalizeAcceptedShapes:
             "event_title": "2026 개발자 콘퍼런스",
             "event_subtitle": "A홀 기조연설",
             "caption_ratio": "1/3",
+            "show_logo_labels": False,
             "logo_groups": [
                 {"label": "주최", "assets": ["host-1.png"]},
                 {"label": "주관", "assets": []},
@@ -385,3 +387,88 @@ class TestValidateStructure:
         for raw in (None, "{", "[]", {"caption_ratio": "1/2"}, {"event_title": 1}):
             ok, reason = validate_stage_config(normalize_stage_config(raw))
             assert ok is True, f"{raw!r} → {reason}"
+
+
+class TestShowLogoLabels:
+    """로고 그룹 라벨 표시 토글 — 관리자가 끌 수 있다.
+
+    **핵심 성질은 "키가 없으면 켜짐"** 이다. 이 옵션 도입 이전에 저장된 룸의
+    `stage_config` 에는 키가 없고, 그 룸들은 지금까지 라벨이 보이는 화면을 쓰고
+    있었다. 키 부재를 "끄기" 로 읽으면 **기존 무대 화면이 말없이 바뀐다** —
+    행사 당일에 아무도 건드리지 않은 화면이 달라지는 종류의 회귀다.
+    """
+
+    def test_missing_key_defaults_to_showing_labels(self):
+        """키가 없는 기존 설정은 종전 동작(표시)을 유지한다."""
+        cfg = normalize_stage_config({"caption_ratio": "1/4"})
+        assert cfg["show_logo_labels"] is True
+
+    def test_explicit_false_is_respected(self):
+        assert (
+            normalize_stage_config({"show_logo_labels": False})["show_logo_labels"]
+            is False
+        )
+
+    def test_explicit_true_is_respected(self):
+        assert (
+            normalize_stage_config({"show_logo_labels": True})["show_logo_labels"]
+            is True
+        )
+
+    @pytest.mark.parametrize("raw", ["false", "FALSE", " off ", "0", "no"])
+    def test_falsey_strings_turn_labels_off(self, raw):
+        """JSON-in-TEXT 라 손으로 들어간 문자열이 있을 수 있다."""
+        assert (
+            normalize_stage_config({"show_logo_labels": raw})["show_logo_labels"]
+            is False
+        )
+
+    @pytest.mark.parametrize("raw", [None, {}, [], "아무말", object()])
+    def test_unknown_values_degrade_to_showing(self, raw):
+        """읽기 경로는 예외 대신 **종전 동작**으로 degrade 한다.
+
+        무대 화면은 행사 중에 죽으면 안 되고, 깨진 값 때문에 라벨이 사라지는
+        것보다 그대로 보이는 쪽이 안전하다.
+        """
+        assert (
+            normalize_stage_config({"show_logo_labels": raw})["show_logo_labels"]
+            is True
+        )
+
+    def test_normalize_never_raises_on_hostile_values(self):
+        for raw in (
+            '{"show_logo_labels": {"a": [1,2]}}',
+            '{"show_logo_labels": 1e309}',
+        ):
+            assert isinstance(normalize_stage_config(raw)["show_logo_labels"], bool)
+
+    def test_validate_rejects_non_bool(self):
+        """쓰기 경로는 조용히 고치지 않고 사유와 함께 거절한다."""
+        cfg = normalize_stage_config({})
+        cfg["show_logo_labels"] = "false"
+        ok, reason = validate_stage_config(cfg)
+        assert ok is False
+        assert "참/거짓" in reason
+
+    def test_validate_accepts_both_bools(self):
+        for value in (True, False):
+            cfg = normalize_stage_config({})
+            cfg["show_logo_labels"] = value
+            assert validate_stage_config(cfg) == (True, "")
+
+    def test_validate_allows_the_key_to_be_absent(self):
+        """이 키 도입 이전에 저장된 설정을 거절하면 기존 룸이 저장 불가가 된다."""
+        cfg = normalize_stage_config({})
+        del cfg["show_logo_labels"]
+        assert validate_stage_config(cfg) == (True, "")
+
+    def test_normalized_config_always_passes_validation(self):
+        """모듈 계약: 정규화를 거친 설정은 항상 검증을 통과한다."""
+        for raw in (
+            None,
+            "",
+            "{}",
+            {"show_logo_labels": "nonsense"},
+            {"show_logo_labels": 3},
+        ):
+            assert validate_stage_config(normalize_stage_config(raw)) == (True, "")
