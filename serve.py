@@ -71,13 +71,30 @@ def _streamlit_flag_options() -> dict[str, object]:
 
 def main(script: str = "app.py") -> None:
     # 1) 백그라운드 서버 먼저 — 브라우저 접속과 무관하게 포트를 연다.
-    from background_servers import start_background_servers
+    from background_servers import start_background_servers, wait_until_ready
 
     state = start_background_servers()
-    if state["errors"]:
+
+    # 스레드가 떴다는 것과 포트가 열렸다는 것은 다르다. 2026-10-22 배포에서
+    # SSE 스레드가 마이그레이션 경합으로 죽었는데, 컨테이너는 "정상" 으로 보이고
+    # 포트 미개방은 ALB 502 로만 드러났다 — 로그에 판정용 한 줄이 없었다.
+    # 여기서 실제 바인딩을 확인해 한 줄로 남긴다.
+    ready = wait_until_ready()
+    down = sorted(name for name, ok in ready.items() if not ok)
+    errors = state["errors"]
+
+    if down or errors:
         # 기동 실패를 조용히 넘기지 않는다. Streamlit 은 계속 띄운다 —
         # 오퍼레이터 UI 까지 죽이면 복구 수단이 사라진다.
-        print(f"[Boot] 백그라운드 서버 일부 기동 실패: {state['errors']}")
+        print(f"[Boot] ⚠ 백그라운드 서버 기동 실패 — 포트 미개방: {down or '없음'}")
+        if errors:
+            print(f"[Boot] ⚠ 기동 중 발생한 오류: {errors}")
+        print(
+            "[Boot] ⚠ 뷰어(/view, /stage, /stream, /branding)와 번역 WebSocket 이 "
+            "동작하지 않는다. 위 오류를 해결하고 컨테이너를 재시작하라."
+        )
+    else:
+        print("[Boot] 백그라운드 서버 준비 완료 — 포트 전부 응답 중")
 
     # 2) 같은 프로세스에서 Streamlit 실행.
     from streamlit import config as _config

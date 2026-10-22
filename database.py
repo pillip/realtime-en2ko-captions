@@ -6,6 +6,7 @@
 import json
 import os
 import sqlite3
+import threading
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Any
@@ -1276,37 +1277,64 @@ _user_model = None
 _usage_log_model = None
 _room_model = None
 
+# 싱글턴 생성을 직렬화하는 락 (#158).
+#
+# **왜 필요한가**: `serve.py` 는 WS 서버 스레드를 띄우고 곧바로 메인 스레드에서
+# `get_room_model()` 을 부른다. WS 스레드도 ISSUE-26 hydration 에서 같은 함수를
+# 부르므로, 락이 없으면 두 스레드가 모두 `_db_manager is None` 을 보고 각자
+# `DatabaseManager` 를 만들어 `init_database()` 를 돌린다. 그러면
+# `_migrate_add_*` 들의 `PRAGMA table_info` **check-then-act** 가 깨져 둘 다
+# ALTER 를 쏘고 진 쪽이 `duplicate column name` 으로 터진다 — 2026-10-22
+# 프로덕션 부팅에서 SSE(8766) 서버가 이렇게 죽었다.
+#
+# 마이그레이션 쪽을 try/except 로 바꾸지 않은 이유는 `_migrate_add_room_viewer_
+# metric_columns` 주석에 있다: PRAGMA 게이팅은 무관한 ALTER 실패를 삼키지
+# 않으려는 의도적 선택이다. 고칠 지점은 "한 프로세스에서 init_database() 는 한
+# 번만" 이라는 불변식이고, 그건 여기서 지킨다.
+#
+# **RLock 인 이유**: `get_user_model()` → `get_db_manager()` 처럼 게터가 서로를
+# 부르므로 같은 스레드가 락을 두 번 잡는다. 하나의 락을 공유하면 락 순서
+# 문제도 생기지 않는다.
+_SINGLETON_LOCK = threading.RLock()
+
 
 def get_db_manager() -> DatabaseManager:
-    """데이터베이스 매니저 싱글톤 인스턴스 반환"""
+    """데이터베이스 매니저 싱글톤 인스턴스 반환 (스레드 안전)"""
     global _db_manager
-    if _db_manager is None:
-        db_path = os.getenv("DB_PATH", "data/app.db")
-        _db_manager = DatabaseManager(db_path)
-        # 초기 관리자 계정 생성 시도
-        init_admin_from_env(_db_manager)
+    with _SINGLETON_LOCK:
+        if _db_manager is None:
+            db_path = os.getenv("DB_PATH", "data/app.db")
+            _db_manager = DatabaseManager(db_path)
+            # 초기 관리자 계정 생성 시도.
+            # `_db_manager` 를 **먼저** 공개한 뒤 부른다 — 이 함수가 나중에
+            # 게터를 재귀 호출하게 바뀌어도 무한 재귀로 가지 않는다 (RLock 은
+            # 재진입을 허용하므로 락만으로는 못 막는다).
+            init_admin_from_env(_db_manager)
     return _db_manager
 
 
 def get_user_model() -> User:
-    """User 모델 인스턴스 반환"""
+    """User 모델 인스턴스 반환 (스레드 안전)"""
     global _user_model
-    if _user_model is None:
-        _user_model = User(get_db_manager())
+    with _SINGLETON_LOCK:
+        if _user_model is None:
+            _user_model = User(get_db_manager())
     return _user_model
 
 
 def get_usage_log_model() -> UsageLog:
-    """UsageLog 모델 인스턴스 반환"""
+    """UsageLog 모델 인스턴스 반환 (스레드 안전)"""
     global _usage_log_model
-    if _usage_log_model is None:
-        _usage_log_model = UsageLog(get_db_manager())
+    with _SINGLETON_LOCK:
+        if _usage_log_model is None:
+            _usage_log_model = UsageLog(get_db_manager())
     return _usage_log_model
 
 
 def get_room_model() -> "Room":
-    """Room 모델 싱글톤 (ISSUE-26)."""
+    """Room 모델 싱글톤 (ISSUE-26). 스레드 안전 (#158)."""
     global _room_model
-    if _room_model is None:
-        _room_model = Room(get_db_manager())
+    with _SINGLETON_LOCK:
+        if _room_model is None:
+            _room_model = Room(get_db_manager())
     return _room_model
