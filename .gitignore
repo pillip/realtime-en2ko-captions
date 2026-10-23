@@ -78,6 +78,15 @@ users.db
 # (branding_assets.py, ISSUE-38) 저장소에 들어갈 물건이 아니다.
 data/
 
+# 런타임 로그 볼륨 (docker-compose 가 ./logs 로 마운트). `data/` 와 같은 성격인데
+# 패턴이 아예 없어서 커밋 가능한 상태였다 — 서버 로그에는 룸 ID, 사용자명, 전사
+# 텍스트가 섞여 들어간다.
+logs/
+
+# 로컬 검수용 스크린샷 (운영자/무대/뷰어 화면). 실제 룸 브랜딩과 자막이 찍히므로
+# 저장소에 넣지 않는다.
+.local-review-shots/
+
 # git worktree 작업 트리 (scripts/worktree.sh). 저장소 안에 중첩 체크아웃이
 # 생기므로 추적하면 안 되고, 린터가 중복 사본까지 검사하게 된다.
 .worktrees/

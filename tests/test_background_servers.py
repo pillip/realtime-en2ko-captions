@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import ast
 import pathlib
+import socket
 import sys
 from unittest.mock import MagicMock
 
@@ -153,6 +154,26 @@ class TestServeIsTheBootPath:
             "그 뒤의 서버 기동은 영영 실행되지 않는다 (#158)."
         )
 
+    def test_readiness_is_checked_before_streamlit_bootstrap(self):
+        """포트가 실제로 열렸는지 확인하고 넘어간다.
+
+        2026-10-22 배포에서 SSE 스레드가 마이그레이션 경합으로 죽었는데
+        컨테이너는 "정상" 으로 보였다. 포트 미개방은 ALB 502 로만 드러났고
+        로그에는 판정에 쓸 한 줄이 없었다. `bootstrap.run` 뒤에서 확인하면
+        블로킹이라 영영 실행되지 않으므로 순서까지 고정한다.
+        """
+        lines = ast.dump(ast.Module(body=self._main_body(), type_ignores=[]))
+        ready_at = lines.find("wait_until_ready")
+        boot_at = lines.find("bootstrap")
+        assert ready_at != -1, (
+            "serve.py 가 포트 개방을 확인하지 않는다 — 스레드가 떴다는 것과 "
+            "포트가 열렸다는 것은 다르다."
+        )
+        assert ready_at < boot_at, (
+            "serve.py 가 Streamlit 을 먼저 띄운다 — bootstrap.run 은 블로킹이라 "
+            "그 뒤의 준비 확인은 영영 실행되지 않는다."
+        )
+
     def test_dockerfile_runs_serve_not_streamlit_run(self):
         """컨테이너 엔트리포인트가 `serve.py` 다.
 
@@ -228,4 +249,108 @@ class TestBootPathDoesNotPoisonComponentRegistration:
         assert "from extra_streamlit_components import CookieManager" in src, (
             "CookieManager import 가 아예 사라졌다 — 지연시키는 것과 없애는 것은 "
             "다르다."
+        )
+
+
+class TestThreadBodyFailuresAreNotSwallowed:
+    """스레드 **안에서** 터진 예외도 `errors` 에 남는다."""
+
+    def test_exception_inside_the_sse_thread_lands_in_errors(
+        self, fresh_module, monkeypatch
+    ):
+        """`thread.start()` 만 감싸면 스레드 본문 예외는 흔적 없이 사라진다.
+
+        2026-10-22 장애에서 SSE 실패가 드러난 건 `get_room_model()` 이 우연히
+        **메인 스레드**에서 호출됐기 때문이다. `run_sse_server` 자체가 스레드
+        안에서 죽었다면 기본 excepthook 이 stderr 에 찍고 끝나, 호출자는 기동이
+        성공했다고 믿고 `[Boot]` 경고도 안 나왔다.
+        """
+        for target in (
+            "database.get_room_model",
+            "websocket_handler.get_broadcast_manager",
+            "websocket_handler.attach_broadcast_metrics_repo",
+        ):
+            monkeypatch.setattr(target, MagicMock(), raising=False)
+        # 실제 포트를 잡지 않도록 WS 는 즉시 반환시킨다.
+        monkeypatch.setattr(
+            "websocket_handler.start_websocket_server",
+            lambda *a, **k: None,
+            raising=False,
+        )
+
+        def exploding_sse_server(**kwargs):
+            raise RuntimeError("bind failed")
+
+        monkeypatch.setattr(
+            "sse_broadcast.run_sse_server", exploding_sse_server, raising=False
+        )
+
+        state = fresh_module.start_background_servers()
+        state["sse_thread"].join(timeout=15)
+
+        errors = fresh_module.get_state()["errors"]
+        assert any("sse" in e and "bind failed" in e for e in errors), (
+            f"스레드 본문 예외가 errors 에 없다: {errors!r}. 포트가 안 열린 "
+            "이유를 아무도 모르는 상태로 컨테이너가 '정상' 으로 보인다."
+        )
+
+    def test_a_healthy_start_reports_no_errors(self, fresh_module, monkeypatch):
+        """양성 대조군 — 감시 래퍼가 멀쩡한 기동을 실패로 만들지 않는다."""
+        for target in (
+            "database.get_room_model",
+            "websocket_handler.get_broadcast_manager",
+            "websocket_handler.attach_broadcast_metrics_repo",
+            "sse_broadcast.run_sse_server",
+            "websocket_handler.start_websocket_server",
+        ):
+            monkeypatch.setattr(target, MagicMock(), raising=False)
+
+        state = fresh_module.start_background_servers()
+        state["sse_thread"].join(timeout=15)
+        state["websocket_thread"].join(timeout=15)
+
+        assert fresh_module.get_state()["errors"] == []
+
+
+class TestReadinessProbe:
+    """`wait_until_ready` 가 실제 바인딩을 본다."""
+
+    @staticmethod
+    def _closed_port() -> int:
+        """확실히 비어 있는 포트 번호. 바인드해서 번호를 받고 바로 닫는다."""
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", 0))
+            return s.getsockname()[1]
+
+    def test_closed_ports_are_reported_not_ready(self, fresh_module, monkeypatch):
+        monkeypatch.setenv("WS_PORT", str(self._closed_port()))
+        monkeypatch.setenv("SSE_PORT", str(self._closed_port()))
+
+        ready = fresh_module.wait_until_ready(timeout=0.2, interval=0.01)
+
+        assert ready == {
+            "websocket": False,
+            "sse": False,
+        }, f"닫힌 포트를 준비됨으로 봤다: {ready}. 이러면 기동 실패를 못 잡는다."
+
+    def test_a_listening_socket_is_reported_ready(self, fresh_module, monkeypatch):
+        # 포트를 둘로 나눈다 — 실제 WS(8765)/SSE(8766)가 별개 포트이고, 한
+        # 리스너에 두 번 연결하면 백로그가 차서 두 번째가 거부된다.
+        listeners = []
+        try:
+            for env_name in ("WS_PORT", "SSE_PORT"):
+                listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                listener.bind(("127.0.0.1", 0))
+                listener.listen(5)
+                listeners.append(listener)
+                monkeypatch.setenv(env_name, str(listener.getsockname()[1]))
+
+            ready = fresh_module.wait_until_ready(timeout=5, interval=0.01)
+        finally:
+            for listener in listeners:
+                listener.close()
+
+        assert ready == {"websocket": True, "sse": True}, (
+            f"리스닝 중인 포트를 못 봤다: {ready}. 정상 기동을 실패로 보고하면 "
+            "경고가 늑대 소년이 된다."
         )

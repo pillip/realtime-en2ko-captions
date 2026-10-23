@@ -67,6 +67,36 @@ import 하므로 문제가 없고, e2e 198개가 전부 통과한 채로 배포�
 `bootstrap.load_config_options(flag_options=...)` 로 **넘겨야** 적용된다.
 환경변수만 세팅하는 것으로는 먹지 않는다 — `STREAMLIT_SERVER_PORT=8597` 을 줘도
 8501 에 바인딩하는 것을 실측했다. 8501 이 기본값이라 가려져 있었다.
+#### 차가운 부팅은 DB 싱글턴 경합을 드러낸다 (2026-10-22)
+
+`serve.py` 는 `_db_manager` 가 **완전히 비어 있는** 상태에서 WS 스레드를 띄우고
+곧바로 메인 스레드에서 `get_room_model()` 을 부른다. WS 스레드도 ISSUE-26
+hydration 에서 같은 함수를 부르므로, 락이 없으면 두 스레드가 각자
+`DatabaseManager` 를 만들어 `init_database()` 를 돌린다. 그러면 `_migrate_add_*`
+들의 `PRAGMA table_info` **check-then-act** 가 깨져 둘 다 `ALTER TABLE` 을 쏘고
+진 쪽이 터진다. 첫 배포에서 정확히 이렇게 죽었다:
+
+```
+[SSE] 서버 스레드 시작 실패: OperationalError('duplicate column name: stage_config')
+```
+
+WS(8765)만 떠서 컨테이너는 "정상" 으로 보였고, `/view/*`·`/stream/*`·`/stage/*`·
+`/branding/*` 가 전부 ALB 502 였다. `database.py` 의 `_SINGLETON_LOCK` 이 이걸
+막는다 — **마이그레이션 쪽을 try/except 로 바꾸지 말 것.** PRAGMA 게이팅은
+무관한 ALTER 실패를 삼키지 않으려는 의도적 선택이라고 같은 파일에 적혀 있다.
+고칠 지점은 "한 프로세스에서 `init_database()` 는 한 번만" 이라는 불변식이다.
+
+주의: 이 버그는 **ALTER 가 실제로 실행될 때만** 보인다. 컬럼이 이미 다 있는
+DB 에서는 경합 창이 열리지 않는다. 그래서 스키마가 뒤처진 DB 로 처음 부팅하는
+환경(신규 배포, CI, 새 개발자 로컬)에서만 터진다.
+`tests/test_database_singleton_threadsafety.py` 가 컬럼을 일부러 떼어내 이
+조건을 재현한다.
+
+`serve.py` 는 기동 후 `wait_until_ready()` 로 **포트 실제 개방**을 확인하고 한
+줄로 판정을 남긴다. 스레드가 떴다는 것과 포트가 열렸다는 것은 다르고, 이번
+장애에서 로그에는 판정에 쓸 줄이 없었다. `_supervise()` 는 스레드 **본문**
+예외도 `errors` 에 담는다 — `thread.start()` 만 감싸면 스레드 안에서 터진
+예외는 excepthook 이 stderr 에 찍고 끝난다.
 
 ```bash
 # Project setup
@@ -95,6 +125,21 @@ docker run --rm -p 8501:8501 -p 8765:8765 -p 8766:8766 \
   -e VIEWER_BASE_URL=http://<host>:8766 \
   realtime-caption
 # 권장: docker-compose up -d --build  (.env 자동 로드, 포트/볼륨 일괄 구성)
+#
+# `--build` 는 선택이 아니다. 빼면 구 이미지가 그대로 돌아 Dockerfile CMD 변경이
+# 반영되지 않는다 — 2026-10-22 배포에서 `streamlit run app.py` 가 계속 돌아
+# lazy-start 가 살아 있었고, 두 서버가 안 떠서 ALB 502 였다. 적용 여부는
+# `docker inspect realtime-caption --format '{{json .Config.Cmd}}'` 로 확인한다
+# (`["python","serve.py"]` 여야 한다).
+#
+# EC2 의 docker-compose v1.29.2(EOL)는 컨테이너를 *recreate* 할 때
+# `KeyError: 'ContainerConfig'` 로 죽는다 — 최신 Docker 데몬이 만든 이미지의
+# inspect 출력에 그 키가 없기 때문이다. 우회: 컨테이너를 지우고 create 경로로
+# 가면 된다. `./data`·`./logs` 는 호스트 바인드 마운트라 DB/로고/로그가 남는다.
+#   docker-compose stop realtime-caption && docker-compose rm -f realtime-caption
+#   docker-compose up -d
+# 영구 해결은 compose v2 (`sudo apt install docker-compose-v2`) — 단, 행사
+# 직전에는 하지 말 것.
 ```
 
 ### Formatter policy — black only, ruff is a linter (ISSUE-65)

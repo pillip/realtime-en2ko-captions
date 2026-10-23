@@ -35,7 +35,10 @@ Streamlit 보다 **먼저** 부르면 브라우저 없이도 두 포트가 열�
 from __future__ import annotations
 
 import os
+import socket
 import threading
+import time
+import traceback
 from typing import Any
 
 _START_LOCK = threading.Lock()
@@ -59,9 +62,70 @@ def sse_port() -> int:
     return int(os.getenv("SSE_PORT", "8766"))
 
 
+def websocket_port() -> int:
+    """WS 서버 포트 (환경변수 기준, 기본 8765). `sse_port` 와 같은 관례."""
+    return int(os.getenv("WS_PORT", "8765"))
+
+
 def get_state() -> dict[str, Any]:
-    """현재 기동 상태 스냅샷 (읽기 전용 용도)."""
+    """현재 기동 상태 스냅샷 (읽기 전용 용도).
+
+    ``errors`` 는 **같은 리스트 객체**를 돌려준다 — 스레드가 나중에 죽으면서
+    추가한 항목도 보여야 하기 때문이다 (:func:`_supervise` 참고).
+    """
     return dict(_STATE)
+
+
+def _supervise(label: str, fn, errors: list[str]):
+    """스레드 본문 예외를 삼키지 않는 래퍼를 만든다.
+
+    ``thread.start()`` 만 ``try`` 로 감싸면 스레드 **안에서** 터진 예외는 기본
+    excepthook 이 stderr 에 찍고 끝난다 — ``errors`` 는 비어 있고 호출자는 기동이
+    성공했다고 믿는다. 2026-10-22 프로덕션 장애에서 SSE 실패가 드러난 건
+    ``get_room_model()`` 이 우연히 **메인 스레드**에서 호출됐기 때문이고,
+    ``run_sse_server`` 자체가 스레드 안에서 터졌다면 아무 흔적 없이 죽었다.
+
+    ``BaseException`` 까지 잡는다 — 스레드에서는 ``SystemExit`` 도 그냥 종료일
+    뿐이라, 포트가 안 열린 이유를 로그에 남기는 게 더 중요하다.
+    """
+
+    def runner():
+        try:
+            fn()
+        except BaseException as e:  # noqa: BLE001 - 무엇이 죽였는지 기록이 우선
+            errors.append(f"{label}: {e!r}")
+            print(f"[Boot] {label} 스레드가 예외로 종료됨: {e!r}")
+            traceback.print_exc()
+
+    return runner
+
+
+def wait_until_ready(timeout: float = 15.0, interval: float = 0.25) -> dict[str, bool]:
+    """WS/SSE 포트가 실제로 열렸는지 확인한다.
+
+    **스레드가 떴다 ≠ 포트가 열렸다.** `start_background_servers` 는 스레드를
+    띄운 직후 돌아오므로, 그 반환값만 보면 바인딩 실패를 알 수 없다. 2026-10-22
+    장애에서 컨테이너는 "정상" 으로 보였고 포트 미개방은 ALB 502 로만 드러났다 —
+    로그에는 판정에 쓸 한 줄이 없었다.
+
+    Returns:
+        ``{"websocket": bool, "sse": bool}``. 전부 열리면 조기 종료한다.
+    """
+    ports = {"websocket": websocket_port(), "sse": sse_port()}
+    ready = dict.fromkeys(ports, False)
+    deadline = time.monotonic() + timeout
+
+    while True:
+        for name, port in ports.items():
+            if ready[name]:
+                continue
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                probe.settimeout(0.5)
+                # connect_ex 는 예외 대신 errno 를 준다 — 0 이면 리스닝 중.
+                ready[name] = probe.connect_ex(("127.0.0.1", port)) == 0
+        if all(ready.values()) or time.monotonic() >= deadline:
+            return ready
+        time.sleep(interval)
 
 
 def start_background_servers() -> dict[str, Any]:
@@ -85,13 +149,21 @@ def start_background_servers() -> dict[str, Any]:
             start_websocket_server,
         )
 
+        # `errors` 를 **지금** 공개한다 — 스레드가 나중에 죽으면서 추가한
+        # 항목도 `get_state()` 로 보여야 한다. 함수 끝에서 대입하면 스레드가
+        # 붙인 오류를 덮어쓴다.
         errors: list[str] = []
+        _STATE["errors"] = errors
 
         # --- WebSocket (번역 파이프라인) ---
         try:
+            port_ref = _STATE["websocket_port_ref"]
             ws_thread = threading.Thread(
-                target=start_websocket_server,
-                args=(_STATE["websocket_port_ref"],),
+                target=_supervise(
+                    "websocket",
+                    lambda: start_websocket_server(port_ref),
+                    errors,
+                ),
                 daemon=True,
                 name="ws-server",
             )
@@ -111,12 +183,15 @@ def start_background_servers() -> dict[str, Any]:
             # rooms.peak_viewers 를 갱신하도록 metrics_repo 를 연결한다. 멱등.
             attach_broadcast_metrics_repo(repo)
             sse_thread = threading.Thread(
-                target=run_sse_server,
-                kwargs={
-                    "broadcast_manager": manager,
-                    "room_repo": repo,
-                    "port": port,
-                },
+                target=_supervise(
+                    "sse",
+                    lambda: run_sse_server(
+                        broadcast_manager=manager,
+                        room_repo=repo,
+                        port=port,
+                    ),
+                    errors,
+                ),
                 daemon=True,
                 name="sse-server",
             )
@@ -128,7 +203,9 @@ def start_background_servers() -> dict[str, Any]:
             errors.append(f"sse: {e!r}")
             print(f"[SSE] 서버 스레드 시작 실패: {e!r}")
 
-        _STATE["errors"] = errors
+        # `_STATE["errors"]` 는 스레드를 띄우기 **전에** 이미 이 리스트로
+        # 지정했다 — 여기서 다시 대입하면 스레드가 붙인 오류를 덮어쓴다.
+        #
         # 한쪽이 실패해도 started 는 True 다 — 재시도 루프를 돌면 매 리런마다
         # 스레드를 또 띄우게 된다. 실패는 errors 로 드러내고 재시도는 하지 않는다.
         _STATE["started"] = True
