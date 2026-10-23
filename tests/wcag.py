@@ -71,8 +71,65 @@ def _rule_hex(css: str, selector: str, prop: str) -> tuple[int, int, int]:
     return _hex_rgb(match.group(1))
 
 
-def _rule_rgba(css: str, selector: str) -> tuple[float, float, float, float]:
+def custom_properties(css: str, selector: str) -> dict[str, str]:
+    """선택자 블록의 `--name: value` 선언들을 dict 로 돌려준다.
+
+    테마를 CSS 커스텀 프로퍼티로 두면 대비 테스트가 규칙에서 리터럴 색을 더
+    이상 못 읽는다. 그렇다고 리터럴로 되돌리면 테마마다 규칙을 복제해야 하고,
+    복제된 색은 갈라진다 — 이 모듈이 애초에 존재하는 이유와 같은 결함이다
+    (RL-001). 그래서 토큰을 읽어 해석하는 쪽을 택한다.
+    """
     block = _rule_block(css, selector)
+    return {
+        m.group(1): m.group(2).strip()
+        for m in re.finditer(r"(--[\w-]+)\s*:\s*([^;]+);", block)
+    }
+
+
+def resolve_color(
+    value: str, tokens: dict[str, str] | None = None
+) -> tuple[float, float, float, float]:
+    """`rgba()` / `rgb()` / `#rrggbb` / `var(--x)` 를 (r, g, b, a) 로 해석한다.
+
+    `var(--x, fallback)` 의 fallback 은 **쓰지 않는다** — 토큰이 선언돼 있어야
+    한다. 폴백을 조용히 받아 주면 토큰 이름을 틀려도 테스트가 통과한다.
+    """
+    tokens = tokens or {}
+    seen: set[str] = set()
+    raw = value.strip()
+    while raw.startswith("var("):
+        name = raw[4:].split(",")[0].split(")")[0].strip()
+        assert name not in seen, f"순환 참조: {name}"
+        seen.add(name)
+        assert name in tokens, f"선언되지 않은 토큰: {name}"
+        raw = tokens[name].strip()
+
+    rgba = re.fullmatch(
+        r"rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+)\s*)?\)", raw
+    )
+    if rgba:
+        r, g, b, a = rgba.groups()
+        return (int(r), int(g), int(b), float(a) if a is not None else 1.0)
+    if raw.startswith("#"):
+        return (*_hex_rgb(raw), 1.0)
+    raise AssertionError(f"해석할 수 없는 색: {value!r} → {raw!r}")
+
+
+def _rule_rgba(
+    css: str, selector: str, tokens: dict[str, str] | None = None
+) -> tuple[float, float, float, float]:
+    """규칙 블록의 `color:` 를 (r, g, b, a) 로 돌려준다.
+
+    `tokens` 를 주면 `color: var(--x)` 도 해석한다. 주지 않으면 종전처럼
+    리터럴 `rgba()` 만 받는다 — 기존 호출자(viewer 대비 테스트)의 계약을
+    바꾸지 않기 위해서다.
+    """
+    block = _rule_block(css, selector)
+    if tokens is not None:
+        match = re.search(r"(?<![-\w])color:\s*([^;]+);", block)
+        assert match is not None, f"{selector} has no color declaration"
+        return resolve_color(match.group(1), tokens)
+
     match = re.search(
         r"color:\s*rgba\(\s*(\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\s*\)", block
     )

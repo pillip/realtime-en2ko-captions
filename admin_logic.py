@@ -18,7 +18,7 @@ from collections.abc import Iterable, MutableMapping
 from typing import Any
 
 from branding_assets import delete_asset, save_asset
-from stage_config import LOGO_GROUP_LABELS
+from stage_config import LOGO_GROUP_LABELS, normalize_group_title
 
 # 관리자 대시보드 룸 표시용 한글 라벨 — operator_ui._ROOM_STATUS_LABELS
 # 와 동일 정의이지만, admin_logic 은 operator_ui 에 의존하지 않도록 자체
@@ -486,16 +486,21 @@ def _dedupe_preserving_order(names: Any) -> list[Any]:
 def build_stage_config_from_form(
     *,
     event_title: str,
-    event_subtitle: str,
     caption_ratio: str,
     logo_groups: dict[str, list[str]] | None,
+    logo_titles: dict[str, str] | None = None,
     show_logo_labels: bool = True,
 ) -> dict[str, Any]:
     """폼 입력을 ``stage_config`` 후보 dict 로 조립한다 (검증은 하지 않는다).
 
     Args:
         event_title: 행사 타이틀 입력값.
-        event_subtitle: 행사 부제 입력값.
+        logo_titles: ``{그룹 라벨: 표시 글자}``. 관리자가 "주최/주관/후원" 글자를
+            룸마다 고칠 수 있게 하는 입력이다(영문 행사면 Host/Organizer/Sponsor).
+            빈 값은 **여기서 보정하지 않는다** — 폴백 정의를
+            `stage_config.normalize_group_title` 한 곳에만 두기 위해서다. 키는 언제나
+            ``LOGO_GROUP_LABELS`` 이고 표시 글자가 바뀌어도 그룹 식별은 깨지지
+            않는다.
         caption_ratio: 자막 컬럼 비율 라디오 선택값. **보정하지 않고 그대로**
             담는다 — 잘못된 값은 ``validate_stage_config`` 가 사유와 함께
             거절해야 관리자가 무엇이 틀렸는지 알 수 있다.
@@ -515,16 +520,23 @@ def build_stage_config_from_form(
         ``DEFAULT_STAGE_CONFIG`` 와 같은 키를 가진 새 dict.
     """
     groups = dict(logo_groups or {})
+    titles = dict(logo_titles or {})
     ordered_labels = list(LOGO_GROUP_LABELS) + [
         label for label in groups if label not in LOGO_GROUP_LABELS
     ]
     return {
         "event_title": _clean_text(event_title),
-        "event_subtitle": _clean_text(event_subtitle),
         "caption_ratio": caption_ratio,
         "show_logo_labels": bool(show_logo_labels),
         "logo_groups": [
-            {"label": label, "assets": _dedupe_preserving_order(groups.get(label))}
+            {
+                "label": label,
+                # 폴백 정의는 `stage_config.normalize_group_title` 하나다 —
+                # 여기서 같은 규칙을 다시 적어 두면 갈라진다 (RL-001). 이
+                # 함수를 거치므로 "폼이 만든 dict == 정규화된 dict" 가 성립한다.
+                "title": normalize_group_title(titles.get(label), label),
+                "assets": _dedupe_preserving_order(groups.get(label)),
+            }
             for label in ordered_labels
         ],
     }

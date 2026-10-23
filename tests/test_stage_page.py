@@ -39,6 +39,8 @@ from tests.wcag import (
     _rule_block,
     _rule_hex,
     _rule_rgba,
+    custom_properties,
+    resolve_color,
 )
 
 # websocket_handler -> auth -> streamlit 의존성 회피 (다른 테스트와 동일 패턴)
@@ -54,8 +56,27 @@ _STAGE_TEMPLATE = Path(__file__).resolve().parent.parent / "components" / "stage
 _BREAKOUT_TITLE = "</script><script>alert(1)</script>"
 
 # 페이지가 칠하는 두 배경. 대비 계산은 합성 후 색으로 한다 (RL-018).
+# 다크 테마의 캔버스. 프레임 안 캡처 상태 문구들은 **자기 배경**으로
+# `#0b0b0c` 를 선언하므로(= 이 값과 동일) 테마가 바뀌어도 그 판정은 그대로다 —
+# 16:9 프레임은 두 테마에서 모두 어둡다 (stage.html 의 토큰 주석 참고).
 _CANVAS_RGB = (11, 11, 12)  # --canvas: #0b0b0c
-_FRAME_RGB = (0, 0, 0)  # .stage-frame / .title-card 배경
+
+# 테마 토큰이 선언된 두 선택자. 라이트는 다크 위에 **덮어쓰는** 집합이라
+# (CSS 캐스케이드와 같은 방식) 다크에만 있는 토큰도 라이트에서 유효하다.
+_THEMES = ("dark", "light")
+
+
+def _theme_tokens(css: str, theme: str) -> dict[str, str]:
+    tokens = custom_properties(css, ":root")
+    if theme == "light":
+        tokens = {**tokens, **custom_properties(css, ':root[data-theme="light"]')}
+    return tokens
+
+
+def _canvas_rgb(tokens: dict[str, str]) -> tuple[float, float, float]:
+    r, g, b, _a = resolve_color(tokens["--canvas"], tokens)
+    return (r, g, b)
+
 
 # ISSUE-42 가 출하하는 `<button>` 의 전부. 개수와 id 를 한 곳에 못 박아 두고
 # `test_no_interactive_controls` 가 그것과 대조한다 — 무대 화면에 클릭 표면이
@@ -115,12 +136,11 @@ def _room(**overrides: Any) -> dict[str, Any]:
 def _stage_config(**overrides: Any) -> str:
     cfg = {
         "event_title": "",
-        "event_subtitle": "",
         "caption_ratio": "1/4",
         "logo_groups": [
-            {"label": "주최", "assets": []},
-            {"label": "주관", "assets": []},
-            {"label": "후원", "assets": []},
+            {"label": "주최", "title": "주최", "assets": []},
+            {"label": "주관", "title": "주관", "assets": []},
+            {"label": "후원", "title": "후원", "assets": []},
         ],
     }
     cfg.update(overrides)
@@ -171,8 +191,11 @@ class TestJsonForScript:
 
         payload = {
             "event_title": _BREAKOUT_TITLE,
-            "event_subtitle": "a & b > c < d",
-            "logo_groups": [{"label": "주최", "assets": ["logo.png"]}],
+            # 이 테스트의 관심은 **이스케이프 왕복**이다. 특수문자를 담을 자리로
+            # 그룹 표시 글자를 쓴다 (부제가 사라진 자리).
+            "logo_groups": [
+                {"label": "주최", "title": "a & b > c < d", "assets": ["logo.png"]}
+            ],
         }
         assert json.loads(_json_for_script(payload)) == payload
 
@@ -298,10 +321,15 @@ class TestStageHtmlMarkup:
         `docs/requirements.md` NFR-025 가 `?debug=1` 의 `{ passive: true }` 계수기
         하나를 명시적으로 승인하므로, 규격을 지킨 ISSUE-42 구현은 그 어휘적 금지를
         필연적으로 깨뜨린다. 그래서 **삭제하지 않고 더 좁은 구조적 단언으로 강화**
-        한다 — 등록이 정확히 1건이고, 그 1건이 `?debug=1` 가드 블록 안에 있으며,
-        `{ passive: true }` 로 등록되고, 기본 동작 취소/전파 중단 호출이 파일 전체에
-        0건이라는 것까지 센다. 개수(`== 1` / `== 0`)로 단언하는 이유는 RL-004 다 —
-        `in` / `not in` 은 두 번째 리스너가 들어와도 통과한다.
+        한다.
+
+        **#178 이 두 번째 등록을 추가했다 — F10 발표자료 연결 해제.** NFR-025 의
+        load-bearing 부분은 "무대 창이 포커스를 쥐지 않는다" 와 "리모컨이 보내는
+        키를 절대 가로채지 않는다" 이고, 그 둘은 그대로 지킨다. 그래서 단언을
+        "등록 1건" 에서 **"등록 2건이고 둘 다 passive, 둘 다 취소하지 않으며,
+        디버그가 아닌 쪽은 F10 외의 키에 아무 일도 하지 않는다"** 로 좁힌다.
+        개수로 단언하는 이유는 RL-004 다 — `in` / `not in` 은 세 번째 리스너가
+        들어와도 통과한다.
 
         `requestFullscreen` 과 `.focus()` 금지는 이 이슈를 지나도 의도가 그대로이므로
         **문구 그대로** 남긴다: 둘 다 무대 창으로 OS 포커스를 되돌리는 호출이다.
@@ -312,15 +340,15 @@ class TestStageHtmlMarkup:
         assert "requestFullscreen" not in stage_html
         assert ".focus()" not in stage_html
 
-        # (2) keydown 등록은 정확히 1건이다.
+        # (2) keydown 등록은 정확히 2건이다 — ?debug=1 계수기 + F10 해제.
         registrations = list(re.finditer(r'addEventListener\(\s*"keydown"', stage_html))
-        assert len(registrations) == 1, (
+        assert len(registrations) == 2, (
             f"stage.html registers {len(registrations)} keydown listener(s); "
-            "NFR-025 allows exactly one — the ?debug=1 rehearsal counter. Any "
-            "other listener means the stage window can eat a presenter remote key"
+            "허용은 정확히 2건이다 — ?debug=1 리허설 계수기와 F10 발표자료 해제. "
+            "그 밖의 리스너는 무대 창이 프레젠터 리모컨 키를 먹을 수 있다는 뜻이다"
         )
 
-        # (3) 그 1건은 `?debug=1` 가드 블록 **안**에 있다.
+        # (3) 그중 하나는 `?debug=1` 가드 블록 **안**에 있다.
         guard = re.search(
             r"function setupDebugOverlay\(\) \{(.*?)\n    \}", stage_html, re.S
         )
@@ -332,21 +360,44 @@ class TestStageHtmlMarkup:
             f"first statement, got: {first_line!r}"
         )
         start, end = guard.start(1), guard.end(1)
-        assert start < registrations[0].start() < end, (
-            "the keydown registration sits outside the ?debug=1 guard block — "
-            "it would run on the live event screen"
+        inside = [r for r in registrations if start < r.start() < end]
+        outside = [r for r in registrations if not (start < r.start() < end)]
+        assert len(inside) == 1, (
+            f"{len(inside)} keydown registration(s) inside the ?debug=1 guard; "
+            "리허설 계수기 하나여야 한다"
+        )
+        assert len(outside) == 1, (
+            f"{len(outside)} keydown registration(s) outside the ?debug=1 guard; "
+            "F10 해제 하나여야 한다"
         )
 
-        # (4) 그 1건은 `{ passive: true }` 로 등록되고 가드 블록을 벗어나지 않는다.
-        passive = re.compile(
+        # (4) **둘 다** `{ passive: true }` 로 등록된다. passive 리스너는
+        #     preventDefault 를 부를 수 없으므로, 이 한 줄이 "리모컨 키를
+        #     취소하지 않는다" 를 구조적으로 보장한다.
+        passive_re = re.compile(
             r'addEventListener\(\s*"keydown",.*?\{\s*passive:\s*true\s*\}\s*\)',
             re.S,
-        ).match(stage_html, registrations[0].start())
-        assert passive is not None, (
-            "the ?debug=1 keydown counter is not registered with "
-            "{ passive: true } — the browser must be told it never cancels"
         )
-        assert passive.end() <= end, "the keydown registration escapes the guard"
+        for reg in registrations:
+            passive = passive_re.match(stage_html, reg.start())
+            assert passive is not None, (
+                "keydown 리스너가 { passive: true } 없이 등록됐다 — 브라우저에 "
+                "'절대 취소하지 않는다' 를 미리 알려야 한다"
+            )
+        debug_passive = passive_re.match(stage_html, inside[0].start())
+        assert debug_passive is not None
+        assert debug_passive.end() <= end, "the keydown registration escapes the guard"
+
+        # (4b) 디버그가 아닌 리스너는 **F10 외의 키에 아무 일도 하지 않는다.**
+        #      리모컨은 PageUp/PageDown/화살표/Space 를 보내고, 그 키들이 이
+        #      리스너에서 조기 반환되지 않으면 무대 화면이 제멋대로 반응한다.
+        f10_body = passive_re.match(stage_html, outside[0].start())
+        assert f10_body is not None
+        body_text = stage_html[outside[0].start() : f10_body.end()]
+        assert 'ev.key !== "F10"' in body_text, (
+            "F10 리스너에 키 가드가 없다 — 모든 키가 발표자료 해제를 호출한다: "
+            f"{body_text!r}"
+        )
 
         # (5) 취소/전파중단 호출과 keyup 은 파일 전체에서 0건이다. 0건이면
         #     "keydown 문맥에 취소 호출이 없다" 가 자명하게 성립한다.
@@ -361,6 +412,82 @@ class TestStageHtmlMarkup:
             re.findall(r"\bonkeydown\b|\bonkeyup\b|\bonkeypress\b", stage_html)
         )
         assert inline == 0, f"{inline} inline key handler attribute(s) in stage.html"
+
+    def test_theme_is_applied_only_from_the_allow_list(self, stage_html):
+        """모르는 테마 값은 무시한다 (#178).
+
+        테마를 지어내면 `:root[data-theme="sepia"]` 처럼 토큰이 하나도 없는
+        상태가 되어 화면이 통째로 깨진다 — 행사 중에는 되돌릴 사람이 없다.
+        그리고 기본(다크)은 속성을 **지운다**: `data-theme="dark"` 를 쓰면 다크
+        토큰이 `:root` 와 `:root[data-theme]` 두 곳에 살게 되고, 둘이 갈라지는
+        날 어느 쪽이 쓰이는지 아무도 모른다.
+        """
+        body = re.search(
+            r"function applyStageTheme\(value\) \{(.*?)\n    \}", stage_html, re.S
+        )
+        assert body is not None, "applyStageTheme() not found"
+        fn = body.group(1)
+        assert "STAGE_THEMES.indexOf(value) === -1" in fn, fn
+        assert (
+            "removeAttribute" in fn
+        ), "다크일 때 data-theme 속성을 지우지 않는다 — 토큰이 두 곳에 산다"
+        # 허용 목록은 서버(`websocket_handler.STAGE_THEMES`)와 같아야 한다.
+        from websocket_handler import STAGE_THEMES
+
+        declared = re.search(r"const STAGE_THEMES = \[(.*?)\];", stage_html, re.S)
+        assert declared is not None, "STAGE_THEMES not declared in stage.html"
+        client = re.findall(r'"([^"]+)"', declared.group(1))
+        assert client == list(STAGE_THEMES), (
+            f"클라이언트 테마 목록 {client} 가 서버 {list(STAGE_THEMES)} 와 다르다 "
+            "— 손으로 적은 목록은 갈라진다 (RL-001)"
+        )
+
+    def test_both_themes_declare_every_token(self, stage_html):
+        """라이트가 다크의 토큰을 **빠짐없이** 덮는다.
+
+        하나라도 빠지면 그 토큰만 다크 값으로 남아 라이트 캔버스 위에 흰 글씨가
+        된다 — 1.1:1 로 사실상 보이지 않는다. 대비 테스트는 선언된 토큰만 보므로
+        누락은 그쪽에 걸리지 않는다.
+        """
+        dark = custom_properties(stage_html, ":root")
+        light = custom_properties(stage_html, ':root[data-theme="light"]')
+        # 테마와 무관한 레이아웃 토큰은 덮을 필요가 없다.
+        themed = {k for k in dark if k not in ("--caption-width", "--caption-scale")}
+        missing = sorted(themed - set(light))
+        assert not missing, f"라이트 테마가 덮지 않은 토큰: {missing}"
+
+    def test_control_handles_the_disconnect_command(self, stage_html):
+        """오퍼레이터 패널의 일회성 명령이 캡처를 끊는다 (#178)."""
+        body = re.search(
+            r"function handleControl\(payload\) \{(.*?)\n    \}", stage_html, re.S
+        )
+        assert body is not None, "handleControl() not found"
+        fn = body.group(1)
+        assert 'payload.presentation === "disconnect"' in fn, fn
+        assert "disconnectPresentation()" in fn, fn
+        assert "applyStageTheme(payload.theme)" in fn, fn
+
+    def test_disconnect_keys_off_the_live_track_not_the_ever_connected_flag(
+        self, stage_html
+    ):
+        """조건은 **살아 있는 트랙**이다 (#178).
+
+        `captureStarted` 는 "한 번이라도 연결했는가" 이고 재선택 코너 제스처가
+        그 값을 쓴다. 해제가 그 플래그를 끄면 해제 후 재선택이 죽는다 —
+        `requestWakeLock` 이 같은 이유로 같은 선택을 해 두었다.
+        """
+        body = re.search(
+            r"function disconnectPresentation\(\) \{(.*?)\n    \}", stage_html, re.S
+        )
+        assert body is not None, "disconnectPresentation() not found"
+        fn = body.group(1)
+        assert "if (!captureTrack) return;" in fn, fn
+        # **대입**이 없다는 것이 단언의 내용이다. 이유를 설명하는 주석에 이름이
+        # 등장하는 것은 정상이므로 어휘적 부재가 아니라 할당을 본다.
+        assert (
+            "captureStarted =" not in fn
+        ), "해제가 captureStarted 를 덮어쓴다 — 재선택 코너 제스처가 죽는다"
+        assert "onCaptureEnded()" in fn, fn
 
     def test_no_interactive_controls(self, stage_html):
         """무대 화면의 클릭 표면은 ISSUE-42 의 캡처 버튼 하나뿐이다.
@@ -415,15 +542,35 @@ class TestStageHtmlMarkup:
         for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write"):
             assert sink not in stage_html, f"{sink} makes the filename markup"
 
+    @pytest.mark.parametrize("theme", _THEMES)
+    @pytest.mark.parametrize(
+        "selector",
+        [".logo-group-label", ".caption-line", ".caption-empty", ".caption-ended"],
+    )
+    def test_canvas_text_meets_wcag_aa_in_both_themes(
+        self, stage_html, selector, theme
+    ):
+        """WCAG 1.4.3 — 캔버스 위 흐린 텍스트가 **두 테마 모두** 4.5:1 이상.
+
+        `clamp()` 하한이 전부 24px 미만이라(자막 20px, 라벨 11px, 빈 상태 14px)
+        large-text 3:1 완화를 쓸 수 없다.
+
+        **테마마다 알파가 다르다.** 흰 캔버스 위 검정 0.45 는 3.31:1 로 미달이라
+        다크의 알파를 그대로 쓸 수 없다 (#178). 그 사실을 토큰 주석에 적는 것으로
+        끝내면 다음 사람이 다크 값을 복사해 넣는 날 아무도 모른다 — 그래서 두
+        테마를 각각 계산한다.
+        """
+        tokens = _theme_tokens(stage_html, theme)
+        ratio = _contrast_ratio(
+            _rule_rgba(stage_html, selector, tokens), _canvas_rgb(tokens)
+        )
+        assert (
+            ratio >= 4.5
+        ), f"{selector} is {ratio:.2f}:1 in the {theme} theme; WCAG AA needs 4.5:1"
+
     @pytest.mark.parametrize(
         "selector,backdrop",
         [
-            (".event-subtitle", _CANVAS_RGB),
-            (".title-card-subtitle", _FRAME_RGB),
-            (".logo-group-label", _CANVAS_RGB),
-            (".caption-line", _CANVAS_RGB),
-            (".caption-empty", _CANVAS_RGB),
-            (".caption-ended", _CANVAS_RGB),
             # ISSUE-42 가 추가한 캡처 상태들. 배경은 전부 **불투명**이라
             # 임의의 캡처 영상 위에서도 대비가 결정적이다.
             # .capture-hint 의 backdrop 이 _FRAME_RGB 가 아닌 이유는
@@ -716,15 +863,17 @@ class TestStageCaptionColumn:
         pill 이다. viewer.html 의 알파를 눈대중으로 옮겨오면 이 테스트가 막는다.
         """
         block = _rule_block(stage_html, ".conn-error")
-        bg = re.search(
-            r"background:\s*rgba\(\s*(\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\s*\)", block
-        )
-        assert bg is not None, ".conn-error needs an rgba() background declaration"
-        r, g, b, a = bg.groups()
-        pill = _composite((int(r), int(g), int(b), float(a)), _CANVAS_RGB)
+        bg = re.search(r"(?<![-\w])background:\s*([^;]+);", block)
+        assert bg is not None, ".conn-error needs a background declaration"
 
-        ratio = _contrast_ratio(_rule_rgba(stage_html, ".conn-error"), pill)
-        assert ratio >= 4.5, f".conn-error text is {ratio:.2f}:1, WCAG AA needs 4.5:1"
+        for theme in _THEMES:
+            tokens = _theme_tokens(stage_html, theme)
+            pill = _composite(resolve_color(bg.group(1), tokens), _canvas_rgb(tokens))
+            ratio = _contrast_ratio(_rule_rgba(stage_html, ".conn-error", tokens), pill)
+            assert ratio >= 4.5, (
+                f".conn-error text is {ratio:.2f}:1 in the {theme} theme, "
+                "WCAG AA needs 4.5:1"
+            )
 
     def test_stream_subscription_uses_the_bootstrapped_caption_lang(self, stage_html):
         """ISSUE-40 가드의 **강화판** — 초기 구독은 부트스트랩 값을 쓴다.
@@ -909,10 +1058,14 @@ class TestStageDisplayCapture:
         # 옛 트랙의 stop() 이 방금 붙인 새 캡처를 도로 철거한다.
         assert 'removeEventListener("ended", onCaptureEnded)' in stage_html
 
-    def test_capture_ended_restores_the_title_card_and_reconnect_action(
-        self, stage_html
-    ):
-        """FR-075 — 폴백 경로가 한 함수 안에서 끝난다 (검은 화면 금지)."""
+    def test_capture_ended_shows_only_the_reconnect_action(self, stage_html):
+        """캡처가 끊기면 **연결 버튼만** 남는다 (폴백 경로가 한 함수 안에서 끝난다).
+
+        원래 FR-075 는 "검은 화면 대신 타이틀 카드로" 되돌리는 선택이었다. 이제
+        미연결 화면은 프레임 배경 + 연결 버튼뿐이다 — 행사 타이틀과 로고는 이미
+        상단 헤더와 하단 로고 바가 들고 있어 프레임 안에서 중복됐다. 그래서
+        `#title-card` 자체가 제거됐고, 이 테스트는 그 부재를 함께 못 박는다.
+        """
         body = re.search(
             r"function onCaptureEnded\(\) \{(.*?)\n    \}", stage_html, re.S
         )
@@ -920,10 +1073,13 @@ class TestStageDisplayCapture:
         handler = body.group(1)
         assert "srcObject = null" in handler, handler
         assert "captureVideo.hidden = true" in handler, handler
-        assert "titleCard.hidden = false" in handler, handler
         assert "RECONNECT_LABEL" in handler, handler
         assert "_showControls(true)" in handler, handler
         assert "발표자료 다시 연결" in stage_html
+        assert (
+            "titleCard" not in stage_html
+        ), "타이틀 카드가 되살아났다 — 미연결 상태에서는 연결 버튼만 보여야 한다."
+        assert 'id="title-card"' not in stage_html
 
     def test_self_capture_heuristic_does_not_terminate_the_stream(self, stage_html):
         """FR-081 — Chromium 밖에서는 `selfBrowserSurface` 가 무시된다.
@@ -1230,7 +1386,6 @@ class TestStageRouteHandler:
                 "room-1": _room(
                     stage_config=_stage_config(
                         event_title="2026 개발자 콘퍼런스",
-                        event_subtitle="A홀 기조연설",
                     )
                 )
             }
@@ -1238,7 +1393,11 @@ class TestStageRouteHandler:
         status, body, _ = await _get(repo, "/stage/room-1")
         assert status == 200
         assert '"event_title": "2026 개발자 콘퍼런스"' in body
-        assert '"event_subtitle": "A홀 기조연설"' in body
+        # JSON **키 형태**로 좁힌다 — 템플릿 주석이 이 이름을 설명으로 언급하므로
+        # 문서 전체에서 문자열을 찾으면 주석에 걸린다.
+        assert (
+            '"event_subtitle"' not in body
+        ), "부제 키가 아직 무대 부트스트랩으로 나간다 — stage_config 에서 제거됐다."
 
     async def test_logo_group_assets_are_injected(self):
         repo = _StubRoomRepo(
@@ -1692,12 +1851,17 @@ class TestStageCaptionScale:
         AA 를 깨지 않는다 — 그 사실을 수치로 남긴다. `tests/wcag.py` 공용
         헬퍼를 쓴다 (복사 금지, RL-001).
         """
-        ratio = _contrast_ratio(_rule_rgba(stage_html, ".caption-line"), _CANVAS_RGB)
-        assert ratio >= 4.5, (
-            f".caption-line is {ratio:.2f}:1 at any scale; WCAG AA needs 4.5:1. "
-            "The alpha was chosen against the normal-text threshold precisely so "
-            "that shrinking the rendered size cannot invalidate it"
-        )
+        for theme in _THEMES:
+            tokens = _theme_tokens(stage_html, theme)
+            ratio = _contrast_ratio(
+                _rule_rgba(stage_html, ".caption-line", tokens), _canvas_rgb(tokens)
+            )
+            assert ratio >= 4.5, (
+                f".caption-line is {ratio:.2f}:1 in the {theme} theme at any scale; "
+                "WCAG AA needs 4.5:1. The alpha was chosen against the normal-text "
+                "threshold precisely so that shrinking the rendered size cannot "
+                "invalidate it"
+            )
 
     def test_the_sub_one_lower_bound_carries_its_rationale(self, stage_html):
         """주석이 없으면 다음 사람이 '축소하면 대비가 위험하다' 로 되돌린다."""

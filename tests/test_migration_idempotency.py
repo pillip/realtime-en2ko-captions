@@ -483,13 +483,12 @@ class TestStageConfigMigrationOnExistingRooms:
         room_model = Room(db)
         config = {
             "event_title": "2026 개발자 콘퍼런스",
-            "event_subtitle": "A홀 기조연설",
             "caption_ratio": "1/3",
             "show_logo_labels": True,
             "logo_groups": [
-                {"label": "주최", "assets": ["host-1.png"]},
-                {"label": "주관", "assets": []},
-                {"label": "후원", "assets": []},
+                {"label": "주최", "title": "주최", "assets": ["host-1.png"]},
+                {"label": "주관", "title": "주관", "assets": []},
+                {"label": "후원", "title": "후원", "assets": []},
             ],
         }
         assert room_model.update_stage_config(room_ids[0], config) is True

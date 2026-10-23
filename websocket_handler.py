@@ -68,6 +68,30 @@ def _coerce_caption_scale(value):
     return scale
 
 
+# 무대 화면 테마 (#178). `caption_scale` 과 같은 **세션 한정 control 상태**다 —
+# 프로세스 메모리에만 살고 서버 재시작 시 기본값으로 돌아간다.
+STAGE_THEMES: tuple[str, ...] = ("dark", "light")
+DEFAULT_STAGE_THEME: str = STAGE_THEMES[0]
+
+# 발표자료 제어 일회성 명령. 현재는 해제뿐이다.
+PRESENTATION_COMMANDS: tuple[str, ...] = ("disconnect",)
+
+
+def _coerce_stage_theme(value):
+    """허용 목록에 있는 테마면 그대로, 아니면 None.
+
+    문자열을 보정하지 않는다 — ``"Dark"`` 를 받아 주면 프로토콜이 조용히
+    넓어지고, 그 관용이 어디까지인지 아무도 모르게 된다 (`_coerce_caption_scale`
+    과 같은 원칙).
+    """
+    return value if value in STAGE_THEMES else None
+
+
+def _coerce_presentation_command(value):
+    """허용 목록에 있는 명령이면 그대로, 아니면 None."""
+    return value if value in PRESENTATION_COMMANDS else None
+
+
 # Module-level RoomManager singleton.
 # Tests substitute this via `patch("websocket_handler._room_manager", ...)`.
 _room_manager: RoomManager = RoomManager()
@@ -198,6 +222,97 @@ async def _publish_control(room_id, **fields):
         )
     except Exception as e:
         print(f"[Control] 발행 실패 (room={room_id}): {e!r}")
+
+
+async def _publish_control_command(room_id, **fields):
+    """control 채널로 **일회성 명령**을 보낸다 — 상태로 저장하지 않는다 (#178).
+
+    `set_control` 에 저장하면 안 된다. 저장된 상태는 `_handle_stream` 이 새
+    뷰어에게 **connect-time 스냅샷**으로 다시 내보내므로, 재접속하거나 새로
+    고친 무대 페이지가 "지난번 해제 명령" 을 받아 **즉시 다시 해제**된다.
+    명령은 그 순간 열려 있는 화면에만 닿아야 한다.
+
+    현재 스냅샷을 함께 실어 보내는 이유: 무대 클라이언트의 `handleControl` 은
+    모든 control 프레임에서 언어와 자막 배율을 다시 적용한다(멱등). 명령만
+    단독으로 보내면 그 두 값이 payload 에서 빠져 클라이언트가 "값 없음" 과
+    "바뀌지 않음" 을 구분해야 하는데, 그 분기를 만들 이유가 없다.
+    """
+    if not room_id:
+        return
+    try:
+        snapshot = _broadcast_manager.get_control(room_id) or {}
+        await _broadcast_manager.publish_control(
+            room_id, build_control_payload(room_id, {**snapshot, **fields})
+        )
+    except Exception as e:
+        print(f"[Control] 명령 발행 실패 (room={room_id}): {e!r}")
+
+
+async def _handle_stage_control(websocket, data, user_info):
+    """오퍼레이터의 무대 제어 메시지 처리 (ISSUE-53/54, #178).
+
+    세 가지를 받는다. 한 메시지에 여러 개가 함께 올 수도 있다.
+      - ``caption_scale`` : 자막 배율 (상태)
+      - ``theme``         : 무대 테마 (상태) — `caption_scale` 과 같은 세션 한정
+      - ``presentation``  : 발표자료 제어 (**일회성 명령**, 상태 아님)
+
+    ``room_id`` 는 클라이언트 payload 가 아니라 인증이 확정한 값이다 (RL-002)
+    — 다른 룸의 화면을 조작할 수 없다.
+
+    **키가 아예 없는 것과 값이 잘못된 것을 구분한다.** 배율만 바꾸는 메시지에
+    테마가 없다고 거절하면 안 되고, 반대로 `theme: "Dark"` 같은 잘못된 값은
+    조용히 무시하지 않고 거절해야 한다 — 오퍼레이터는 자기 조작이 먹었는지
+    알아야 한다.
+    """
+    room_id = user_info.get("room_id")
+    state: dict[str, object] = {}
+    invalid: list[str] = []
+
+    if "caption_scale" in data:
+        scale = _coerce_caption_scale(data.get("caption_scale"))
+        if scale is None:
+            invalid.append("caption_scale")
+        else:
+            state["caption_scale"] = scale
+
+    if "theme" in data:
+        theme = _coerce_stage_theme(data.get("theme"))
+        if theme is None:
+            invalid.append("theme")
+        else:
+            state["theme"] = theme
+
+    command = None
+    if "presentation" in data:
+        command = _coerce_presentation_command(data.get("presentation"))
+        if command is None:
+            invalid.append("presentation")
+
+    if invalid or not room_id or (not state and command is None):
+        # 상태도 발행도 없다. 사유는 서버 로그로만 (RL-006).
+        print(
+            f"[Control] stage_control 거절 (room={room_id}): "
+            f"invalid={invalid} data={ {k: data.get(k) for k in ('caption_scale', 'theme', 'presentation') if k in data} }"
+        )
+        await websocket.send(
+            json.dumps(
+                {
+                    "type": "stage_control_error",
+                    "message": _STAGE_CONTROL_REJECTED_MSG,
+                }
+            )
+        )
+        return
+
+    if state:
+        await _publish_control(room_id, **state)
+    if command is not None:
+        await _publish_control_command(room_id, presentation=command)
+
+    ack: dict[str, object] = {"type": "stage_control_ack", **state}
+    if command is not None:
+        ack["presentation"] = command
+    await websocket.send(json.dumps(ack))
 
 
 async def _record_session_languages(room_id, language_settings):
@@ -1124,35 +1239,8 @@ async def handle_openai_websocket(websocket):
                     )
 
                 elif msg_type == "stage_control":
-                    # 무대 자막 배율 (ISSUE-53). 보내는 쪽 UI 는 ISSUE-54 다.
-                    # room_id 는 클라이언트 payload 가 아니라 인증이 확정한
-                    # 값이다 (RL-002) — 다른 룸의 화면을 조작할 수 없다.
-                    scale = _coerce_caption_scale(data.get("caption_scale"))
-                    room_id = user_info.get("room_id")
-                    if scale is None or not room_id:
-                        # 상태도 발행도 없다. 사유는 서버 로그로만 (RL-006).
-                        print(
-                            f"[Control] stage_control 거절 "
-                            f"(room={room_id}): {data.get('caption_scale')!r}"
-                        )
-                        await websocket.send(
-                            json.dumps(
-                                {
-                                    "type": "stage_control_error",
-                                    "message": _STAGE_CONTROL_REJECTED_MSG,
-                                }
-                            )
-                        )
-                    else:
-                        await _publish_control(room_id, caption_scale=scale)
-                        await websocket.send(
-                            json.dumps(
-                                {
-                                    "type": "stage_control_ack",
-                                    "caption_scale": scale,
-                                }
-                            )
-                        )
+                    # 무대 자막 배율 / 테마 / 발표자료 제어 (ISSUE-53/54, #178).
+                    await _handle_stage_control(websocket, data, user_info)
 
                 elif msg_type == "transcript":
                     await _handle_transcript(
