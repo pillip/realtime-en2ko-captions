@@ -17,8 +17,22 @@
 `os.exec*` 로 streamlit 을 띄우지 않고(그러면 스레드가 죽는다),
 `streamlit.web.bootstrap` 을 직접 호출한다.
 
-설정은 **환경변수**로 준다 (`STREAMLIT_*`). `bootstrap` 의 `flag_options` 로
-넘기는 방법도 있지만 그쪽은 click 옵션 이름에 결합돼 버전 변화에 약하다.
+설정 인터페이스는 **환경변수**(`STREAMLIT_*`)지만, 그 값을 반드시
+`bootstrap.load_config_options(flag_options=...)` 로 **넘겨야** 적용된다 —
+환경변수만 세팅하는 것으로는 먹지 않는다 (`_streamlit_flag_options` 참고).
+
+주의 — 이 경로의 import 는 **스크립트 런 컨텍스트 밖**이다 (#174)
+-----------------------------------------------------------------
+1) 이 파일이 `start_background_servers()` 를 부르는 시점에는 Streamlit 의
+   `ScriptRunContext` 가 없다. Streamlit 의 `declare_component()` 는
+   `get_script_run_ctx()` 가 None 이면 **등록을 조용히 건너뛴다**. 그리고
+   `sys.modules` 캐시 때문에 나중에 세션이 `app.py` 를 돌며 같은 모듈을
+   import 해도 `declare_component()` 는 다시 실행되지 않는다. 결과적으로 커스텀
+   컴포넌트가 **영구 미등록**이 되어 번들이 404 가 된다. 그래서 커스텀 컴포넌트를
+   쓰는 모듈(`auth.py` 의 `CookieManager`)은 모듈 레벨에서 import 하면 안 된다 —
+   자세한 사정은 `auth.get_cookie_manager()` 주석에 있다.
+2) 같은 이유로 DB 초기화도 여기서 차갑게 시작된다. 그 경로의 마이그레이션 경합은
+   `database._SINGLETON_LOCK` 이 막는다 (#172).
 """
 
 from __future__ import annotations
@@ -27,22 +41,35 @@ import os
 import sys
 
 
-def _configure_streamlit_defaults() -> None:
-    """Dockerfile CMD 가 주던 플래그를 환경변수 기본값으로 옮긴다.
+def _streamlit_flag_options() -> dict[str, object]:
+    """Dockerfile CMD 가 주던 플래그를 `bootstrap` 에 넘길 형태로 만든다.
 
-    이미 설정돼 있으면 건드리지 않는다 — docker-compose 나 운영자가 덮어쓸 수
-    있어야 한다.
+    **환경변수만 세팅하는 것으로는 먹지 않는다 (#174).** 이전 구현은
+    `os.environ.setdefault("STREAMLIT_SERVER_PORT", ...)` 만 했는데, 그 값은
+    `bootstrap.load_config_options(flag_options={})` 경로에서 반영되지 않았다 —
+    실측으로 `STREAMLIT_SERVER_PORT=8597` 을 줘도 8501 에 바인딩했다. 프로덕션이
+    멀쩡해 보인 건 8501 이 마침 기본값이라 가려졌을 뿐이고, 포트를 바꾸려는
+    순간 조용히 무시됐을 것이다.
+
+    `load_config_options` 는 키의 `_` 를 `.` 로 바꿔 설정 이름으로 쓴다
+    (`server_port` → `server.port`). docstring 이 "CLI flag version" 이라고
+    부르지만 click 옵션 이름이 아니라 **설정 옵션 이름**이므로 버전 변화에
+    약하지 않다 — 이전 주석의 우려는 사실과 달랐다.
+
+    **CORS / gatherUsageStats 는 일부러 넘기지 않는다.** `.streamlit/config.toml`
+    이 `enableCORS = true` 를 명시하는데 옛 env 기본값은 `false` 를 주장했다.
+    env 가 inert 였으므로 실제로는 config.toml 의 `true` 가 적용돼 왔다. 여기서
+    env 쪽을 "되살리면" 운영 동작이 조용히 뒤집힌다. 그 판단은 이 수정의 범위가
+    아니다.
     """
-    os.environ.setdefault("STREAMLIT_SERVER_PORT", "8501")
-    os.environ.setdefault("STREAMLIT_SERVER_ADDRESS", "0.0.0.0")
-    os.environ.setdefault("STREAMLIT_SERVER_HEADLESS", "true")
-    os.environ.setdefault("STREAMLIT_SERVER_ENABLE_CORS", "false")
-    os.environ.setdefault("STREAMLIT_BROWSER_GATHER_USAGE_STATS", "false")
+    return {
+        "server_port": int(os.getenv("STREAMLIT_SERVER_PORT", "8501")),
+        "server_address": os.getenv("STREAMLIT_SERVER_ADDRESS", "0.0.0.0"),
+        "server_headless": True,
+    }
 
 
 def main(script: str = "app.py") -> None:
-    _configure_streamlit_defaults()
-
     # 1) 백그라운드 서버 먼저 — 브라우저 접속과 무관하게 포트를 연다.
     from background_servers import start_background_servers
 
@@ -60,8 +87,9 @@ def main(script: str = "app.py") -> None:
     # CLI 의 `_main_run` 과 같은 순서다 — config/secret 파일 해석에 쓰이므로
     # `load_config_options` 보다 먼저 세팅해야 한다.
     _config._main_script_path = script_path
-    bootstrap.load_config_options(flag_options={})
-    bootstrap.run(script_path, False, [], {})
+    flag_options = _streamlit_flag_options()
+    bootstrap.load_config_options(flag_options=flag_options)
+    bootstrap.run(script_path, False, [], flag_options)
 
 
 if __name__ == "__main__":

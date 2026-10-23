@@ -22,6 +22,52 @@ Streamlit 을 돌린다 — WS 핸들러와 SSE 브로드캐스터가 모듈 전
 (`streamlit run app.py`)도 그대로 동작한다. `tests/test_background_servers.py` 가
 이 부팅 경로를 가드한다 — CMD 를 `streamlit run` 으로 되돌리면 실패한다.
 
+#### 이 경로의 import 는 스크립트 런 **밖**이다 (#174)
+
+`serve.py` 가 `start_background_servers()` 를 부르는 시점에는 Streamlit 의
+`ScriptRunContext` 가 없다. Streamlit 의 커스텀 컴포넌트 등록은 이렇게 끝난다:
+
+```python
+ctx = get_script_run_ctx()
+if ctx is not None:
+    get_instance().component_registry.register_component(component)
+```
+
+**스크립트 런 안에서만 등록된다.** 밖에서 import 되면 등록이 조용히 건너뛰어지고,
+`sys.modules` 캐시 때문에 이후 세션이 같은 모듈을 import 해도
+`declare_component()` 는 다시 실행되지 않는다 — 컴포넌트가 **영구 미등록**이 되어
+번들이 404 가 된다.
+
+그래서 **커스텀 컴포넌트를 쓰는 모듈은 모듈 레벨에서 import 하지 않는다.**
+`auth.py` 의 `CookieManager` 가 그 예이고, `get_cookie_manager()` 안에서
+import 한다 (그 함수는 항상 스크립트 런 안에서 불린다).
+
+2026-10-22 배포에서 이게 깨졌을 때의 증상 — **하나의 원인이 두 개로 보였다**:
+
+- `/component/....CookieManager.cookie_manager/index.html` → 404
+- `user_session` 쿠키 미발급 → (ISSUE-55) WS 인증 거부
+- 오퍼레이터 화면에는 OpenAI 전사(**원문**)만 흘러서 "번역이 고장났다" 로 보임
+- 뷰어·무대는 "잠시 후 시작됩니다" 에서 멈춰서 "무대가 고장났다" 로 보임
+
+번역·SSE 팬아웃·무대 렌더·ALB 라우팅은 전부 정상이었다. 진단이 길어진 이유는
+`webrtc.html` 이 서버의 `auth_error` 를 `알 수 없는 메시지 타입` 으로 콘솔에만
+찍고 화면에 띄우지 않아서다 — 로그인이 끊긴 것과 번역이 고장난 것이 구별되지
+않았다.
+
+**왜 테스트가 못 잡았나**: `tests/e2e/conftest.py` 의 서버 fixture 는
+`streamlit run app.py` 를 띄운다. 그 경로는 `app.py` 를 런타임 **안에서** 처음
+import 하므로 문제가 없고, e2e 198개가 전부 통과한 채로 배포됐다. 게다가
+`ensure_logged_in_as` 의 `require_cookie` 기본값이 `False` 라 대부분의 테스트는
+쿠키 존재를 아예 보지 않는다. `tests/e2e/test_serve_boot_path_e2e.py` 가
+`serve.py` 로 띄워 **평범한 로그인 한 번**이 쿠키를 심는지 검증해 이 구멍을
+막는다. 구조적 가드는
+`tests/test_background_servers.py::TestBootPathDoesNotPoisonComponentRegistration`.
+
+관련: `serve.py` 의 Streamlit 설정은 `STREAMLIT_*` 환경변수를 읽어
+`bootstrap.load_config_options(flag_options=...)` 로 **넘겨야** 적용된다.
+환경변수만 세팅하는 것으로는 먹지 않는다 — `STREAMLIT_SERVER_PORT=8597` 을 줘도
+8501 에 바인딩하는 것을 실측했다. 8501 이 기본값이라 가려져 있었다.
+
 ```bash
 # Project setup
 uv init --python 3.11
