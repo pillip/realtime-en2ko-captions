@@ -115,12 +115,11 @@ def _room(**overrides: Any) -> dict[str, Any]:
 def _stage_config(**overrides: Any) -> str:
     cfg = {
         "event_title": "",
-        "event_subtitle": "",
         "caption_ratio": "1/4",
         "logo_groups": [
-            {"label": "주최", "assets": []},
-            {"label": "주관", "assets": []},
-            {"label": "후원", "assets": []},
+            {"label": "주최", "title": "주최", "assets": []},
+            {"label": "주관", "title": "주관", "assets": []},
+            {"label": "후원", "title": "후원", "assets": []},
         ],
     }
     cfg.update(overrides)
@@ -171,8 +170,11 @@ class TestJsonForScript:
 
         payload = {
             "event_title": _BREAKOUT_TITLE,
-            "event_subtitle": "a & b > c < d",
-            "logo_groups": [{"label": "주최", "assets": ["logo.png"]}],
+            # 이 테스트의 관심은 **이스케이프 왕복**이다. 특수문자를 담을 자리로
+            # 그룹 표시 글자를 쓴다 (부제가 사라진 자리).
+            "logo_groups": [
+                {"label": "주최", "title": "a & b > c < d", "assets": ["logo.png"]}
+            ],
         }
         assert json.loads(_json_for_script(payload)) == payload
 
@@ -418,8 +420,6 @@ class TestStageHtmlMarkup:
     @pytest.mark.parametrize(
         "selector,backdrop",
         [
-            (".event-subtitle", _CANVAS_RGB),
-            (".title-card-subtitle", _FRAME_RGB),
             (".logo-group-label", _CANVAS_RGB),
             (".caption-line", _CANVAS_RGB),
             (".caption-empty", _CANVAS_RGB),
@@ -909,10 +909,14 @@ class TestStageDisplayCapture:
         # 옛 트랙의 stop() 이 방금 붙인 새 캡처를 도로 철거한다.
         assert 'removeEventListener("ended", onCaptureEnded)' in stage_html
 
-    def test_capture_ended_restores_the_title_card_and_reconnect_action(
-        self, stage_html
-    ):
-        """FR-075 — 폴백 경로가 한 함수 안에서 끝난다 (검은 화면 금지)."""
+    def test_capture_ended_shows_only_the_reconnect_action(self, stage_html):
+        """캡처가 끊기면 **연결 버튼만** 남는다 (폴백 경로가 한 함수 안에서 끝난다).
+
+        원래 FR-075 는 "검은 화면 대신 타이틀 카드로" 되돌리는 선택이었다. 이제
+        미연결 화면은 프레임 배경 + 연결 버튼뿐이다 — 행사 타이틀과 로고는 이미
+        상단 헤더와 하단 로고 바가 들고 있어 프레임 안에서 중복됐다. 그래서
+        `#title-card` 자체가 제거됐고, 이 테스트는 그 부재를 함께 못 박는다.
+        """
         body = re.search(
             r"function onCaptureEnded\(\) \{(.*?)\n    \}", stage_html, re.S
         )
@@ -920,10 +924,13 @@ class TestStageDisplayCapture:
         handler = body.group(1)
         assert "srcObject = null" in handler, handler
         assert "captureVideo.hidden = true" in handler, handler
-        assert "titleCard.hidden = false" in handler, handler
         assert "RECONNECT_LABEL" in handler, handler
         assert "_showControls(true)" in handler, handler
         assert "발표자료 다시 연결" in stage_html
+        assert (
+            "titleCard" not in stage_html
+        ), "타이틀 카드가 되살아났다 — 미연결 상태에서는 연결 버튼만 보여야 한다."
+        assert 'id="title-card"' not in stage_html
 
     def test_self_capture_heuristic_does_not_terminate_the_stream(self, stage_html):
         """FR-081 — Chromium 밖에서는 `selfBrowserSurface` 가 무시된다.
@@ -1230,7 +1237,6 @@ class TestStageRouteHandler:
                 "room-1": _room(
                     stage_config=_stage_config(
                         event_title="2026 개발자 콘퍼런스",
-                        event_subtitle="A홀 기조연설",
                     )
                 )
             }
@@ -1238,7 +1244,11 @@ class TestStageRouteHandler:
         status, body, _ = await _get(repo, "/stage/room-1")
         assert status == 200
         assert '"event_title": "2026 개발자 콘퍼런스"' in body
-        assert '"event_subtitle": "A홀 기조연설"' in body
+        # JSON **키 형태**로 좁힌다 — 템플릿 주석이 이 이름을 설명으로 언급하므로
+        # 문서 전체에서 문자열을 찾으면 주석에 걸린다.
+        assert (
+            '"event_subtitle"' not in body
+        ), "부제 키가 아직 무대 부트스트랩으로 나간다 — stage_config 에서 제거됐다."
 
     async def test_logo_group_assets_are_injected(self):
         repo = _StubRoomRepo(

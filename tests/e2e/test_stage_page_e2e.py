@@ -96,7 +96,6 @@ class _StubRoomRepo:
 def _cfg(**over: Any) -> str:
     cfg = {
         "event_title": "",
-        "event_subtitle": "",
         "caption_ratio": "1/4",
         "logo_groups": [
             {"label": label, "assets": []} for label in ("주최", "주관", "후원")
@@ -138,7 +137,6 @@ def stage_server():
             "quarter-room",
             stage_config=_cfg(
                 event_title="2026 개발자 콘퍼런스",
-                event_subtitle="A홀 기조연설",
                 caption_ratio="1/4",
                 logo_groups=[
                     {"label": "주최", "assets": ["host-1.png"]},
@@ -160,7 +158,6 @@ def stage_server():
             "longtitle-room",
             stage_config=_cfg(
                 event_title=_LONG_TITLE,
-                event_subtitle="A홀 기조연설 · 동시통역 한국어/영어 제공",
                 logo_groups=[
                     {"label": "주최", "assets": ["host-1.png"]},
                     {"label": "주관", "assets": []},
@@ -503,7 +500,7 @@ class TestStageCaptionStream:
             "#event-header",
             "#presentation",
             "#stage-frame",
-            "#title-card",
+            "#capture-controls",
         ):
             count = page.locator(selector).count()
             assert count == 1, f"{selector} disappeared on session_end (count={count})"

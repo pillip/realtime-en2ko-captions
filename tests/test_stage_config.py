@@ -21,6 +21,7 @@ import pytest
 
 from stage_config import (
     DEFAULT_STAGE_CONFIG,
+    LOGO_GROUP_TITLE_MAX_LEN,
     normalize_stage_config,
     validate_stage_config,
 )
@@ -38,13 +39,12 @@ class TestDefaultStageConfig:
     def test_default_shape(self):
         assert DEFAULT_STAGE_CONFIG == {
             "event_title": "",
-            "event_subtitle": "",
             "caption_ratio": "1/4",
             "show_logo_labels": True,
             "logo_groups": [
-                {"label": "주최", "assets": []},
-                {"label": "주관", "assets": []},
-                {"label": "후원", "assets": []},
+                {"label": "주최", "title": "주최", "assets": []},
+                {"label": "주관", "title": "주관", "assets": []},
+                {"label": "후원", "title": "후원", "assets": []},
             ],
         }
 
@@ -154,13 +154,16 @@ class TestNormalizeAcceptedShapes:
 
         cfg = {
             "event_title": "2026 개발자 콘퍼런스",
-            "event_subtitle": "A홀 기조연설",
             "caption_ratio": "1/3",
             "show_logo_labels": False,
             "logo_groups": [
-                {"label": "주최", "assets": ["host-1.png"]},
-                {"label": "주관", "assets": []},
-                {"label": "후원", "assets": ["sponsor-a.svg", "sponsor-b.png"]},
+                {"label": "주최", "title": "Host", "assets": ["host-1.png"]},
+                {"label": "주관", "title": "주관", "assets": []},
+                {
+                    "label": "후원",
+                    "title": "후원",
+                    "assets": ["sponsor-a.svg", "sponsor-b.png"],
+                },
             ],
         }
         from_dict = normalize_stage_config(cfg)
@@ -172,9 +175,8 @@ class TestNormalizeAcceptedShapes:
         assert result["caption_ratio"] == "1/4"
 
     def test_non_string_title_becomes_empty_string(self):
-        result = normalize_stage_config({"event_title": 42, "event_subtitle": None})
+        result = normalize_stage_config({"event_title": 42})
         assert result["event_title"] == ""
-        assert result["event_subtitle"] == ""
 
     def test_title_is_stripped(self):
         result = normalize_stage_config({"event_title": "  A홀 기조연설  "})
@@ -221,17 +223,17 @@ class TestNormalizeLogoGroups:
             }
         )
         assert result["logo_groups"] == [
-            {"label": "주최", "assets": ["a.png"]},
-            {"label": "주관", "assets": ["b.png"]},
-            {"label": "후원", "assets": ["c.png"]},
+            {"label": "주최", "title": "주최", "assets": ["a.png"]},
+            {"label": "주관", "title": "주관", "assets": ["b.png"]},
+            {"label": "후원", "title": "후원", "assets": ["c.png"]},
         ]
 
     def test_missing_labels_are_filled_with_empty_groups(self):
         result = normalize_stage_config({"logo_groups": [{"label": "주최"}]})
         assert result["logo_groups"] == [
-            {"label": "주최", "assets": []},
-            {"label": "주관", "assets": []},
-            {"label": "후원", "assets": []},
+            {"label": "주최", "title": "주최", "assets": []},
+            {"label": "주관", "title": "주관", "assets": []},
+            {"label": "후원", "title": "후원", "assets": []},
         ]
 
     def test_duplicate_labels_keep_the_first_occurrence(self):
@@ -301,7 +303,7 @@ class TestValidateCaptionRatio:
 
 
 class TestValidateTextLengths:
-    """AC: event_title 120자 / event_subtitle 80자 상한."""
+    """AC: event_title 120자 상한, 로고 그룹 표시 글자 20자 상한."""
 
     def test_title_at_the_120_char_boundary_passes(self):
         cfg = dict(DEFAULT_STAGE_CONFIG, event_title="가" * 120)
@@ -315,14 +317,53 @@ class TestValidateTextLengths:
         assert ok is False
         assert reason.strip()
 
-    def test_subtitle_at_the_80_char_boundary_passes(self):
-        cfg = dict(DEFAULT_STAGE_CONFIG, event_subtitle="나" * 80)
-        ok, reason = validate_stage_config(cfg)
-        assert ok is True
-        assert reason == ""
+    def test_group_title_over_the_limit_is_rejected(self):
+        """부제가 사라진 자리를 그룹 표시 글자 상한이 대신한다.
 
-    def test_subtitle_over_80_chars_is_rejected(self):
-        cfg = dict(DEFAULT_STAGE_CONFIG, event_subtitle="나" * 81)
+        로고 바 한 칸에 들어가는 캡션이라 길어지면 로고가 밀려 바가 깨진다.
+        """
+        cfg = dict(
+            DEFAULT_STAGE_CONFIG,
+            logo_groups=[
+                {
+                    "label": "주최",
+                    "title": "가" * (LOGO_GROUP_TITLE_MAX_LEN + 1),
+                    "assets": [],
+                }
+            ],
+        )
+        ok, reason = validate_stage_config(cfg)
+        assert ok is False
+        assert reason.strip()
+
+    def test_group_title_at_the_limit_passes(self):
+        cfg = dict(
+            DEFAULT_STAGE_CONFIG,
+            logo_groups=[
+                {
+                    "label": "주최",
+                    "title": "가" * LOGO_GROUP_TITLE_MAX_LEN,
+                    "assets": [],
+                }
+            ],
+        )
+        ok, reason = validate_stage_config(cfg)
+        assert ok is True, reason
+
+    def test_group_title_absence_is_allowed(self):
+        """이 키 도입 이전에 저장된 설정이 그렇다 — 정규화가 식별 키로 채운다."""
+        cfg = dict(
+            DEFAULT_STAGE_CONFIG,
+            logo_groups=[{"label": "주최", "assets": []}],
+        )
+        ok, reason = validate_stage_config(cfg)
+        assert ok is True, reason
+
+    def test_non_string_group_title_is_rejected(self):
+        cfg = dict(
+            DEFAULT_STAGE_CONFIG,
+            logo_groups=[{"label": "주최", "title": 42, "assets": []}],
+        )
         ok, reason = validate_stage_config(cfg)
         assert ok is False
         assert reason.strip()

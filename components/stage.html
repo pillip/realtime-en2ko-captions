@@ -103,16 +103,6 @@
       overflow: hidden;
       text-overflow: ellipsis;
     }
-    .event-subtitle {
-      margin: 0;
-      font-size: clamp(13px, 1vw, 22px);
-      font-weight: 400;
-      color: rgba(255, 255, 255, 0.5);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .event-subtitle[hidden] { display: none; }
 
     /* --- 발표 영역: 어떤 뷰포트에서도 16:9 를 유지한다 ------------------- */
     .presentation {
@@ -149,42 +139,6 @@
       background: #000000;
     }
     .capture-video[hidden] { display: none; }
-
-    .title-card {
-      position: absolute;
-      inset: 0;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      gap: 20px;
-      padding: 4% 6%;
-      text-align: center;
-    }
-    .title-card[hidden] { display: none; }
-    .title-card-title {
-      font-size: clamp(24px, 3.2vw, 68px);
-      font-weight: 600;
-      letter-spacing: -0.02em;
-    }
-    .title-card-subtitle {
-      font-size: clamp(14px, 1.4vw, 30px);
-      color: rgba(255, 255, 255, 0.55);
-    }
-    .title-card-subtitle[hidden] { display: none; }
-    .title-card-logos {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      justify-content: center;
-      gap: 28px;
-      padding-top: 12px;
-    }
-    .title-card-logos img {
-      max-height: 7vh;
-      max-width: 18vw;
-      object-fit: contain;
-    }
 
     /* --- 캡처 컨트롤 / 상태 배너 (ISSUE-42) ------------------------------ */
     /* 무대 화면의 클릭 표면은 여기 하나뿐이고, 연결되면 렌더 트리에서 통째로
@@ -762,7 +716,6 @@
 
     let stageRoot = null;
     let captureVideo = null;
-    let titleCard = null;
     let captureControls = null;
     let connectButton = null;
     let captureHint = null;
@@ -842,7 +795,6 @@
       _releaseCapture();
       captureVideo.srcObject = null;
       captureVideo.hidden = true;
-      titleCard.hidden = false;
       captureWarning.hidden = true;
       _hideHandoff();
       _setCaptureError("");
@@ -918,7 +870,6 @@
 
       captureVideo.srcObject = stream;
       captureVideo.hidden = false;
-      titleCard.hidden = true;
       captureStarted = true;
       connectButton.textContent = RECONNECT_LABEL;
 
@@ -979,7 +930,7 @@
     }
 
     // 상태 전환은 자막 컬럼 안에서만 일어난다 — 좌열(#event-header /
-    // #presentation / #stage-frame / #title-card / #logo-bar)은 건드리지 않는다.
+    // #presentation / #stage-frame / #logo-bar)은 건드리지 않는다.
     function setCaptionState(name) {
       captionState = name;
       const ended = name === "ended";
@@ -1143,16 +1094,8 @@
       const headerTitle = $("event-title");
       const title = cfg.event_title || headerTitle.textContent.trim();
       headerTitle.textContent = title;
-      $("card-title").textContent = title;
-
-      const subtitle = cfg.event_subtitle || "";
-      [$("event-subtitle"), $("card-subtitle")].forEach(function (el) {
-        el.textContent = subtitle;
-        el.hidden = !subtitle;
-      });
 
       const logoBar = $("logo-bar");
-      const cardLogos = $("card-logos");
       const groups = Array.isArray(cfg.logo_groups) ? cfg.logo_groups : [];
       // `!== false` 로 읽는다 — 키가 없는(이 옵션 도입 이전) 설정은 종전처럼
       // 라벨이 보여야 한다. `Boolean(cfg.show_logo_labels)` 로 쓰면 키 부재가
@@ -1162,7 +1105,14 @@
       groups.forEach(function (group) {
         const assets = Array.isArray(group && group.assets) ? group.assets : [];
         if (assets.length === 0) return; // 자산 없는 그룹은 숨긴다
-        const label = String((group && group.label) || "");
+        // 화면에 쓰는 것은 **표시 글자(`title`)** 다. `label` 은 서버가 그룹을
+        // 식별하는 키이고 화면에 나가지 않는다 — 관리자가 라벨을 "Host" 로
+        // 바꿔도 키는 "주최" 로 남아 업로드된 로고가 그 그룹에 유지된다.
+        // `title` 이 비면 서버 정규화가 이미 키로 채워 보내므로 여기서 다시
+        // 폴백하지 않는다(폴백 정의는 `stage_config._as_group_title` 하나다).
+        const label = String(
+          (group && (group.title || group.label)) || ""
+        );
         const wrap = document.createElement("div");
         wrap.className = "logo-group";
         // 관리자가 끌 수 있는 그룹 라벨 글자. 끄더라도 **로고 alt 텍스트는
@@ -1177,7 +1127,6 @@
         }
         assets.forEach(function (name, i) {
           wrap.appendChild(makeLogoImage(name, i === 0 ? label + " 로고" : ""));
-          cardLogos.appendChild(makeLogoImage(name, "")); // 타이틀 카드는 장식 반복
         });
         logoBar.appendChild(wrap);
         shown += 1;
@@ -1197,7 +1146,6 @@
       // --- 발표자료 화면 캡처 부트스트랩 (ISSUE-42) -------------------------
       stageRoot = $("stage-root");
       captureVideo = $("capture-video");
-      titleCard = $("title-card");
       captureControls = $("capture-controls");
       connectButton = $("capture-connect");
       captureHint = $("capture-hint");
@@ -1244,9 +1192,10 @@
 <body>
   <div class="stage" id="stage-root">
     <main class="stage-main">
+      <!-- 부제(`#event-subtitle`)는 제거됐다 — 무대 화면에서 쓰지 않기로 했고
+           `stage_config` 에서도 `event_subtitle` 키가 사라졌다. -->
       <header class="event-header" id="event-header">
         <h1 class="event-title" id="event-title">{{ROOM_NAME}}</h1>
-        <p class="event-subtitle" id="event-subtitle" hidden></p>
       </header>
 
       <section class="presentation" id="presentation" aria-label="발표 화면">
@@ -1254,11 +1203,13 @@
           <!-- ISSUE-42 의 캡처 스트림이 여기에 붙는다. object-fit: contain 이라
                16:9 가 아닌 소스도 잘리거나 늘어나지 않고 레터박스로 들어간다. -->
           <video class="capture-video" id="capture-video" autoplay muted playsinline hidden></video>
-          <div class="title-card" id="title-card">
-            <div class="title-card-title" id="card-title"></div>
-            <div class="title-card-subtitle" id="card-subtitle" hidden></div>
-            <div class="title-card-logos" id="card-logos"></div>
-          </div>
+
+          <!-- 타이틀 카드(`#title-card`)는 제거됐다.
+               FR-075 는 캡처가 끊겼을 때 "검은 화면 대신 타이틀 카드로" 되돌리는
+               선택이었지만, 미연결 상태에서는 **연결 버튼만** 보이는 쪽으로
+               바꿨다 — 행사 타이틀과 로고는 이미 상단 헤더(#event-header)와 하단
+               로고 바(#logo-bar)가 들고 있어 프레임 안에서 중복됐다. 미연결
+               화면은 이제 프레임 배경 + 연결 버튼뿐이다. -->
 
           <!-- 자기 캡처(무한 거울) 경고. 캡처를 끊지 않고 재선택만 안내한다
                (FR-081). 라이브 리전이 아니다 — 무대는 프로젝터 출력이고,

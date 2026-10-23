@@ -617,14 +617,17 @@ def _write_raw_stage_config(db_manager, room_id, value):
 
 _VALID_CONFIG = {
     "event_title": "2026 개발자 콘퍼런스 🎉",
-    "event_subtitle": "A홀 기조연설",
     "caption_ratio": "1/3",
     # show_logo_labels 는 normalize 가 항상 채우므로 기대값에도 있어야 한다.
     "show_logo_labels": True,
     "logo_groups": [
-        {"label": "주최", "assets": ["host-1.png"]},
-        {"label": "주관", "assets": []},
-        {"label": "후원", "assets": ["sponsor-a.svg", "sponsor-b.png"]},
+        {"label": "주최", "title": "주최", "assets": ["host-1.png"]},
+        {"label": "주관", "title": "주관", "assets": []},
+        {
+            "label": "후원",
+            "title": "후원",
+            "assets": ["sponsor-a.svg", "sponsor-b.png"],
+        },
     ],
 }
 
@@ -738,10 +741,9 @@ class TestRoomGetRawStageConfig:
         """같은 룸을 두 접근자로 읽어 **차이 자체**를 단언한다 (RL-004)."""
         blob = {
             "event_title": "타이틀",
-            "event_subtitle": "부제",
             "caption_ratio": "1/3",
             "logo_groups": [
-                {"label": "주최", "assets": ["a.png", 12345]},
+                {"label": "주최", "title": "주최", "assets": ["a.png", 12345]},
                 {"label": "협찬", "assets": ["ghost.png"]},
             ],
         }
@@ -867,7 +869,7 @@ class TestRoomUpdateStageConfig:
             logo_groups=[
                 "문자열",
                 {"label": "협찬", "assets": ["ghost.png"]},
-                {"label": "후원", "assets": ["sponsor-a.svg"]},
+                {"label": "후원", "title": "후원", "assets": ["sponsor-a.svg"]},
             ],
         )
         assert room_model.update_stage_config(stage_room, messy) is True

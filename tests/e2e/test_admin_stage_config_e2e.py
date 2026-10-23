@@ -171,7 +171,6 @@ def seeded_logo(stage_room, _tmp_db_dir):
         _STAGE_ROOM_ID,
         build_stage_config_from_form(
             event_title=config["event_title"],
-            event_subtitle=config["event_subtitle"],
             caption_ratio=config["caption_ratio"],
             logo_groups=groups,
         ),

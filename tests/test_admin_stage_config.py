@@ -82,14 +82,15 @@ class TestBuildStageConfigFromForm:
     def test_valid_form_produces_validatable_config(self):
         cfg = build_stage_config_from_form(
             event_title="2026 개발자 콘퍼런스",
-            event_subtitle="AI 트랙",
             caption_ratio="1/3",
             logo_groups={"주최": ["logo.png"], "후원": ["a.svg", "b.jpg"]},
+            logo_titles={"주최": "Host"},
         )
 
         assert validate_stage_config(cfg) == (True, "")
         assert cfg["event_title"] == "2026 개발자 콘퍼런스"
-        assert cfg["event_subtitle"] == "AI 트랙"
+        titles = {g["label"]: g["title"] for g in cfg["logo_groups"]}
+        assert titles["주최"] == "Host"
         assert cfg["caption_ratio"] == "1/3"
         assert [g["label"] for g in cfg["logo_groups"]] == list(LOGO_GROUP_LABELS)
         by_label = {g["label"]: g["assets"] for g in cfg["logo_groups"]}
@@ -101,7 +102,6 @@ class TestBuildStageConfigFromForm:
         """정규화를 통과해도 값이 바뀌지 않아야 한다 (조용한 보정 금지)."""
         cfg = build_stage_config_from_form(
             event_title="타이틀",
-            event_subtitle="부제",
             caption_ratio="1/4",
             logo_groups={"주관": ["x.png"]},
         )
@@ -110,17 +110,17 @@ class TestBuildStageConfigFromForm:
     def test_whitespace_is_trimmed(self):
         cfg = build_stage_config_from_form(
             event_title="  앞뒤 공백  ",
-            event_subtitle="\t부제\n",
             caption_ratio="1/4",
             logo_groups={},
+            logo_titles={"주최": "  주최 그룹  "},
         )
         assert cfg["event_title"] == "앞뒤 공백"
-        assert cfg["event_subtitle"] == "부제"
+        # 그룹 표시 글자도 같은 _clean_text 를 지난다.
+        assert cfg["logo_groups"][0]["title"] == "주최 그룹"
 
     def test_empty_form_matches_documented_default(self):
         cfg = build_stage_config_from_form(
             event_title="",
-            event_subtitle="",
             caption_ratio=DEFAULT_STAGE_CONFIG["caption_ratio"],
             logo_groups={},
         )
@@ -130,7 +130,6 @@ class TestBuildStageConfigFromForm:
         """AC: 잘못된 비율은 조용히 기본값으로 바뀌지 않고 거절 사유가 나온다."""
         cfg = build_stage_config_from_form(
             event_title="t",
-            event_subtitle="",
             caption_ratio="1/2",
             logo_groups={},
         )
@@ -142,7 +141,6 @@ class TestBuildStageConfigFromForm:
         """알 수 없는 라벨을 조용히 지우지 않는다 — 폐기 경고(F-5)의 입력이 된다."""
         cfg = build_stage_config_from_form(
             event_title="t",
-            event_subtitle="",
             caption_ratio="1/4",
             logo_groups={"협찬": ["x.png"]},
         )
@@ -153,7 +151,6 @@ class TestBuildStageConfigFromForm:
     def test_none_logo_groups_is_tolerated(self):
         cfg = build_stage_config_from_form(
             event_title="t",
-            event_subtitle="",
             caption_ratio="1/4",
             logo_groups=None,
         )
@@ -170,7 +167,6 @@ class TestBuildStageConfigFromForm:
         """
         cfg = build_stage_config_from_form(
             event_title="t",
-            event_subtitle="",
             caption_ratio="1/4",
             logo_groups={"주최": ["a.png", "logo.png", "a.png"], "주관": ["b.png"]},
         )
@@ -183,7 +179,6 @@ class TestBuildStageConfigFromForm:
         """중복이 12개 상한을 갉아먹어 정상 업로드가 거절되면 안 된다."""
         cfg = build_stage_config_from_form(
             event_title="t",
-            event_subtitle="",
             caption_ratio="1/4",
             logo_groups={"주최": ["dup.png"] * 20},
         )
@@ -192,7 +187,6 @@ class TestBuildStageConfigFromForm:
     def test_too_long_title_is_rejected_by_validator(self):
         cfg = build_stage_config_from_form(
             event_title="가" * 121,
-            event_subtitle="",
             caption_ratio="1/4",
             logo_groups={},
         )
@@ -299,7 +293,6 @@ class TestDeleteStageLogo:
         model = MagicMock()
         model.get_stage_config.return_value = {
             "event_title": "t",
-            "event_subtitle": "",
             "caption_ratio": "1/4",
             "logo_groups": [
                 {"label": label, "assets": list(assets_by_label.get(label, []))}
@@ -416,7 +409,6 @@ class TestDescribeStageConfigDrops:
     def _candidate(self, groups):
         return {
             "event_title": "t",
-            "event_subtitle": "",
             "caption_ratio": "1/4",
             "logo_groups": groups,
         }
@@ -424,7 +416,6 @@ class TestDescribeStageConfigDrops:
     def test_clean_config_reports_nothing(self):
         candidate = build_stage_config_from_form(
             event_title="t",
-            event_subtitle="",
             caption_ratio="1/4",
             logo_groups={"주최": ["a.png"]},
         )
@@ -507,7 +498,6 @@ class TestFindAssetDrift:
     def _config(self, assets):
         return build_stage_config_from_form(
             event_title="t",
-            event_subtitle="",
             caption_ratio="1/4",
             logo_groups={"주최": assets},
         )
@@ -576,24 +566,26 @@ class TestStageConfigRoundTrip:
         room_model.create(room_id="r-stage", name="A홀", created_by=admin_user_id)
         cfg = build_stage_config_from_form(
             event_title="2026 개발자 콘퍼런스",
-            event_subtitle="AI 트랙",
             caption_ratio="1/3",
             logo_groups={"주최": ["logo.png"]},
+            logo_titles={"주최": "Host"},
         )
 
         assert room_model.update_stage_config("r-stage", cfg) is True
 
         stored = room_model.get_stage_config("r-stage")
         assert stored["event_title"] == "2026 개발자 콘퍼런스"
-        assert stored["event_subtitle"] == "AI 트랙"
         assert stored["caption_ratio"] == "1/3"
-        assert stored["logo_groups"][0] == {"label": "주최", "assets": ["logo.png"]}
+        assert stored["logo_groups"][0] == {
+            "label": "주최",
+            "title": "Host",
+            "assets": ["logo.png"],
+        }
 
     def test_invalid_ratio_leaves_db_untouched(self, room_model, admin_user_id):
         room_model.create(room_id="r-bad", name="B홀", created_by=admin_user_id)
         cfg = build_stage_config_from_form(
             event_title="지워지면 안 됨",
-            event_subtitle="",
             caption_ratio="1/2",
             logo_groups={},
         )
@@ -611,7 +603,6 @@ _RAW_ROOM_ID = "r-rawblob"
 # 복원으로 실제 컬럼에 들어올 수 있는 모양이다.
 _UNKNOWN_LABEL_BLOB = {
     "event_title": "2026 개발자 콘퍼런스",
-    "event_subtitle": "",
     "caption_ratio": "1/3",
     "logo_groups": [
         {"label": "주최", "assets": ["host.png"]},
@@ -622,7 +613,6 @@ _UNKNOWN_LABEL_BLOB = {
 # 문자열이 아닌 에셋 항목 — 정규화가 조용히 버리는 두 번째 경우.
 _BAD_ASSET_BLOB = {
     "event_title": "타이틀",
-    "event_subtitle": "",
     "caption_ratio": "1/4",
     "logo_groups": [{"label": "주최", "assets": ["host.png", {"src": "ghost.png"}]}],
 }
@@ -694,7 +684,6 @@ class TestStageConfigDropWarningsFromDatabase:
             room_id,
             build_stage_config_from_form(
                 event_title="정상",
-                event_subtitle="",
                 caption_ratio="1/4",
                 logo_groups={"주최": ["host.png"]},
             ),
@@ -883,7 +872,6 @@ def _config_with(groups):
     """정규화/중복 제거를 거치지 않은 raw config (중복 파일명 재현용)."""
     return {
         "event_title": "t",
-        "event_subtitle": "",
         "caption_ratio": "1/4",
         "logo_groups": groups,
     }
@@ -1277,16 +1265,18 @@ class TestStageFormHelpText:
         fake_st = MagicMock()
         monkeypatch.setattr(admin, "st", fake_st)
         monkeypatch.setattr(admin, "EVENT_TITLE_MAX_LEN", 7)
-        monkeypatch.setattr(admin, "EVENT_SUBTITLE_MAX_LEN", 5)
+        monkeypatch.setattr(admin, "LOGO_GROUP_TITLE_MAX_LEN", 5)
 
         admin._render_stage_config_form("r-1")
 
         helps = [
             call.kwargs.get("help", "") for call in fake_st.text_input.call_args_list
         ]
-        assert len(helps) == 2
+        # 행사 타이틀 1개 + 로고 그룹 표시 글자 3개.
+        assert len(helps) == 1 + len(LOGO_GROUP_LABELS)
         assert "7자" in helps[0]
-        assert "5자" in helps[1]
+        for group_help in helps[1:]:
+            assert "5자" in group_help
 
 
 class TestLogoLabelToggleReachesTheConfig:
@@ -1298,7 +1288,6 @@ class TestLogoLabelToggleReachesTheConfig:
 
         kwargs = {
             "event_title": "행사",
-            "event_subtitle": "",
             "caption_ratio": "1/4",
             "logo_groups": {"주최": ["a.png"]},
         }

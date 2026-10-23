@@ -63,7 +63,6 @@ def _cfg() -> str:
     return json.dumps(
         {
             "event_title": "2026 개발자 콘퍼런스",
-            "event_subtitle": "A홀 기조연설",
             "caption_ratio": "1/4",
             "logo_groups": [
                 {"label": label, "assets": []} for label in ("주최", "주관", "후원")
@@ -218,7 +217,7 @@ def _connect(page) -> None:
 
     `hidden === false` alone is not enough. 스트림을 `<video>` 에 아예 붙이지
     않아도 그 단언은 통과하고, 화면에는 검은 프레임이 남는다 — FR-075/NFR-026 이
-    막으려는 바로 그 상태다. 게다가 `test_track_ended_falls_back_to_the_title_card`
+    막으려는 바로 그 상태다. 게다가 `test_track_ended_falls_back_to_the_connect_action`
     의 `srcObject === null` 단언까지 **처음부터 null 이라서** 통과해 버린다
     (리뷰 뮤테이션 M35 생존, RL-004 의 전형 — 치운 것이 아니라 놓은 적이 없는데
     통과하는 단언).
@@ -471,8 +470,12 @@ class TestStageCaptureLifecycle:
         )
         assert page.locator("#handoff-prompt").is_visible() is False
 
-    def test_track_ended_falls_back_to_the_title_card(self, page, capture_server):
-        """TC-063 / FR-075 — "공유 중지" 후에도 검은 화면이 되지 않는다.
+    def test_track_ended_falls_back_to_the_connect_action(self, page, capture_server):
+        """TC-063 — "공유 중지" 후 **연결 버튼만** 남고 막다른 길이 아니다.
+
+        원래 FR-075 는 타이틀 카드로 되돌리는 선택이었지만, 미연결 화면은
+        이제 프레임 배경 + 연결 버튼뿐이다 (타이틀/로고는 상단 헤더와 하단
+        로고 바가 들고 있어 프레임 안에서 중복됐다).
 
         자막 컬럼이 그 전환에 전혀 영향받지 않는다는 것까지 함께 본다 —
         발표 영역의 사고가 자막을 끊으면 안 된다.
@@ -485,7 +488,6 @@ class TestStageCaptureLifecycle:
             "() => document.querySelectorAll('.caption-line').length === 1"
         )
         _connect(page)
-        assert page.locator("#title-card").is_visible() is False
 
         # 브라우저의 "공유 중지" 는 ended 를 발화한다. stop() 만으로는 명세상
         # 발화하지 않으므로 스텁이 직접 밀어 넣는다 (RL-022: 관대한 스텁 + 명시 테스트).
@@ -503,7 +505,7 @@ class TestStageCaptureLifecycle:
 
         state = page.evaluate(
             """() => ({
-              titleCard: !document.getElementById("title-card").hidden,
+              titleCardGone: document.getElementById("title-card") === null,
               srcObject: document.getElementById("capture-video").srcObject === null,
               label: document.getElementById("capture-connect").textContent.trim(),
               controls: !document.getElementById("capture-controls").hidden,
@@ -513,7 +515,9 @@ class TestStageCaptureLifecycle:
               column: document.getElementById("caption-column") !== null,
             })"""
         )
-        assert state["titleCard"] is True, "the title card did not come back"
+        assert (
+            state["titleCardGone"] is True
+        ), "타이틀 카드가 되살아났다 — 미연결 화면은 연결 버튼만이어야 한다"
         assert state["srcObject"] is True, "the ended stream is still attached"
         assert state["label"] == "발표자료 다시 연결", state["label"]
         assert state["controls"] is True, "no reconnect action after the track ended"
@@ -524,7 +528,7 @@ class TestStageCaptureLifecycle:
 
         # 그리고 실제로 다시 연결된다 (막다른 길이 아니다).
         _connect(page)
-        assert page.locator("#title-card").is_visible() is False
+        assert page.locator("#capture-video").is_visible() is True
 
     def test_reconnect_does_not_tear_itself_down(self, page, capture_server):
         """옛 트랙의 `ended` 리스너를 먼저 떼지 않으면 새 캡처가 즉시 철거된다.
@@ -620,12 +624,14 @@ class TestStageCaptureLifecycle:
         state = page.evaluate(
             """() => ({
               hint: document.getElementById("capture-hint").textContent.trim(),
-              titleCard: !document.getElementById("title-card").hidden,
+              titleCardGone: document.getElementById("title-card") === null,
               videoHidden: document.getElementById("capture-video").hidden,
               buttonVisible: !document.getElementById("capture-controls").hidden,
             })"""
         )
-        assert state["titleCard"] is True, "the title card must survive a rejection"
+        assert (
+            state["titleCardGone"] is True
+        ), "타이틀 카드는 제거됐다 — 거부 후에도 연결 버튼만 남아야 한다"
         assert state["videoHidden"] is True
         assert state["buttonVisible"] is True, "the operator must be able to retry"
         assert state["hint"], "the rejection produced no guidance at all"

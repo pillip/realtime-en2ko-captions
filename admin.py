@@ -50,9 +50,9 @@ from database import (
 from qr_generator import build_stage_url, build_view_url, make_qr_png
 from stage_config import (
     CAPTION_RATIOS,
-    EVENT_SUBTITLE_MAX_LEN,
     EVENT_TITLE_MAX_LEN,
     LOGO_GROUP_LABELS,
+    LOGO_GROUP_TITLE_MAX_LEN,
     validate_stage_config,
 )
 
@@ -723,7 +723,6 @@ def _render_admin_room_create(room_model, user_model, current_user):
 # 관리자가 입력해 둔 텍스트가 남아 있어야 하기 때문이다
 # (AC: "업로드 실패 시 같은 폼의 행사 타이틀 값은 유실되지 않는다").
 _STAGE_TITLE_KEY = "stage_cfg_title"
-_STAGE_SUBTITLE_KEY = "stage_cfg_subtitle"
 _STAGE_RATIO_KEY = "stage_cfg_ratio"
 _STAGE_SHOW_LABELS_KEY = "stage_cfg_show_logo_labels"
 _STAGE_SEEDED_ROOM_KEY = "stage_cfg_seeded_room"
@@ -738,6 +737,33 @@ _STAGE_DELETE_RESULT_KEY = "stage_cfg_delete_result"
 # 업로드 허용 확장자는 branding_assets 의 화이트리스트를 그대로 재사용한다
 # (여기서 목록을 복제하면 두 계층이 어긋난다).
 _LOGO_UPLOAD_TYPES = [ext.lstrip(".") for ext in ALLOWED_EXTENSIONS]
+
+
+def _stage_logo_title_key(label: str) -> str:
+    """로고 그룹 표시 글자 위젯의 ``session_state`` 키.
+
+    키에 **식별 라벨**을 쓴다 — 표시 글자를 키에 쓰면 관리자가 글자를 고치는
+    순간 위젯 식별자가 바뀌어 입력 중이던 값이 날아간다.
+    """
+    return f"stage_cfg_logo_title_{label}"
+
+
+def _seed_logo_titles(config) -> None:
+    """저장된 그룹 표시 글자를 폼 위젯에 채운다.
+
+    저장된 값이 식별 라벨과 **같으면 입력란을 비운다**. 기본값은 placeholder
+    로 보여 주는 쪽이 정직하다 — "주최" 가 입력돼 있으면 관리자가 직접 적어
+    넣은 것인지 기본값인지 구분할 수 없고, 비워 두면 그 칸이 "기본값을 쓴다"
+    를 뜻한다. 저장 경로의 폴백은 `stage_config._as_group_title` 한 곳이다.
+    """
+    stored = {
+        group.get("label"): group.get("title")
+        for group in config.get("logo_groups") or []
+        if isinstance(group, dict)
+    }
+    for label in LOGO_GROUP_LABELS:
+        title = stored.get(label) or ""
+        st.session_state[_stage_logo_title_key(label)] = "" if title == label else title
 
 
 def _render_admin_room_stage_config(room_model, visible_rooms):
@@ -814,7 +840,10 @@ def _seed_stage_form_state(room_id, config):
     # 남겨 두면 다른 룸 화면에 엉뚱한 파일의 확인 버튼이 떠 있게 된다.
     clear_stage_logo_delete(st.session_state)
     st.session_state[_STAGE_TITLE_KEY] = config.get("event_title", "")
-    st.session_state[_STAGE_SUBTITLE_KEY] = config.get("event_subtitle", "")
+    # 그룹 표시 글자. 저장된 값이 식별 라벨과 같으면(기본값) 입력란을 비워
+    # placeholder 가 보이게 둔다 — 관리자가 '고친 값' 과 '기본값' 을 구분할 수
+    # 있어야 한다.
+    _seed_logo_titles(config)
     st.session_state[_STAGE_RATIO_KEY] = config.get("caption_ratio", CAPTION_RATIOS[0])
     # 키가 없는 기존 룸은 True — 라벨이 보이던 종전 동작을 유지한다.
     st.session_state[_STAGE_SHOW_LABELS_KEY] = bool(
@@ -1014,11 +1043,6 @@ def _render_stage_config_form(room_id):
             key=_STAGE_TITLE_KEY,
             help=f"무대 화면 상단 헤더 바에 표시됩니다 (최대 {EVENT_TITLE_MAX_LEN}자).",
         )
-        subtitle = st.text_input(
-            "행사 부제",
-            key=_STAGE_SUBTITLE_KEY,
-            help=f"타이틀 아래 보조 문구 (최대 {EVENT_SUBTITLE_MAX_LEN}자).",
-        )
         ratio = st.radio(
             "자막 컬럼 비율",
             options=list(CAPTION_RATIOS),
@@ -1035,7 +1059,23 @@ def _render_stage_config_form(room_id):
                 "스크린 리더용 대체 텍스트도 유지됩니다."
             ),
         )
+        logo_titles = {}
         for label in LOGO_GROUP_LABELS:
+            # 표시 글자 입력. 라벨(`label`)은 그룹 **식별 키**라 바뀌지 않고,
+            # 여기서 고치는 것은 무대 화면에 보이는 글자뿐이다 — 영문 행사면
+            # Host / Organizer / Sponsor 로 바꿔 쓸 수 있다. 키가 그대로이므로
+            # 글자를 바꿔도 이미 업로드한 로고는 그 그룹에 남는다.
+            logo_titles[label] = st.text_input(
+                f"{label} 그룹 표시 글자",
+                key=_stage_logo_title_key(label),
+                placeholder=label,
+                help=(
+                    f"무대 로고 바에 이 그룹 이름으로 표시됩니다 "
+                    f"(최대 {LOGO_GROUP_TITLE_MAX_LEN}자). 비우면 '{label}' 이 "
+                    "쓰입니다. 위의 글자 표시 체크를 끄면 화면에서는 보이지 "
+                    "않지만 스크린 리더용 대체 텍스트에는 계속 쓰입니다."
+                ),
+            )
             uploads[label] = st.file_uploader(
                 f"{label} 로고 추가",
                 type=_LOGO_UPLOAD_TYPES,
@@ -1046,9 +1086,9 @@ def _render_stage_config_form(room_id):
 
     return submitted, {
         "event_title": title,
-        "event_subtitle": subtitle,
         "caption_ratio": ratio,
         "show_logo_labels": show_logo_labels,
+        "logo_titles": logo_titles,
         "uploads": uploads,
     }
 
@@ -1094,7 +1134,7 @@ def _save_stage_config(room_model, room_id, current_config, values):
     #    관리자에게 보여줄 사유는 validate_stage_config 로 직접 얻는다.
     preflight = build_stage_config_from_form(
         event_title=values["event_title"],
-        event_subtitle=values["event_subtitle"],
+        logo_titles=values["logo_titles"],
         caption_ratio=values["caption_ratio"],
         show_logo_labels=values["show_logo_labels"],
         logo_groups=existing,
@@ -1116,7 +1156,7 @@ def _save_stage_config(room_model, room_id, current_config, values):
 
     candidate = build_stage_config_from_form(
         event_title=values["event_title"],
-        event_subtitle=values["event_subtitle"],
+        logo_titles=values["logo_titles"],
         caption_ratio=values["caption_ratio"],
         show_logo_labels=values["show_logo_labels"],
         logo_groups={
