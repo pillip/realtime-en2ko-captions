@@ -1608,6 +1608,146 @@ class TestStageControlMessage:
         assert spy.get_control("r1") is None
 
 
+class TestStageThemeControl:
+    """무대 테마 — `caption_scale` 과 같은 **세션 한정 control 상태** (#178)."""
+
+    def test_a_valid_theme_updates_state_publishes_and_acks(self):
+        from tests.broadcast_spy import SpyBroadcastManager
+
+        spy = SpyBroadcastManager()
+        ws = _ws_yielding([{"type": "stage_control", "theme": "light"}])
+
+        sent = _run_with_spy(ws, _RecordingRoomRepo(), spy)
+
+        assert spy.get_control("r1") == {"theme": "light"}
+        assert spy.control_count == 1, spy.control_calls
+        _room, payload = spy.control_calls[0]
+        assert payload["event"] == "control"
+        assert payload["theme"] == "light"
+        ack = next(m for m in sent if m["type"] == "stage_control_ack")
+        assert ack["theme"] == "light"
+
+    @pytest.mark.parametrize("theme", ["Dark", "LIGHT", "sepia", "", None, 1, True])
+    def test_unknown_themes_change_nothing_and_are_refused(self, theme):
+        """허용 목록 밖은 보정하지 않고 거절한다.
+
+        `"Dark"` 를 받아 주면 프로토콜이 조용히 넓어지고 그 관용의 경계를 아무도
+        모른다. 그리고 모르는 값을 **무시**해 버리면 오퍼레이터는 자기 조작이
+        먹었는지 알 수 없다 — 거절은 ack 대신 error 로 돌아가야 한다.
+        """
+        from tests.broadcast_spy import SpyBroadcastManager
+
+        spy = SpyBroadcastManager()
+        ws = _ws_yielding([{"type": "stage_control", "theme": theme}])
+
+        sent = _run_with_spy(ws, _RecordingRoomRepo(), spy)
+
+        assert spy.get_control("r1") is None
+        assert spy.control_count == 0, spy.control_calls
+        assert all(m.get("type") != "stage_control_ack" for m in sent)
+        assert [m for m in sent if m.get("type") == "stage_control_error"]
+
+    def test_scale_and_theme_in_one_message_both_apply(self):
+        """한 메시지에 둘이 함께 와도 각각 반영된다 — 한 번만 발행한다."""
+        from tests.broadcast_spy import SpyBroadcastManager
+
+        spy = SpyBroadcastManager()
+        ws = _ws_yielding(
+            [{"type": "stage_control", "caption_scale": 1.2, "theme": "light"}]
+        )
+
+        sent = _run_with_spy(ws, _RecordingRoomRepo(), spy)
+
+        assert spy.get_control("r1") == {"caption_scale": 1.2, "theme": "light"}
+        assert spy.control_count == 1, spy.control_calls
+        ack = next(m for m in sent if m["type"] == "stage_control_ack")
+        assert ack["caption_scale"] == 1.2
+        assert ack["theme"] == "light"
+
+    def test_a_message_with_no_recognised_field_is_refused(self):
+        """빈 stage_control 은 "아무 일도 없음" 이 아니라 거절이다."""
+        from tests.broadcast_spy import SpyBroadcastManager
+
+        spy = SpyBroadcastManager()
+        ws = _ws_yielding([{"type": "stage_control"}])
+
+        sent = _run_with_spy(ws, _RecordingRoomRepo(), spy)
+
+        assert spy.control_count == 0
+        assert [m for m in sent if m.get("type") == "stage_control_error"]
+
+
+class TestPresentationDisconnectIsAOneShotCommand:
+    """발표자료 해제는 **상태가 아니라 일회성 명령**이다 (#178).
+
+    이 구분이 이 기능의 전부다. `set_control` 에 저장하면 저장된 상태가
+    `_handle_stream` 의 **connect-time 스냅샷**으로 새 뷰어에게 다시 나가므로,
+    재접속하거나 새로 고친 무대 페이지가 "지난번 해제 명령" 을 받아 **즉시 다시
+    해제**된다. 발표 중 무대 화면을 새로 고치면 발표자료가 다시 끊기는 버그가
+    된다.
+    """
+
+    def test_the_command_is_published_but_never_stored(self):
+        from tests.broadcast_spy import SpyBroadcastManager
+
+        spy = SpyBroadcastManager()
+        ws = _ws_yielding([{"type": "stage_control", "presentation": "disconnect"}])
+
+        sent = _run_with_spy(ws, _RecordingRoomRepo(), spy)
+
+        assert spy.control_count == 1, spy.control_calls
+        _room, payload = spy.control_calls[0]
+        assert payload["presentation"] == "disconnect"
+        assert payload["event"] == "control"
+        # 핵심 단언 — 상태에 남지 않는다.
+        assert spy.get_control("r1") is None, (
+            "해제 명령이 control 상태로 저장됐다 — 재접속한 무대 페이지가 "
+            "connect-time 스냅샷으로 이 명령을 받아 즉시 다시 해제된다"
+        )
+        ack = next(m for m in sent if m["type"] == "stage_control_ack")
+        assert ack["presentation"] == "disconnect"
+
+    def test_the_command_carries_the_existing_state_forward(self):
+        """명령 프레임도 현재 테마/배율을 함께 싣는다.
+
+        무대 클라이언트의 `handleControl` 은 모든 control 프레임에서 언어와
+        배율·테마를 다시 적용한다(멱등). 명령만 단독으로 보내면 그 값들이
+        payload 에서 빠져 클라이언트가 "값 없음" 과 "바뀌지 않음" 을 구분해야
+        하는데, 그 분기를 만들 이유가 없다.
+        """
+        from tests.broadcast_spy import SpyBroadcastManager
+
+        spy = SpyBroadcastManager()
+        ws = _ws_yielding(
+            [
+                {"type": "stage_control", "theme": "light"},
+                {"type": "stage_control", "presentation": "disconnect"},
+            ]
+        )
+
+        _run_with_spy(ws, _RecordingRoomRepo(), spy)
+
+        assert spy.control_count == 2, spy.control_calls
+        _room, command_payload = spy.control_calls[-1]
+        assert command_payload["presentation"] == "disconnect"
+        assert command_payload["theme"] == "light"
+        # 테마는 상태라 남고, 명령은 남지 않는다.
+        assert spy.get_control("r1") == {"theme": "light"}
+
+    @pytest.mark.parametrize("value", ["Disconnect", "stop", "", None, True, 1])
+    def test_unknown_commands_change_nothing_and_are_refused(self, value):
+        from tests.broadcast_spy import SpyBroadcastManager
+
+        spy = SpyBroadcastManager()
+        ws = _ws_yielding([{"type": "stage_control", "presentation": value}])
+
+        sent = _run_with_spy(ws, _RecordingRoomRepo(), spy)
+
+        assert spy.control_count == 0, spy.control_calls
+        assert spy.get_control("r1") is None
+        assert [m for m in sent if m.get("type") == "stage_control_error"]
+
+
 class TestLanguageUpdatePublishesControl:
     """TC-079 뒷절반 — 세션 중 언어 변경도 control 을 정확히 1회 낸다."""
 

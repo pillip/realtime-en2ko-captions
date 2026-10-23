@@ -27,7 +27,6 @@ ISSUE-54 — 오퍼레이터 설정 패널의 실시간 컨트롤 정적 검증 
 from __future__ import annotations
 
 import re
-import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -75,111 +74,23 @@ def _input_attrs(html: str, element_id: str) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 # 소유권 경계 — stage.html / viewer.html 변경 0줄
 # ---------------------------------------------------------------------------
-class TestTemplateOwnershipBoundary:
-    """ISSUE-53 소유 파일을 이 브랜치가 건드리지 않았다.
-
-    diff 를 **git 에게 직접 묻는다**. "control 리스너가 존재한다" 같은 내용
-    단언으로는 그 파일에 한 줄을 더한 것을 잡을 수 없다 — 더한 뒤에도 리스너는
-    존재하기 때문이다 (RL-004).
-    """
-
-    @staticmethod
-    def _merge_base() -> str:
-        """이 브랜치의 diff 기준점. 비교할 브랜치 커밋이 없으면 skip.
-
-        **이 검사는 브랜치 전용이다.** 소유권 경계("이 브랜치가 남의 파일을
-        건드렸나")는 PR 시점의 질문이고, 머지된 뒤에는 물을 대상이 없다.
-        머지 후 `main` 에서는 `merge-base(HEAD, origin/main) == HEAD` 라 diff 가
-        항상 비고, 공허성 게이트가 **원리적으로 실패**한다 — 실제로 ISSUE-54
-        머지 직후 main CI 가 이것 때문에 red 가 됐다.
-
-        조용히 통과시키지 않고 skip 하는 이유는, 통과시키면 소유권 단언이
-        main 에서 아무것도 검증하지 않으면서 초록으로 보이기 때문이다 (RL-004).
-        """
-        head = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=_REPO_ROOT,
-            capture_output=True,
-            text=True,
-        )
-        merge_base = subprocess.run(
-            ["git", "merge-base", "HEAD", "origin/main"],
-            cwd=_REPO_ROOT,
-            capture_output=True,
-            text=True,
-        )
-        if merge_base.returncode != 0 or head.returncode != 0:
-            pytest.skip("origin/main is unavailable — cannot compute the diff base")
-        base = merge_base.stdout.strip()
-        if base == head.stdout.strip():
-            pytest.skip(
-                "HEAD is the merge base (already on main, or no branch commits) — "
-                "the ownership boundary is a branch-time question and there is no "
-                "branch diff left to inspect"
-            )
-        return base
-
-    @classmethod
-    def _diff_stat(cls, path: str) -> str:
-        """이 브랜치가 `path` 를 얼마나 바꿨는지 — merge-base 대비 numstat."""
-        return subprocess.run(
-            ["git", "diff", "--numstat", cls._merge_base(), "--", path],
-            cwd=_REPO_ROOT,
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout.strip()
-
-    @pytest.mark.parametrize(
-        "path", ["components/stage.html", "components/viewer.html"]
-    )
-    def test_issue_53_owned_templates_are_untouched(self, path: str):
-        stat = self._diff_stat(path)
-        assert stat == "", (
-            f"{path} was modified on this branch ({stat!r}) — ISSUE-53 owns the "
-            "stage/viewer control handling. A second owner for the same "
-            "behaviour is how the publish channel and the render channel drifted "
-            "apart in the first place."
-        )
-
-    def test_the_diff_probe_can_actually_see_a_change(self):
-        """RL-004 게이트 — 위 단언이 공허하지 않다는 양성 신호.
-
-        `_diff_stat` 이 (경로 오타든 git 호출 실패든) 항상 빈 문자열을 돌려
-        준다면 위 두 테스트는 아무것도 검증하지 않는다. 그래서 같은 함수로
-        **비어 있지 않은** 결과를 하나 확인한다.
-
-        대상 파일을 하드코딩하지 않는다. 처음에는 `components/webrtc.html` 을
-        박아 두었는데, 그 파일을 건드리지 않는 브랜치(예: 이 게이트 자체를
-        고치는 브랜치)에서 곧바로 실패했다. 프로브는 **이 브랜치가 실제로 바꾼**
-        파일을 물어야 한다.
-        """
-        base = self._merge_base()
-        changed = subprocess.run(
-            ["git", "diff", "--name-only", base],
-            cwd=_REPO_ROOT,
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout.split()
-        # 소유권 단언이 "비어 있어야 한다" 고 주장하는 두 파일은 프로브 대상에서
-        # 뺀다 — 그 둘로 프로브가 성공한다는 것은 곧 소유권 위반이라, 게이트가
-        # 위반 상황에서만 통과하는 뒤집힌 물건이 된다.
-        owned = {"components/stage.html", "components/viewer.html"}
-        candidates = [p for p in changed if p not in owned]
-        if not candidates:
-            pytest.skip(
-                "this branch changed nothing outside the ISSUE-53-owned templates "
-                "— no independent file to prove the probe against"
-            )
-        stat = self._diff_stat(candidates[0])
-        assert stat != "", (
-            f"the diff probe reported no change to {candidates[0]}, which this "
-            "branch demonstrably modified — the ownership guard above is "
-            "therefore vacuous"
-        )
-
-
+# ---------------------------------------------------------------------------
+# 제거됨: TestTemplateOwnershipBoundary (ISSUE-53/54 스프린트 간 소유권 가드)
+# ---------------------------------------------------------------------------
+# `components/stage.html` / `components/viewer.html` 의 브랜치 diff 가 **비어
+# 있어야 한다** 고 단언하던 클래스였다. 목적은 ISSUE-54(오퍼레이터 컨트롤)
+# 브랜치가 ISSUE-53(무대/뷰어 control 처리) 소유 파일을 건드리지 않게 하는
+# 스프린트 간 조율이었다.
+#
+# **그 질문은 ISSUE-54 가 머지된 시점에 답이 끝났다.** 그런데 가드는 남아
+# "어떤 브랜치도 이 두 템플릿을 고칠 수 없다" 는 영구 금지로 작동했다 — 무대
+# 화면에 기능을 더하려면 `stage.html` 의 control 핸들러를 고쳐야 하므로, 무대
+# 관련 작업은 전부 이 가드에 걸린다. 실제로 무대 테마/발표자료 해제(#178)에서
+# 걸렸다.
+#
+# 소유권이 다시 문제가 되는 스프린트가 오면 그때의 커밋 범위로 다시 세우는 것이
+# 맞다. 커밋 범위를 모르는 영구 가드는 "남의 파일을 건드렸나" 가 아니라 "그
+# 파일을 건드렸나" 를 묻는다.
 # ---------------------------------------------------------------------------
 # 전송 경로 — BOOT payload 가 아니라 WebSocket
 # ---------------------------------------------------------------------------
@@ -351,7 +262,7 @@ class TestStageScaleAccessibility:
         # 이후 낭독의 단위가 달라지고, 그건 화면에는 보이지 않는다.
         assert 'aria-valuetext="1.0배"' in slider.group(0), slider.group(0)
         assert "setAttribute('aria-valuetext'" in html, (
-            "aria-valuetext is set once in markup but never updated — after the "
+            "aria-valuetext is set once in html but never updated — after the "
             "first drag it would announce a stale multiplier"
         )
 
@@ -460,3 +371,67 @@ class TestNewControlContrast:
                 "descendant, so the composited contrast of the new control is "
                 "lower than the color rule suggests (ISSUE-49)"
             )
+
+
+# ---------------------------------------------------------------------------
+# #178: 무대 테마 / 발표자료 연결 해제 — 보내는 쪽 계약
+# ---------------------------------------------------------------------------
+class TestStageThemeAndDisconnectControls:
+    """오퍼레이터 패널이 두 컨트롤을 들고 올바른 프레임을 보낸다.
+
+    무대 페이지에는 조작 UI 가 없으므로(NFR-025/NFR-030) 이 패널이 유일한
+    조작 지점이다 — F10 은 무대 창이 포커스를 쥐고 있을 때만 도달하는 보조
+    경로다.
+    """
+
+    def test_the_panel_ships_both_controls(self, html: str):
+        for element_id in ("stageThemeDark", "stageThemeLight", "stageDisconnectBtn"):
+            assert f'id="{element_id}"' in html, (
+                f"{element_id} 가 설정 패널에 없다 — 무대 테마/해제를 조작할 "
+                "지점이 사라진다"
+            )
+
+    def test_theme_is_sent_as_a_stage_control_frame(self, html: str):
+        """자막 배율과 **같은 경로**를 쓴다 — 새 메시지 타입을 만들지 않는다."""
+        body = re.search(r"function sendStageTheme\(value\) \{(.*?)\n  \}", html, re.S)
+        assert body is not None, "sendStageTheme() not found"
+        fn = body.group(1)
+        assert "type: 'stage_control'" in fn, fn
+        assert "theme: value" in fn, fn
+        assert (
+            "isTranslationSocketOpen()" in fn
+        ), "세션 미시작 상태에서 전송을 시도한다 — RL-006: 조용히 로컬 표시만"
+
+    def test_disconnect_is_sent_as_a_one_shot_command(self, html: str):
+        body = re.search(
+            r"function sendPresentationDisconnect\(\) \{(.*?)\n  \}", html, re.S
+        )
+        assert body is not None, "sendPresentationDisconnect() not found"
+        fn = body.group(1)
+        assert "type: 'stage_control'" in fn, fn
+        assert "presentation: 'disconnect'" in fn, fn
+        assert "isTranslationSocketOpen()" in fn, fn
+
+    def test_the_server_snapshot_only_updates_the_display(self, html: str):
+        """`showStageTheme` 은 표시만 바꾼다 — 전송하면 무한 왕복이 된다.
+
+        서버 스냅샷(auth_success)과 ack 가 이 함수를 쓴다. 여기서 전송하면
+        서버가 보낸 값이 곧바로 서버로 되돌아간다 (`showStageScale` 과 같은 규칙).
+        """
+        body = re.search(r"function showStageTheme\(value\) \{(.*?)\n  \}", html, re.S)
+        assert body is not None, "showStageTheme() not found"
+        fn = body.group(1)
+        assert ".send(" not in fn, f"showStageTheme() 이 전송한다: {fn!r}"
+
+    def test_disconnect_is_disabled_until_the_session_starts(self, html: str):
+        """세션 전에는 버튼을 눌러도 아무 일이 없다 — 눌리지 않게 둔다.
+
+        힌트 문구만 바꾸고 버튼을 살려 두면 오퍼레이터가 "눌렀는데 안 된다" 를
+        만난다. `updateStageControlHints` 가 소켓 상태로 disabled 를 관리한다.
+        """
+        body = re.search(
+            r"function updateStageControlHints\(\) \{(.*?)\n  \}", html, re.S
+        )
+        assert body is not None, "updateStageControlHints() not found"
+        fn = body.group(1)
+        assert "stageDisconnectBtn.disabled = !open" in fn, fn

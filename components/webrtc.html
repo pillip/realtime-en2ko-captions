@@ -125,6 +125,38 @@
     }
     .control-group select option { background: #151517; color: #ffffff; }
 
+    /* #178: 무대 테마 라디오. **새 알파를 만들지 않는다** — legend 는
+       `.control-group label` 과 같은 0.5, 선택 항목은 `.control-hint` 와 같은
+       0.65 다. 둘 다 패널 배경 `#0e0e10` 위에서 이미 검증된 값이라
+       "근거 없는 준수 추정"(RL-018)을 하나도 늘리지 않는다. */
+    .theme-fieldset {
+      margin: 0;
+      padding: 0;
+      border: 0;
+    }
+    .theme-fieldset legend {
+      padding: 0;
+      margin-bottom: 12px;
+      color: rgba(255, 255, 255, 0.5);
+      font-size: 12px;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .theme-option {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-right: 18px;
+      color: rgba(255, 255, 255, 0.65);
+      font-size: 14px;
+      cursor: pointer;
+      /* `.control-group label` 의 block/uppercase 를 상속하지 않도록 덮는다 —
+         라디오 항목은 한 줄에 나란히 놓여야 한다. */
+      text-transform: none;
+      letter-spacing: normal;
+    }
+
     .lang-warning {
       display: none;
       margin-top: 8px;
@@ -731,6 +763,36 @@
       <div class="control-hint" id="stageScaleHint">세션을 시작하면 적용됩니다.</div>
     </div>
 
+    <!-- #178: 무대 테마. 자막 크기와 같은 경로(`stage_control` → SSE `control`)
+         이고 같은 성질이다 — **세션 한정**이라 서버 재시작 시 다크로 돌아간다.
+         무대 페이지에는 조작 UI 가 없으므로(NFR-025/NFR-030) 선택은 여기서만
+         한다. radio 로 두는 이유: 두 값뿐이고 현재 값이 한눈에 보여야 한다. -->
+    <div class="control-group">
+      <fieldset class="theme-fieldset" id="stageThemeFieldset">
+        <legend>무대 테마</legend>
+        <label class="theme-option">
+          <input type="radio" name="stageTheme" id="stageThemeDark" value="dark" checked>
+          어둡게
+        </label>
+        <label class="theme-option">
+          <input type="radio" name="stageTheme" id="stageThemeLight" value="light">
+          밝게
+        </label>
+      </fieldset>
+      <div class="control-hint" id="stageThemeHint">세션을 시작하면 적용됩니다.</div>
+    </div>
+
+    <!-- #178: 발표자료 연결 해제. 무대 페이지의 F10 과 **같은 동작**이지만 이쪽은
+         무대 창 포커스가 필요 없어 발표 중에도 쓸 수 있다 (F10 은 무대 창이
+         포커스를 쥐고 있을 때만 도달한다). 서버는 이것을 control **상태**로
+         저장하지 않는다 — 저장하면 재접속한 무대 화면이 즉시 다시 해제된다. -->
+    <div class="control-group">
+      <button type="button" id="stageDisconnectBtn">
+        발표자료 연결 해제
+      </button>
+      <div class="control-hint" id="stageDisconnectHint">세션을 시작하면 적용됩니다.</div>
+    </div>
+
     <!-- 🎨 폰트 크기 조절 -->
     <div class="control-group">
       <label>번역 글자 크기</label>
@@ -909,6 +971,16 @@ try {
   const stageScaleSlider = document.getElementById('stageScaleSlider');
   const stageScaleValue = document.getElementById('stageScaleValue');
   const stageScaleHint = document.getElementById('stageScaleHint');
+  // #178: 무대 테마 / 발표자료 해제 컨트롤. **여기서 선언한다** — 부트스트랩이
+  // `updateStageControlHints()` 를 파일 뒤쪽보다 먼저 부르는데, `function` 선언은
+  // 호이스팅되지만 `const` 는 TDZ 에 있어 ReferenceError 로 컴포넌트 전체가 죽는다.
+  const stageThemeInputs = [
+    document.getElementById('stageThemeDark'),
+    document.getElementById('stageThemeLight'),
+  ].filter(Boolean);
+  const stageThemeHint = document.getElementById('stageThemeHint');
+  const stageDisconnectBtn = document.getElementById('stageDisconnectBtn');
+  const stageDisconnectHint = document.getElementById('stageDisconnectHint');
   const fullscreenFab = document.getElementById('fullscreenFab');
   const fsFontControls = document.getElementById('fsFontControls');
   const fsTransSize = document.getElementById('fsTransSize');
@@ -983,6 +1055,7 @@ try {
     // 다른 오퍼레이터의 설정을 조용히 되돌린다.
     showStageScale(localStorage.getItem('stageCaptionScale') || CAPTION_SCALE_DEFAULT);
     updateStageScaleHint();
+    updateStageControlHints();  // #178: 테마/해제 컨트롤도 같은 상태를 따른다
 
     // 언어 설정 (입력: 기본 auto, 출력: 기본 ko)
     const savedInputLang = localStorage.getItem('inputLanguage') || 'auto';
@@ -1242,6 +1315,59 @@ try {
     if (stageScaleSendTimer !== null) clearTimeout(stageScaleSendTimer);
     stageScaleSendTimer = setTimeout(sendStageControl, STAGE_SCALE_SEND_DELAY_MS);
   }
+
+  // --- #178: 무대 테마 / 발표자료 연결 해제 --------------------------------
+  //
+  // 자막 배율과 **같은 경로**(`stage_control` → SSE `control`)를 쓴다. 배율처럼
+  // 디바운스하지 않는 이유: 라디오와 버튼은 한 번의 의도적 클릭이고, 연속 조작으로
+  // 초당 수십 프레임이 나갈 일이 없다.
+
+  function updateStageControlHints() {
+    const open = isTranslationSocketOpen();
+    // 시작 전에 "적용됐다" 고 말하지 않는다 — updateStageScaleHint 와 같은 이유.
+    const ready = open ? '무대 화면에 바로 적용됩니다.' : '세션을 시작하면 적용됩니다.';
+    if (stageThemeHint) stageThemeHint.textContent = ready;
+    if (stageDisconnectHint) {
+      stageDisconnectHint.textContent = open
+        ? '무대 화면의 발표자료 캡처를 끊습니다 (F10 과 같은 동작).'
+        : '세션을 시작하면 적용됩니다.';
+    }
+    if (stageDisconnectBtn) stageDisconnectBtn.disabled = !open;
+  }
+
+  // 표시만 바꾼다 — **전송하지 않는다.** 서버 스냅샷(auth_success)과 ack 가 이
+  // 함수를 쓰므로, 전송하면 서버가 보낸 값이 곧바로 되돌아가는 왕복이 된다
+  // (showStageScale 과 같은 규칙).
+  function showStageTheme(value) {
+    stageThemeInputs.forEach((input) => {
+      input.checked = input.value === value;
+    });
+  }
+
+  function sendStageTheme(value) {
+    if (!isTranslationSocketOpen()) return; // RL-006: 조용히 로컬 표시만
+    openaiWebSocket.send(JSON.stringify({ type: 'stage_control', theme: value }));
+    console.log('[Control] 무대 테마 전송:', value);
+  }
+
+  function sendPresentationDisconnect() {
+    if (!isTranslationSocketOpen()) return;
+    openaiWebSocket.send(JSON.stringify({
+      type: 'stage_control',
+      presentation: 'disconnect'
+    }));
+    console.log('[Control] 발표자료 연결 해제 전송');
+  }
+
+  stageThemeInputs.forEach((input) => {
+    input.addEventListener('change', () => {
+      if (input.checked) sendStageTheme(input.value);
+    });
+  });
+  if (stageDisconnectBtn) {
+    stageDisconnectBtn.addEventListener('click', sendPresentationDisconnect);
+  }
+  updateStageControlHints();
 
   // 언어 변경을 WebSocket으로 전송 (ISSUE-2: 재연결 없이 반영)
   function sendLanguageUpdate() {
@@ -2007,6 +2133,7 @@ try {
       openaiWebSocket.onopen = () => {
         console.log(`✅ OpenAI WebSocket 연결됨: ${wsUrl}`);
         updateStageScaleHint();  // ISSUE-54: 이제부터는 바로 반영된다
+        updateStageControlHints();
 
         // 사용자 정보 + 언어 설정 전송 (ISSUE-2)
         if (BOOT.user_info) {
@@ -2047,6 +2174,7 @@ try {
       openaiWebSocket.onclose = (event) => {
         console.log(`🔌 OpenAI WebSocket 연결 종료 (${wsUrl}): Code ${event.code}`);
         updateStageScaleHint();  // ISSUE-54: 다시 "시작하면 적용" 상태로
+        updateStageControlHints();
       };
 
       return true;
@@ -2183,6 +2311,11 @@ try {
         // 없을 수 있다. `typeof === 'number'` 하나로 세 경우(null / 키 없음 /
         // 값 있음)를 모두 다룬다 — 없을 때 1.0 으로 지어내면 서버가 모르는
         // 값을 권위처럼 표시하게 되고, 폴백으로 복원한 값을 덮어써 버린다.
+        if (data.control && typeof data.control.theme === 'string') {
+          // 서버가 들고 있는 현재 테마로 라디오를 맞춘다. 전송하지 않는다 —
+          // 서버 값이 곧바로 서버로 되돌아가는 왕복이 된다.
+          showStageTheme(data.control.theme);
+        }
         if (data.control && typeof data.control.caption_scale === 'number') {
           showStageScale(data.control.caption_scale);
         }

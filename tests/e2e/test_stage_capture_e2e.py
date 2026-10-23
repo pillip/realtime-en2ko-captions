@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import socket
 import sys
 import threading
@@ -810,3 +811,158 @@ class TestStageDebugOverlay:
                        .map((el) => el.id || el.tagName.toLowerCase())"""
         )
         assert regions == ["caption-announcer"], regions
+
+
+# ---------------------------------------------------------------------------
+# #178: 발표자료 연결 해제 (오퍼레이터 control 명령 / F10) + 무대 테마
+# ---------------------------------------------------------------------------
+def _capture_state(page) -> dict[str, Any]:
+    return page.evaluate(
+        """() => ({
+          videoHidden: document.getElementById("capture-video").hidden,
+          srcObject: document.getElementById("capture-video").srcObject === null,
+          controls: !document.getElementById("capture-controls").hidden,
+          label: document.getElementById("capture-connect").textContent.trim(),
+          theme: document.documentElement.getAttribute("data-theme"),
+          lines: [...document.querySelectorAll(".caption-line")].map(
+            (el) => el.textContent
+          ),
+        })"""
+    )
+
+
+class TestPresentationDisconnect:
+    """해제는 두 경로로 들어온다 — 오퍼레이터 control 명령과 F10.
+
+    둘은 `disconnectPresentation()` **한 함수**로 수렴한다. 두 경로가 갈라지면
+    한쪽만 고쳐지는 날이 온다.
+    """
+
+    def test_a_control_command_stops_the_capture(self, page, capture_server):
+        """오퍼레이터 패널 경로 — 무대 창 포커스가 필요 없는 쪽이다."""
+        _open_stage(page, capture_server)
+        page.evaluate(
+            "() => window.__emit('message', JSON.stringify({text: '해제 전 자막'}))"
+        )
+        page.wait_for_function(
+            "() => document.querySelectorAll('.caption-line').length === 1"
+        )
+        _connect(page)
+
+        page.evaluate(
+            "() => window.__emit('control', JSON.stringify("
+            "{presentation: 'disconnect'}))"
+        )
+        page.wait_for_function(
+            "() => document.getElementById('capture-video').hidden === true",
+            timeout=3000,
+        )
+
+        state = _capture_state(page)
+        assert state["srcObject"] is True, "끊긴 스트림이 아직 붙어 있다"
+        assert state["controls"] is True, "재연결 경로가 없다 — 막다른 길이다"
+        assert state["label"] == "발표자료 다시 연결", state["label"]
+        # 자막 컬럼은 전혀 영향받지 않는다 — 발표 영역의 사고가 자막을 끊으면 안 된다.
+        assert state["lines"] == ["해제 전 자막"], state["lines"]
+
+    def test_f10_stops_the_capture(self, page, capture_server):
+        """F10 경로 — 무대 창이 포커스를 쥐고 있을 때의 지름길."""
+        _open_stage(page, capture_server)
+        _connect(page)
+
+        page.keyboard.press("F10")
+        page.wait_for_function(
+            "() => document.getElementById('capture-video').hidden === true",
+            timeout=3000,
+        )
+
+        state = _capture_state(page)
+        assert state["srcObject"] is True
+        assert state["controls"] is True
+        assert state["label"] == "발표자료 다시 연결", state["label"]
+
+    def test_f10_before_connecting_does_nothing(self, page, capture_server):
+        """연결돼 있지 않으면 아무 일도 없다 (멱등).
+
+        `onCaptureEnded` 를 무조건 부르면 연결 전 화면의 버튼 문구가 "다시 연결"
+        로 바뀌어, 한 번도 연결하지 않은 오퍼레이터에게 거짓말을 한다.
+        """
+        _open_stage(page, capture_server)
+        before = _capture_state(page)
+        assert before["label"] == "발표자료 연결", before["label"]
+
+        page.keyboard.press("F10")
+        page.wait_for_timeout(300)
+
+        assert _capture_state(page)["label"] == "발표자료 연결"
+
+    def test_presenter_remote_keys_do_not_disconnect(self, page, capture_server):
+        """**#178 의 핵심 안전 단언.** 리모컨 키는 캡처를 끊지 않는다.
+
+        F10 리스너가 키를 구분하지 않으면 PageDown 한 번에 발표자료가 끊긴다 —
+        행사 중 가장 비싼 회귀다. 그리고 그 키들이 취소되지 않는다는 NFR-025 의
+        원래 단언도 여기서 함께 본다.
+        """
+        _open_stage(page, capture_server)
+        _connect(page)
+
+        state = _dispatch_presenter_keys(page)
+        page.wait_for_timeout(300)
+
+        for event in state["events"]:
+            assert (
+                event["defaultPrevented"] is False
+            ), f"{event['key']!r} was cancelled by the stage page (NFR-025)"
+        after = _capture_state(page)
+        assert after["videoHidden"] is False, (
+            f"리모컨 키가 발표자료를 끊었다 — F10 리스너가 키를 구분하지 않는다: "
+            f"{[e['key'] for e in state['events']]}"
+        )
+        assert after["srcObject"] is False, "스트림이 떨어졌다"
+
+
+class TestStageThemeControl:
+    """테마는 control 로만 바뀐다 — 무대 페이지에 조작 UI 가 없다 (NFR-025)."""
+
+    def test_light_theme_is_applied_from_control(self, page, capture_server):
+        _open_stage(page, capture_server)
+        assert _capture_state(page)["theme"] is None, "기본은 속성 없음(다크)"
+
+        page.evaluate(
+            "() => window.__emit('control', JSON.stringify({theme: 'light'}))"
+        )
+        page.wait_for_function(
+            "() => document.documentElement.getAttribute('data-theme') === 'light'",
+            timeout=3000,
+        )
+
+        # 캔버스가 실제로 밝아졌는지 — 토큰 선언이 아니라 렌더된 값으로 본다.
+        bg = page.evaluate("() => getComputedStyle(document.body).backgroundColor")
+        nums = [int(n) for n in re.findall(r"\d+", bg)[:3]]
+        assert min(nums) > 200, f"라이트 테마인데 body 배경이 어둡다: {bg}"
+
+    def test_returning_to_dark_removes_the_attribute(self, page, capture_server):
+        """다크는 속성을 **지운다** — 토큰이 두 곳에 살면 갈라진다."""
+        _open_stage(page, capture_server)
+        page.evaluate(
+            "() => window.__emit('control', JSON.stringify({theme: 'light'}))"
+        )
+        page.wait_for_function(
+            "() => document.documentElement.getAttribute('data-theme') === 'light'"
+        )
+
+        page.evaluate("() => window.__emit('control', JSON.stringify({theme: 'dark'}))")
+        page.wait_for_function(
+            "() => document.documentElement.getAttribute('data-theme') === null",
+            timeout=3000,
+        )
+
+    def test_an_unknown_theme_is_ignored(self, page, capture_server):
+        """토큰이 없는 테마를 받으면 화면이 통째로 깨진다 — 무시한다."""
+        _open_stage(page, capture_server)
+        page.evaluate(
+            "() => window.__emit('control', JSON.stringify({theme: 'sepia'}))"
+        )
+        page.wait_for_timeout(300)
+
+        assert _capture_state(page)["theme"] is None
