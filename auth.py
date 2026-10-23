@@ -15,8 +15,11 @@ from functools import wraps
 from typing import Any
 
 import streamlit as st
-from extra_streamlit_components import CookieManager
 
+# `extra_streamlit_components` 는 **모듈 레벨에서 import 하지 않는다** (#174).
+# 그 import 가 `declare_component()` 를 실행하고, Streamlit 은 스크립트 런
+# 컨텍스트가 없으면 등록을 조용히 건너뛴다. `get_cookie_manager()` 안에서
+# import 한다 — 자세한 사정은 그 함수의 주석에 있다.
 from database import get_user_model
 
 
@@ -95,7 +98,39 @@ def get_cookie_manager():
 
     세션 단위로 만들면 각 세션이 자기 `getAll` 결과를 갖는다 — Streamlit 에서
     위젯 key 는 세션 스코프라 같은 key 를 그대로 써도 충돌하지 않는다.
+
+    `extra_streamlit_components` 를 **여기서** import 하는 이유 (#174)
+    ----------------------------------------------------------------
+    그 모듈은 import 시점에 `declare_component("cookie_manager", path=...)` 를
+    실행한다. Streamlit 의 등록 코드는 이렇게 끝난다::
+
+        ctx = get_script_run_ctx()
+        if ctx is not None:
+            get_instance().component_registry.register_component(component)
+
+    즉 **스크립트 런 컨텍스트 안에서만 등록된다.** 모듈 레벨 import 로 두면
+    `serve.py` 가 `start_background_servers()` 를 부를 때
+    (`websocket_handler → auth`) 스크립트 런 **밖에서** import 되어 `ctx` 가
+    None 이고 등록이 **조용히** 건너뛰어진다. 그 뒤 세션이 `app.py` 를 돌며 다시
+    import 해도 `sys.modules` 캐시 때문에 `declare_component()` 는 실행되지
+    않는다 — 컴포넌트는 **영구 미등록**이 된다.
+
+    실측된 결과 (2026-10-22 프로덕션):
+      - `/component/....CookieManager.cookie_manager/index.html` → **404**
+      - iframe 은 렌더되지만 번들이 없어 JS 가 돌지 않고 `user_session` 이 안 심긴다
+      - ISSUE-55 이후 WS 인증이 그 쿠키에 의존하므로 오퍼레이터는 자막을 송출할
+        수 없다. 화면에는 OpenAI 전사(**원문**)만 흐르고 뷰어·무대는 "잠시 후
+        시작됩니다" 에서 멈춘다 — 번역과 무대가 각각 고장난 것처럼 보였지만
+        원인은 이 하나였다.
+
+    이 함수는 Streamlit UI 경로에서만 불리므로 **항상 스크립트 런 안**이다.
+    여기서 import 하면 등록 시점이 구조적으로 보장되고 부팅 순서에 의존하지
+    않는다. `streamlit run app.py` (개발/e2e) 경로가 멀쩡했던 이유도 같다 —
+    거기서는 `app.py` 가 런타임 안에서 처음 import 된다. 그래서 e2e 198개가
+    전부 통과한 채로 배포됐다.
     """
+    from extra_streamlit_components import CookieManager
+
     manager = st.session_state.get(_COOKIE_MANAGER_STATE_KEY)
     if manager is None:
         manager = CookieManager(key="auth_cookie_manager")
@@ -139,11 +174,11 @@ def set_session_cookie(user_info: dict):
 
 
 def flush_pending_session_cookie():
-    """예약된 쿠키 쓰기를 **런 시작 시점**에 한 번 실행한다 (#165).
+    """예약된 쿠키 쓰기를 한 번 실행한다 (#165).
 
-    `init_session_state()` 가 부른다. 런 시작에서 쓰면 그 뒤로 스크립트가
-    정상 종료하므로 델타가 브라우저에 전달된다. 예약이 없으면 아무 일도
-    하지 않는다.
+    `app.py` 가 스크립트 **끝**에서 부른다 (`init_session_state()` 안에서 부르면
+    쿠키 컴포넌트 iframe 이 자막 컴포넌트보다 먼저 렌더돼 e2e 가 깨진다).
+    예약이 없으면 아무 일도 하지 않는다.
     """
     pending = st.session_state.pop(_PENDING_COOKIE_STATE_KEY, None)
     if not pending:

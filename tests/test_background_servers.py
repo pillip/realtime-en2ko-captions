@@ -171,3 +171,61 @@ class TestServeIsTheBootPath:
         assert (
             "streamlit" not in cmd
         ), f"CMD 가 streamlit 을 직접 실행한다: {cmd}. lazy-start 가 복귀한다."
+
+
+class TestBootPathDoesNotPoisonComponentRegistration:
+    """`serve.py` 경로의 import 가 커스텀 컴포넌트 등록을 깨지 않는지 (#174).
+
+    Streamlit 의 `declare_component()` 는 이렇게 끝난다::
+
+        ctx = get_script_run_ctx()
+        if ctx is not None:
+            get_instance().component_registry.register_component(component)
+
+    **스크립트 런 컨텍스트 안에서만 등록된다.** `serve.py` 는
+    `start_background_servers()` 를 스크립트 런 밖에서 부르고, 그 호출이
+    `websocket_handler → auth` 를 끌어온다. `auth` 가 모듈 레벨에서
+    `extra_streamlit_components` 를 import 하면 그 시점에 `ctx` 가 None 이라
+    등록이 **조용히** 건너뛰어지고, `sys.modules` 캐시 때문에 이후 세션의
+    import 가 `declare_component()` 를 다시 실행하지 않는다 — 컴포넌트는 영구
+    미등록이 되어 번들이 404 가 된다.
+
+    실측된 결과 (2026-10-22 프로덕션): `user_session` 쿠키가 발급되지 않아
+    오퍼레이터가 WS 인증에 실패하고 자막을 송출할 수 없었다. 화면에는 OpenAI
+    전사(원문)만 흘렀고 뷰어·무대는 "잠시 후 시작됩니다" 에서 멈췄다 — 번역과
+    무대가 각각 고장난 것처럼 보였지만 원인은 이 하나였다.
+
+    e2e 는 `tests/e2e/test_serve_boot_path_e2e.py` 가 같은 불변식을 브라우저로
+    확인한다. 여기 있는 것은 그 비싼 테스트가 스킵될 때도 남는 구조적 가드다.
+    """
+
+    @staticmethod
+    def _module_level_imports(filename: str) -> set[str]:
+        """모듈 **최상단**(함수/클래스 바깥)에서 import 하는 모듈 이름들."""
+        tree = ast.parse((REPO / filename).read_text(encoding="utf-8"))
+        names: set[str] = set()
+        for node in tree.body:  # body 만 — 함수 안의 지연 import 는 제외한다
+            if isinstance(node, ast.Import):
+                names.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                names.add(node.module.split(".")[0])
+        return names
+
+    def test_auth_defers_the_cookie_component_import(self):
+        assert "extra_streamlit_components" not in self._module_level_imports(
+            "auth.py"
+        ), (
+            "auth.py 가 extra_streamlit_components 를 모듈 레벨에서 import 한다. "
+            "serve.py 부팅 경로가 스크립트 런 밖에서 이 모듈을 끌어오므로 "
+            "declare_component() 등록이 유실되고 CookieManager 번들이 404 가 된다 "
+            "— user_session 쿠키가 발급되지 않아 오퍼레이터가 자막을 송출할 수 "
+            "없다 (#174). get_cookie_manager() 안에서 import 하라."
+        )
+
+    def test_the_component_import_still_exists_somewhere(self):
+        """양성 대조군 — "지연 import" 를 "import 삭제" 로 만들지 않았다."""
+        src = (REPO / "auth.py").read_text(encoding="utf-8")
+        assert "from extra_streamlit_components import CookieManager" in src, (
+            "CookieManager import 가 아예 사라졌다 — 지연시키는 것과 없애는 것은 "
+            "다르다."
+        )
