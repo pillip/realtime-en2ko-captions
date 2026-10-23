@@ -37,7 +37,6 @@ from tests.wcag import (
     _composite,
     _contrast_ratio,
     _rule_block,
-    _rule_hex,
     _rule_rgba,
     custom_properties,
     resolve_color,
@@ -1032,17 +1031,77 @@ class TestStageDisplayCapture:
         assert "outline:" in ring, ring
 
     def test_capture_button_meets_wcag_aa_contrast(self, stage_html):
-        """RL-018 — 버튼은 hex 불투명 색이므로 알파 합성 없이 직접 계산한다.
+        """RL-018 — 글자/배경 모두 불투명이므로 알파 합성 없이 직접 계산한다.
 
         `clamp(15px, 1vw, 22px)` 는 1920px 뷰포트에서 19.2px 로 resolve 되어
         large-text(24px) 완화를 쓸 수 없다 — 4.5:1 이 하한이다.
+
+        **두 테마를 각각 본다.** 버튼은 프레임 위에서 분리돼 보여야 하므로
+        테마마다 명도가 뒤집힌다 — 다크 프레임 위에는 흰 pill, 미색 프레임 위에는
+        잉크 pill 이다. 한쪽만 검사하면 반대쪽에서 글자가 배경에 묻는 조합이
+        들어와도 통과한다.
         """
         block = _rule_block(stage_html, ".capture-button")
         assert "font-size: clamp(15px, 1vw, 22px);" in block, block
-        fg = _rule_hex(stage_html, ".capture-button", "color")
-        bg = _rule_hex(stage_html, ".capture-button", "background")
-        ratio = _contrast_ratio((*fg, 1.0), bg)
-        assert ratio >= 4.5, f".capture-button is {ratio:.2f}:1, WCAG AA needs 4.5:1"
+        fg_decl = re.search(r"(?<![-\w])color:\s*([^;]+);", block)
+        bg_decl = re.search(r"(?<![-\w])background:\s*([^;]+);", block)
+        assert fg_decl and bg_decl, block
+
+        for theme in _THEMES:
+            tokens = _theme_tokens(stage_html, theme)
+            fg = resolve_color(fg_decl.group(1), tokens)
+            bg = resolve_color(bg_decl.group(1), tokens)
+            assert bg[3] == 1.0, f"버튼 배경이 반투명하다 ({theme}): {bg}"
+            ratio = _contrast_ratio(fg, bg[:3])
+            assert ratio >= 4.5, (
+                f".capture-button is {ratio:.2f}:1 in the {theme} theme, "
+                "WCAG AA needs 4.5:1"
+            )
+
+    @pytest.mark.parametrize("theme", _THEMES)
+    def test_the_frame_stays_on_the_same_side_as_the_canvas(self, stage_html, theme):
+        """프레임은 캔버스와 **같은 쪽**이어야 한다 — 검은 구멍 금지.
+
+        첫 라이트 구현은 캔버스만 밝게 바꾸고 16:9 프레임을 `#000000` 으로 남겨
+        두었다. 대비 테스트는 전부 통과했지만(프레임 안 문구들은 자기 배경을
+        갖고 있어 판정이 흔들리지 않는다) 화면에서는 **프레임만 검게 뚫린** 모습이
+        되어 심미성이 떨어졌다. 그 실패는 "글자가 읽히는가" 로는 잡히지 않는다.
+
+        그래서 수치로 못 박는다: 프레임과 캔버스의 명도 대비가 낮아야 한다
+        (같은 톤의 한 단계 차이). 상한 1.8:1 은 "경계가 보이되 구멍이 아니다" 를
+        뜻한다 — 현재 값은 다크 1.13:1, 라이트 1.20:1 이다.
+        """
+        tokens = _theme_tokens(stage_html, theme)
+        frame = resolve_color(tokens["--frame"], tokens)
+        ratio = _contrast_ratio(frame, _canvas_rgb(tokens))
+        assert ratio <= 1.8, (
+            f"{theme} 테마에서 프레임이 캔버스와 {ratio:.2f}:1 — 화면에 구멍처럼 "
+            "보인다. 프레임은 캔버스와 같은 톤의 한 단계 차이여야 한다"
+        )
+
+    def test_the_connect_button_separates_from_the_frame_in_both_themes(
+        self, stage_html
+    ):
+        """버튼이 프레임과 구별돼야 한다 — 미색 프레임 위 흰 pill 은 1.2:1 이다.
+
+        글자 대비만 보면 "흰 pill + 검은 글자" 는 두 테마에서 모두 19.67:1 로
+        통과한다. 그런데 미색 프레임 위에서는 pill **자체**가 보이지 않아
+        오퍼레이터가 누를 것을 찾지 못한다 — 글자 대비가 잡아 주지 않는 실패다.
+        3:1 은 WCAG 1.4.11(비텍스트 대비) 기준이다.
+        """
+        block = _rule_block(stage_html, ".capture-button")
+        bg_decl = re.search(r"(?<![-\w])background:\s*([^;]+);", block)
+        assert bg_decl is not None, block
+
+        for theme in _THEMES:
+            tokens = _theme_tokens(stage_html, theme)
+            pill = resolve_color(bg_decl.group(1), tokens)
+            frame = resolve_color(tokens["--frame"], tokens)
+            ratio = _contrast_ratio(pill, frame[:3])
+            assert ratio >= 3.0, (
+                f"연결 버튼이 프레임과 {ratio:.2f}:1 ({theme}) — 1.4.11 은 3:1 이다. "
+                "pill 이 프레임에 묻혀 누를 것을 찾을 수 없다"
+            )
 
     def test_track_ended_is_registered_exactly_once(self, stage_html):
         """RL-009 — 벤더 프리픽스도, 중복 리스너도 두지 않는다.

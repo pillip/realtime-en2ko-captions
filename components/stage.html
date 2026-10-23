@@ -47,20 +47,57 @@
       --ink-muted: rgba(255, 255, 255, 0.6);     /*  7.26:1 */
       --ink-strong: rgba(255, 255, 255, 0.65);   /*  8.47:1 */
       --chip-bg: rgba(255, 255, 255, 0.07);
+      /* 16:9 프레임 = 발표 영상이 들어가는 투사면(레터박스 포함). 다크에서는
+         순검정이라 레터박스가 화면에 녹는다. */
+      --frame: #000000;
+      /* 연결 버튼 pill. 프레임 위에서 분리돼 보여야 하므로 프레임과 반대쪽
+         명도를 쓴다 — 다크 프레임 위에는 흰 pill, 미색 프레임 위에는 잉크 pill. */
+      --button-bg: #ffffff;
+      --button-ink: #0b0b0c;          /* 19.67:1 */
+      /* 로고 바 표면. 다크에서는 캔버스에 그대로 올려 둔다. */
+      --logo-surface: transparent;
+      --logo-border: transparent;
     }
 
-    /* 라이트 테마. 알파를 다크와 같은 값으로 두면 AA 에 미달한다 — 흰 캔버스
-       위 검정 0.45 는 3.31:1 이다. 위계(자막이 가장 흐리고 → 빈 상태 → 종료 →
-       재연결 힌트 → 본문)는 그대로 유지하면서 각 단계를 4.5:1 위로 올렸다. */
+    /* 라이트 테마 — **다크의 반전이 아니다.**
+       처음 구현은 캔버스를 `#f7f7f8`, 잉크를 순검정으로 두어 다크를 그대로
+       뒤집었는데 심미성이 떨어졌다: 순백 + 순검정은 대비만 맞고 차가우며,
+       무엇보다 16:9 프레임만 검게 남아 **화면에 구멍처럼** 보였다.
+
+       그래서 두 가지를 바꿨다.
+         1) 미색 캔버스(`#faf7f0`)와 **따뜻한 잉크**(`rgb(38,30,22)`). 순검정의
+            19.63:1 대신 15.34:1 이지만 둘 다 충분하고, 종이에 가까운 톤이
+            프로젝터 화면에서 눈이 덜 피곤하다.
+         2) 프레임도 테마를 탄다 — 캔버스보다 한 단계 깊은 미색이라 "움푹한 판"
+            으로 읽히고 검은 구멍이 되지 않는다.
+
+       알파는 다크와 **공유할 수 없다.** 따뜻한 잉크는 순검정보다 밝아 같은
+       알파에서 대비가 낮다 — 미색 위 0.6 은 4.26:1 로 AA 미달이다. 아래 값은
+       전부 계산해서 4.5:1 위로 올렸고 위계(자막이 가장 흐리고 → 빈 상태 →
+       종료 → 재연결 힌트 → 본문)는 다크와 같다. */
     :root[data-theme="light"] {
-      --canvas: #f7f7f8;
-      --hairline: rgba(0, 0, 0, 0.08);
-      --ink: #0b0b0c;                      /* 19.36:1 */
-      --ink-caption: rgba(0, 0, 0, 0.56);  /*  4.84:1 */
-      --ink-dim: rgba(0, 0, 0, 0.6);       /*  5.61:1 */
-      --ink-muted: rgba(0, 0, 0, 0.68);    /*  7.62:1 */
-      --ink-strong: rgba(0, 0, 0, 0.72);   /*  8.88:1 */
-      --chip-bg: rgba(0, 0, 0, 0.06);
+      --canvas: #faf7f0;
+      --hairline: rgba(38, 30, 22, 0.12);
+      --ink: #261e16;                             /* 15.34:1 */
+      --ink-caption: rgba(38, 30, 22, 0.68);      /*  5.53:1 */
+      --ink-dim: rgba(38, 30, 22, 0.72);          /*  6.27:1 */
+      --ink-muted: rgba(38, 30, 22, 0.8);         /*  8.27:1 */
+      --ink-strong: rgba(38, 30, 22, 0.86);       /* 10.10:1 (chip 위 9.11:1) */
+      --chip-bg: rgba(38, 30, 22, 0.07);
+      /* 캔버스보다 한 단계 깊은 미색. 1.20:1 — 경계가 보이되 주의를 끌지 않는다. */
+      --frame: #eae3d2;
+      /* 미색 프레임 위에서 흰 pill 은 1.2:1 로 사실상 보이지 않는다. 반전해
+         잉크 pill + 미색 글자로 둔다: 글자 15.34:1, 프레임과의 분리도 12.83:1. */
+      --button-bg: #261e16;
+      --button-ink: #faf7f0;
+      /* 로고 바에 흰 카드를 깐다. 스폰서 로고 아트워크는 대개 인쇄용(어두운/
+         컬러)이라 미색 위보다 흰 면에서 또렷하다. 캔버스와의 분리도가 1.07:1
+         뿐이라 경계선을 함께 준다 — 색만으로는 카드가 보이지 않는다.
+         **흰색/밝은 로고만 올린 룸은 라이트 테마에서 로고가 묻힌다** — 이미지를
+         CSS 로 되살릴 수 없으므로 그 경우는 다크 테마를 쓰거나 어두운 버전의
+         아트워크를 올려야 한다. */
+      --logo-surface: #ffffff;
+      --logo-border: rgba(38, 30, 22, 0.1);
     }
 
     html, body {
@@ -145,7 +182,7 @@
       min-height: 0;
       min-width: 0;
       padding: 0;
-      background: #000000;
+      background: var(--frame);
       container-type: size;
     }
     .stage-frame {
@@ -159,7 +196,7 @@
          (RL-011 의 vh/dvh 페어링과 같은 점진적 향상 패턴). */
       width: min(100%, calc(100cqh * 16 / 9));
       overflow: hidden;
-      background: #000000;
+      background: var(--frame);
     }
 
     /* 캡처 스트림은 ISSUE-42 가 연결한다. 16:9 가 아닌 소스도 잘리거나
@@ -169,7 +206,7 @@
       width: 100%;
       height: 100%;
       object-fit: contain;
-      background: #000000;
+      background: var(--frame);
     }
     .capture-video[hidden] { display: none; }
 
@@ -201,8 +238,8 @@
       font-size: clamp(15px, 1vw, 22px);
       font-weight: 600;
       letter-spacing: -0.01em;
-      color: #0b0b0c;
-      background: #ffffff;
+      color: var(--button-ink);
+      background: var(--button-bg);
       border: 0;
       border-radius: 999px;
       padding: 12px 26px;
@@ -329,6 +366,10 @@
       min-height: 76px;
       padding: 14px 44px;
       border-top: 1px solid var(--hairline);
+      /* 라이트 테마에서만 흰 카드가 깔린다 (다크는 transparent). 로고 아트워크가
+         미색 위에서 묻히지 않게 하는 면이다 — 토큰 주석 참고. */
+      background: var(--logo-surface);
+      box-shadow: inset 0 0 0 1px var(--logo-border);
     }
     /* UA 의 [hidden] 규칙은 위 display:flex 에 밀리므로 명시적으로 잡는다. */
     .logo-bar[hidden] { display: none; }
