@@ -31,10 +31,11 @@
          오퍼레이터 패널이 SSE `control` 로 미는 테마를 `:root[data-theme=...]`
          가 받는다. 이 페이지에는 조작 UI 가 없다 (NFR-025/NFR-030).
 
-         **색은 IBM Carbon Design System 의 `Warm Gray` 램프에서 가져온다.**
-         Tailwind `zinc`(#183)로는 **라이트가 엉성해 보였다** — 그리고 그 원인은
-         값이 아니라 **구조**였다. `zinc` 는 색 ramp 일 뿐 "면이 몇 겹인가" 를 말해 주지 않아서,
-         화면 전체가 한 덩어리 회색이 됐다. 구체적으로 세 가지가 빠져 있었다:
+         **구조는 IBM Carbon 의 레이어 모델, 색은 Radix Colors `bronze` 램프.**
+
+         먼저 구조. Tailwind `zinc`(#183)로는 **라이트가 엉성해 보였다** — 원인은
+         값이 아니라 **구조**였다. `zinc` 는 색 ramp 일 뿐 "면이 몇 겹인가" 를
+         말해 주지 않아서 화면 전체가 한 덩어리 회색이 됐다. 셋이 빠져 있었다:
 
            1) 16:9 패널과 그 바깥 레터박스 여백이 **같은 색**이라 발표 영역의
               경계가 아예 없었다 (`.presentation` 과 `.stage-frame` 이 둘 다
@@ -42,57 +43,64 @@
            2) 구분선이 전부 10% 알파라 캔버스와 **1.2:1** — 선이 있으나 안 보였다.
            3) 칩 배경도 알파라 "떠 있는 면" 이 아니라 얼룩으로 읽혔다.
 
-         Carbon 은 색 ramp 가 아니라 **레이어 토큰 모델**(background → layer →
-         border-subtle / border-strong)을 가진 시스템이고, 라이트/다크를 공식
-         테마 쌍(Gray 10 / Gray 100)으로 함께 정의한다. 위 세 가지는 전부 그
-         모델이 이미 답을 가진 문제다. 그래서 값만이 아니라 **역할**을 가져온다.
+         Carbon 의 **레이어 토큰 모델**(background → layer-01 → layer-02 →
+         border-subtle / border-strong)이 셋 모두에 이미 답을 갖고 있다. 그래서
+         **역할 구조는 Carbon 에서** 가져왔다 (#185).
 
-           warm-gray  10 #f7f3f2 · 20 #e5e0df · 40 #ada8a8 · 50 #8f8b8b
-                      60 #726e6e · 80 #3c3838 · 90 #272525 · 100 #171414
-           yellow 30 #f1c21b (자기 캡처 경고)   white (포커스 링)
+         색은 Carbon 에서 가져올 수 없었다. "따뜻한 미색, 누리끼리하지 않게, 약간
+         브라운" 이 요청이었는데(#187), Carbon 의 가장 따뜻한 중립인 `Warm Gray`
+         조차 채도가 10% 라 **"좀 더 브라운" 에는 못 미쳤다.** Carbon 팔레트에
+         브라운 램프 자체가 없다. Radix `bronze` 는 같은 적갈 계열에서 채도가
+         3 배다 (#188):
 
-         **왜 중립 `Gray` 가 아니라 `Warm Gray` 인가 (#187).** "조금 더 따뜻한
-         미색, 단 누리끼리하지 않게, 약간 브라운" 이 요청이었다. 그 둘의 차이는
-         밝기가 아니라 **색상(hue)** 이다:
+           #faf7f0 (#180 의 미색, 퇴짜)  hue 42°  채도 50%  R-B  10  -> 노랑
+           gray-20      #e0e0e0         hue  0°  채도  0%  R-B   0  -> 중립
+           warm-gray-20 #e5e0df (#187)  hue 10°  채도 10%  R-B   6  -> 약한 적갈
+           bronze-5     #e7d9d3 (현행)  hue 18°  채도 29%  R-B  20  -> 브라운
 
-           #faf7f0 (#180 의 미색, 퇴짜)   hue 42°  채도 50%  -> 노랑
-           warm-gray-20 #e5e0df          hue 10°  채도 10%  -> 적갈(브라운)
-           gray-20      #e0e0e0          hue  0°  채도  0%  -> 완전 중립
+         **노랑과 브라운을 가르는 것은 밝기가 아니라 색상(hue)이다.** 노란
+         쪽(40~70°)으로 가면 누리끼리해지고 붉은 쪽(0~25°)이 브라운/토프다.
+         `bronze` 는 15~24° 에 있어 안전한 쪽이고, 그 위에 **양**(R-B)이 충분하다.
+         `test_the_surfaces_are_warm_but_not_yellow` 가 방향을,
+         `test_the_light_surfaces_carry_real_brown` 이 양을 못 박는다 — 방향만
+         검사하면 Warm Gray 로 되돌아가도 통과한다.
 
-         노란 쪽(40~70°)으로 가면 "누리끼리" 해지고, 붉은 쪽(0~25°)으로 가면
-         브라운/토프가 된다. `Warm Gray` 는 채도 10% 안팎의 적갈 계열이라
-         **따뜻하되 노랗지 않다.** 직접 섞지 않고 램프를 통째로 바꾼 이유는
-         #183 과 같다 — 단계 사이 간격이 이미 검증돼 있고, 한 램프 안에서만
-         움직이면 색상이 단계마다 흔들리지 않는다.
+         직접 섞지 않고 램프를 통째로 쓰는 이유는 #183 과 같다: 단계 사이 간격이
+         이미 검증돼 있고, 한 램프 안에서만 움직이면 색상이 단계마다 흔들리지
+         않는다. 의미색(자기 캡처 경고)도 같은 시스템의 `amber` 를 쓴다 — 경고는
+         노란 것이 맞으므로 위의 hue 제한에서 제외된다.
 
-         휘도는 중립 `Gray` 와 거의 같아서(wg-20 0.753 / gray-20 0.745) **구조도
-         알파도 하나 바뀌지 않았다.** 바뀐 것은 색상뿐이다.
+           bronze       3 #f6edea · 5 #e7d9d3 · 8 #c2a499 · 9 #a18072
+           bronzeDark   1 #141110 · 3 #262220 · 5 #3b3330 · 6 #493e3a
+                        8 #6f5f58 · 12 #ede0d9
+           amberDark    8 #8f6424 (경고 테두리) · 9 #ffc53d (경고 글자)
+           white (포커스 링)   #000000 (투사면 — 팔레트 밖의 의도된 예외)
 
-         이 블록은 Carbon **Gray 100** 테마의 Warm Gray 판이다: background
-         warm-gray-100, layer-01 warm-gray-90, layer-02 warm-gray-80,
-         border-subtle warm-gray-80, text-primary warm-gray-10, focus white.
+         이 블록은 Carbon Gray 100 테마의 역할 배치를 `bronze` dark 로 채운
+         것이다: background bronzeDark-1, layer-01 -3, layer-02 -5,
+         border-subtle -6, text-primary -12, focus white.
 
          **알파 값은 눈대중이 아니다.** 각 토큰 옆 비율은 자기 배경 위에서 계산한
          WCAG 2.1 명도 대비이고 `tests/test_stage_page.py` 가 **두 테마 모두**
          검사한다. clamp() 하한이 전부 24px 미만이라 large-text 3:1 완화를 쓸 수
-         없으므로 기준은 일반 텍스트 4.5:1 이다 (RL-018). 캔버스가 `#09090b` 에서
-         warm-gray-100 으로 올라가 하한이 0.46 → **0.48** 이 됐다. */
-      --canvas: #171414;                         /* warm-gray-100 — background */
+         없으므로 기준은 일반 텍스트 4.5:1 이다 (RL-018). 잉크가 bronzeDark-12 로
+         바뀌며 하한이 0.48 → **0.54** 가 됐다 — layer-01 위가 더 빡빡하다. */
+      --canvas: #141110;                         /* bronzeDark-1 — background */
       /* 구분선. **알파가 아니라 Carbon 의 border-subtle 토큰**이다 — 알파 선은
          캔버스가 바뀔 때마다 보이기도 하고 사라지기도 한다. 캔버스와 1.57:1. */
-      --hairline: #3c3838;                       /* warm-gray-80, 캔버스와 1.58:1 */
-      --ink: #f7f3f2;                            /* warm-gray-10, 16.62:1 */
-      --ink-caption: rgba(247, 243, 242, 0.5);   /*  4.93:1 (하한 0.48) */
-      --ink-dim: rgba(247, 243, 242, 0.56);      /*  5.85:1 */
-      --ink-muted: rgba(247, 243, 242, 0.68);    /*  8.12:1 */
-      --ink-strong: rgba(247, 243, 242, 0.76);   /*  9.84:1 (layer-01 위 8.61:1) */
+      --hairline: #493e3a;                       /* bronzeDark-6, 캔버스와 1.82:1 */
+      --ink: #ede0d9;                            /* bronzeDark-12, 14.56:1 */
+      --ink-caption: rgba(237, 224, 217, 0.55);  /*  5.06:1 (layer-01 하한 0.54) */
+      --ink-dim: rgba(237, 224, 217, 0.6);       /*  5.79:1 */
+      --ink-muted: rgba(237, 224, 217, 0.72);    /*  7.89:1 */
+      --ink-strong: rgba(237, 224, 217, 0.8);    /*  9.58:1 (layer-01 위 8.30:1) */
       /* Carbon 의 **레이어 두 겹**. layer-01 은 자막 컬럼(읽는 면), layer-02 는
          그 위에 뜨는 칩이다. 둘 다 **불투명**이라 글자 대비가 배경에 따라
          흔들리지 않는다. 캔버스 → 01 → 02 가 각각 1.20:1 / 1.32:1 로 한 겹씩
          올라간다 (라이트는 1.19:1 / 1.19:1) — Carbon 의 background → layer-01 →
          layer-02 그대로다. */
-      --layer-01: #272525;                       /* warm-gray-90 */
-      --layer-02: #3c3838;                       /* warm-gray-80 */
+      --layer-01: #262220;                       /* bronzeDark-3 */
+      --layer-02: #3b3330;                       /* bronzeDark-5 */
       /* 16:9 패널 = 발표 영상이 들어가는 투사면. **순검정은 팔레트 바깥**이고
          의도적이다: 레터박스 띠가 화면에서 사라져야 하는 투사면이라 UI 색이
          아니다. 캔버스와 1.16:1 이라 구멍처럼 보이지 않는다. */
@@ -100,52 +108,52 @@
       /* 연결 버튼 pill. 패널 위에서 분리돼 보여야 하므로 반대쪽 명도를 쓴다 —
          어두운 패널 위에는 밝은 pill, 밝은 패널 위에는 어두운 pill.
          패널과의 분리 19.09:1 (WCAG 1.4.11 은 3:1). */
-      --button-bg: #f7f3f2;
-      --button-ink: #171414;                     /* 16.45:1 */
+      --button-bg: #f6edea;                      /* bronze-3 */
+      --button-ink: #141110;                     /* 16.31:1 */
       /* 포커스 링. `outline-offset` 때문에 링의 양쪽이 모두 **패널**이므로
          대비 상대는 pill 이 아니라 패널이다. Carbon 의 다크 포커스는 흰색이고
          검정 패널 위 21.00:1 이다. */
       --focus-ring: #ffffff;
     }
 
-    /* 라이트 — Carbon **Gray 10** 테마의 Warm Gray 판을 투사용으로 한 단계
-       아래 앵커한 것.
+    /* 라이트 — Carbon Gray 10 의 역할 배치를 `bronze` 로 채우되, 투사용으로
+       한 단계 아래 앵커한 것.
 
-       Carbon 의 Gray 10 은 background 가 10단계(#f7f3f2) 다. 그대로 쓸 수
-       없다 — 휘도 0.903 으로, **눈이 아프다**고 이미 퇴짜를 맞은 값(#184)과 같은
-       밝기다. 이 화면은 모니터가 아니라 행사장 프로젝터이고 캔버스가 벽을
-       채운다. 그래서 역할은 그대로 두고 **단계만 한 칸씩 내린다**:
+       Radix `bronze` 의 밝은 쪽 끝(bronze-1/2)은 거의 흰색이다. 그대로 쓸 수
+       없다 — **눈이 아프다**고 이미 퇴짜를 맞은 밝기다(#184). 이 화면은 모니터가
+       아니라 행사장 프로젝터이고 캔버스가 벽을 채운다. 그래서 역할은 그대로 두고
+       **단계만 내려서** 쓴다:
 
-         background  wg-10 → wg-20   레터박스 여백까지 같은 면 (#185)
-         layer-01    white → wg-10   자막 컬럼 · 밝은 로고 카드
-         layer-02    wg-10 → wg-20   그 위에 뜨는 칩
-         border      wg-20 → wg-40   구분선 (캔버스와 1.80:1)
+         background  bronze-5   캔버스 · 레터박스 여백 (#185), 휘도 0.713
+         layer-01    bronze-3   자막 컬럼 · 밝은 로고 카드
+         layer-02    bronze-5   그 위에 뜨는 칩 (Carbon 처럼 단계가 교대한다)
+         border      bronze-8   구분선 (캔버스와 1.68:1)
 
-       16:9 패널은 이 표 밖이다 — 라이트에서도 **wg-90 으로 어둡다** (#186).
-       캔버스와 11.66:1 이라 패널이 스스로 경계가 되고, 화면에 어두움–중간–밝음
+       16:9 패널은 이 표 밖이다 — 라이트에서도 **bronzeDark-1 로 어둡다** (#186).
+       캔버스와 13.66:1 이라 패널이 스스로 경계가 되고, 화면에 어두움–중간–밝음
        세 단계가 생긴다. 그 면은 원래 발표 영상이 들어가는 스크린이고, 꺼진
        스크린이 어두운 것은 은유가 아니라 사실이다.
 
-       알파는 다크와 **공유할 수 없다.** wg-100 잉크는 순검정보다 밝고 캔버스도
-       밝아 하한이 0.62 다 (다크의 자막 알파 0.50 을 복사하면 3.23:1 로 미달).
+       알파는 다크와 **공유할 수 없다.** 어두운 잉크는 밝은 캔버스 위에서 같은
+       알파라도 대비가 다르다 — 하한이 0.61(캔버스) / 0.59(layer-01) 다.
        아래 값은 전부 계산해서 4.5:1 위로 올렸고 위계(자막이 가장 흐리고 → 빈
        상태 → 종료 → 재연결 힌트 → 본문)는 다크와 같다. */
     :root[data-theme="light"] {
-      --canvas: #e5e0df;                          /* warm-gray-20 — background */
-      --hairline: #ada8a8;                        /* warm-gray-40 — border-subtle */
-      --ink: #171414;                             /* warm-gray-100, 14.01:1 */
-      --ink-caption: rgba(23, 20, 20, 0.64);      /*  4.97:1 (하한 0.62) */
-      --ink-dim: rgba(23, 20, 20, 0.7);           /*  5.99:1 */
-      --ink-muted: rgba(23, 20, 20, 0.8);         /*  8.22:1 */
-      --ink-strong: rgba(23, 20, 20, 0.88);       /* 10.55:1 (layer-01 위 12.04:1) */
-      --layer-01: #f7f3f2;                        /* warm-gray-10 */
-      --layer-02: #e5e0df;                        /* warm-gray-20 */
+      --canvas: #e7d9d3;                          /* bronze-5 — background */
+      --hairline: #c2a499;                        /* bronze-8 — border, 1.68:1 */
+      --ink: #141110;                             /* bronzeDark-1, 13.66:1 */
+      --ink-caption: rgba(20, 17, 16, 0.64);      /*  4.99:1 (하한 0.61) */
+      --ink-dim: rgba(20, 17, 16, 0.7);           /*  6.03:1 */
+      --ink-muted: rgba(20, 17, 16, 0.8);         /*  8.27:1 */
+      --ink-strong: rgba(20, 17, 16, 0.88);       /* 10.47:1 (layer-01 위 12.15:1) */
+      --layer-01: #f6edea;                        /* bronze-3 */
+      --layer-02: #e7d9d3;                        /* bronze-5 */
       /* **16:9 는 라이트에서도 어둡다 (#186).** 이전에는 캔버스보다 한 단계만
-         깊은 `warm-gray-30` 이었는데, 화면의 2/3 를 차지하는 면이 캔버스·칩과 같은
-         중간 회색 대역에 머무니 **"축 쳐진다"** 는 피드백이 나왔다. 대비는 전부
+         깊은 중간 회색이었는데, 화면의 2/3 를 차지하는 면이 캔버스·칩과 같은
+         명도 대역에 머무니 **"축 쳐진다"** 는 피드백이 나왔다. 대비는 전부
          통과했고 가독성도 좋았다 — 부족한 것은 **다이내믹 레인지**였다.
 
-         `warm-gray-90` 으로 내리면 캔버스와 11.66:1 이 되어 패널이 스스로 경계가
+         `bronzeDark-1` 로 내리면 캔버스와 13.66:1 이 되어 패널이 스스로 경계가
          되고(테두리가 필요 없어졌다), 화면에 어두움–중간–밝음 세 단계가 생긴다.
          그리고 이 면은 원래 **발표 영상이 들어가는 스크린**이다 — 꺼진 스크린이
          어두운 것은 은유가 아니라 사실이고, 슬라이드가 붙으면 그 위를 덮는다.
@@ -153,17 +161,17 @@
 
          #180 의 "검은 구멍" 과 다른 점: 그때는 캔버스가 near-white 인데 패널만
          순검정이라 **중간 단계 없이** 튀었고 화면에 다른 어두운 요소가 하나도
-         없었다. 지금은 캔버스가 중간 회색이고 로고 밴드·자막 카드가 같은 구성
+         없었다. 지금은 캔버스가 중간 명도이고 로고 밴드·자막 카드가 같은 구성
          안에 있다. */
-      --frame: #272525;                           /* warm-gray-90 */
+      --frame: #141110;                           /* bronzeDark-1 */
       /* pill 과 포커스 링의 대비 상대는 **패널**이고, 패널은 두 테마에서 모두
          어둡다. 그래서 이 셋은 테마를 타지 않는다 — 값이 같아도 라이트가 다크의
          토큰을 빠짐없이 덮어야 하므로(`test_both_themes_declare_every_token`)
-         여기 다시 적는다. pill 13.83:1, 링 15.24:1.
-         Carbon 의 라이트 포커스 blue-60 은 `warm-gray-90` 패널 위에서 3.05:1 로
-         아슬아슬하고 blue-70 은 1.96:1 로 미달이다 — 흰 링이 맞다. */
-      --button-bg: #f7f3f2;
-      --button-ink: #171414;
+         여기 다시 적는다. pill 16.31:1, 링 18.79:1 (다크 패널 위 18.22 / 21.00).
+         파란 포커스 링을 쓰지 않는 이유: 링의 대비 상대가 거의 검은 패널이라
+         흰색이 가장 안전하고, 파랑은 `bronze` 램프 밖의 색이 된다. */
+      --button-bg: #f6edea;
+      --button-ink: #141110;
       --focus-ring: #ffffff;
     }
 
@@ -345,8 +353,8 @@
       max-width: 100%;
       padding: 10px 20px;
       border-radius: 999px;
-      background: #171414;
-      border: 1px solid #726e6e;
+      background: #141110;
+      border: 1px solid #6f5f58;
       font-size: clamp(13px, 0.9vw, 20px);
       line-height: 1.5;
       color: rgba(255, 255, 255, 0.75);
@@ -367,9 +375,9 @@
       max-width: 82%;
       padding: 10px 20px;
       border-radius: 999px;
-      background: #171414;
-      border: 1px solid rgba(241, 194, 27, 0.45);
-      color: rgba(241, 194, 27, 0.95);
+      background: #141110;
+      border: 1px solid #8f6424;
+      color: rgba(255, 197, 61, 0.95);
       font-size: clamp(13px, 0.95vw, 20px);
       letter-spacing: 0.01em;
       text-align: center;
@@ -388,8 +396,8 @@
       max-width: 82%;
       padding: 12px 24px;
       border-radius: 999px;
-      background: #171414;
-      border: 1px solid #726e6e;
+      background: #141110;
+      border: 1px solid #6f5f58;
       color: rgba(255, 255, 255, 0.92);
       font-size: clamp(15px, 1.1vw, 24px);
       font-weight: 500;
@@ -423,8 +431,8 @@
       z-index: 10;
       padding: 8px 12px;
       border-radius: 8px;
-      background: #171414;
-      border: 1px solid #726e6e;
+      background: #141110;
+      border: 1px solid #6f5f58;
       color: rgba(255, 255, 255, 0.85);
       font-size: 14px;
       line-height: 1.6;
@@ -477,17 +485,17 @@
        때문이다.
        검정 로고 19.11:1, 라벨 6.66:1. 라이트 캔버스와 1.15:1 이라 경계선 필수. */
     .logo-bar[data-tone="light"] {
-      --logo-surface: #f7f3f2;                 /* warm-gray-10 — layer */
-      --logo-border: #8f8b8b;                  /* warm-gray-50 — border-strong */
-      --logo-label-ink: rgba(23, 20, 20, 0.72);
+      --logo-surface: #f6edea;                 /* bronze-3 — layer */
+      --logo-border: #a18072;                  /* bronze-9, 카드와 3.12:1 */
+      --logo-label-ink: rgba(20, 17, 16, 0.72);
     }
     /* 어두운 밴드는 `zinc-800` — 다크 캔버스(950)보다 **두 단계 밝다.** 그래도
        1.34:1 뿐이라 밴드를 보이게 하는 것은 경계선이다. 라이트 캔버스 위에서는
        11.74:1 로 명백한 어두운 띠다. 흰 로고 14.89:1, 라벨 6.42:1. */
     .logo-bar[data-tone="dark"] {
-      --logo-surface: #3c3838;                 /* warm-gray-80 — layer */
-      --logo-border: #8f8b8b;                  /* warm-gray-50 — border-strong */
-      --logo-label-ink: rgba(247, 243, 242, 0.62);
+      --logo-surface: #3b3330;                 /* bronzeDark-5 — layer */
+      --logo-border: #6f5f58;                  /* bronzeDark-8, 밴드와 2.03:1 */
+      --logo-label-ink: rgba(237, 224, 217, 0.66);
     }
     /* UA 의 [hidden] 규칙은 위 display:flex 에 밀리므로 명시적으로 잡는다. */
     .logo-bar[hidden] { display: none; }

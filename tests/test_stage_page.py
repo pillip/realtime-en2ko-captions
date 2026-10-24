@@ -1459,6 +1459,36 @@ class TestStageDisplayCapture:
                 "대역으로 넘어가 누리끼리해진다 (브라운은 0~25도)"
             )
 
+    @pytest.mark.parametrize("token", ["--canvas", "--layer-01"])
+    def test_the_light_surfaces_carry_real_brown(self, stage_html, token):
+        """라이트의 **보이는 두 면**은 갈색기가 실제로 있어야 한다 (#188).
+
+        `test_the_surfaces_are_warm_but_not_yellow` 는 방향(R > B, hue <= 25도)만
+        본다. 그래서 Carbon `Warm Gray`(#187)도 통과한다 — 방향은 맞지만 채도가
+        10% 뿐이라 **"좀 더 브라운" 요청에는 못 미쳤다.** 방향만 검사하면 다음
+        사람이 중립에 가까운 램프로 되돌려도 아무도 모른다.
+
+        그래서 **양**도 본다. R - B 는 그 램프가 실제로 얼마나 갈색인지의 가장
+        단순한 척도다:
+
+          warm-gray-20 #e5e0df   R-B  6   (#187, 방향은 맞지만 약하다)
+          bronze-5     #e7d9d3   R-B 20   (#188, 현행)
+          bronze-3     #f6edea   R-B 12
+
+        10 은 그 둘을 가르는 선이다. 캔버스와 layer-01 만 보는 이유는 **그 둘이
+        화면에서 색으로 읽히는 면 전부**이기 때문이다 — 16:9 패널은 거의 검고,
+        구분선은 1px 이며, 어두운 토큰은 명도가 낮아 R - B 가 구조적으로 작다
+        (bronzeDark-1 은 4). 같은 기준을 어두운 값에 들이대면 통과할 수 있는
+        색이 없다.
+        """
+        tokens = _theme_tokens(stage_html, "light")
+        red, _green, blue, _alpha = resolve_color(tokens[token], tokens)
+        warmth = red - blue
+        assert warmth >= 10, (
+            f"라이트 {token} = {tokens[token]} 의 R-B 가 {warmth:.0f} — 갈색기가 "
+            "거의 없다. 중립에 가까운 램프로 되돌아간 것이다"
+        )
+
     def test_every_colour_comes_from_the_declared_palette(self, stage_html):
         """스타일시트의 모든 색이 **선언된 팔레트**에서 나와야 한다 (#183).
 
@@ -1479,22 +1509,28 @@ class TestStageDisplayCapture:
         테스트가 선언만 보도록 한다.
         """
         palette = {
-            # IBM Carbon — Warm Gray 램프 (background / layer / border 역할 전부).
-            # 중립 Gray 가 아니라 Warm Gray 인 이유는 색상이다: 적갈 10~12° 로
-            # 따뜻하되, 퇴짜 맞은 미색(#faf7f0, 42°)처럼 노랗지 않다 (#187).
-            "warm-gray-10": (247, 243, 242),
-            "warm-gray-20": (229, 224, 223),
-            "warm-gray-30": (202, 197, 196),
-            "warm-gray-40": (173, 168, 168),
-            "warm-gray-50": (143, 139, 139),
-            "warm-gray-60": (114, 110, 110),
-            "warm-gray-70": (86, 81, 81),
-            "warm-gray-80": (60, 56, 56),
-            "warm-gray-90": (39, 37, 37),
-            "warm-gray-100": (23, 20, 20),
+            # Radix Colors `bronze` — 중립이 아니라 **적갈 계열 뉴트럴**이다.
+            # Carbon 의 Warm Gray(채도 10%)로는 "더 브라운" 요청을 만족할 수
+            # 없었다. Carbon 팔레트에 브라운 램프가 없기 때문이다 (#188).
+            "bronze-3": (246, 237, 234),
+            "bronze-4": (239, 228, 223),
+            "bronze-5": (231, 217, 211),
+            "bronze-8": (194, 164, 153),
+            "bronze-9": (161, 128, 114),
+            # bronze dark — 어두운 면과 다크 테마 전체
+            "bronzeDark-1": (20, 17, 16),
+            "bronzeDark-2": (28, 25, 23),
+            "bronzeDark-3": (38, 34, 32),
+            "bronzeDark-4": (48, 42, 39),
+            "bronzeDark-5": (59, 51, 48),
+            "bronzeDark-6": (73, 62, 58),
+            "bronzeDark-7": (90, 76, 71),
+            "bronzeDark-8": (111, 95, 88),
+            "bronzeDark-12": (237, 224, 217),
+            # Radix `amber` — 자기 캡처 경고 (의미색이라 노란 것이 맞다)
+            "amberDark-9": (255, 197, 61),
+            "amberDark-8": (143, 100, 36),
             "white": (255, 255, 255),
-            # Carbon yellow — 자기 캡처 경고 (의미색)
-            "yellow-30": (241, 194, 27),
             # 팔레트 밖의 유일한 예외: 투사면
             "projection surface": (0, 0, 0),
         }
