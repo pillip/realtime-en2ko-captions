@@ -1413,6 +1413,52 @@ class TestStageDisplayCapture:
                 "키보드 사용자가 포커스 위치를 볼 수 없다"
             )
 
+    @pytest.mark.parametrize("theme", _THEMES)
+    def test_the_surfaces_are_warm_but_not_yellow(self, stage_html, theme):
+        """면 색은 **따뜻하되 노랗지 않다** (#187).
+
+        "조금 더 따뜻한 미색, 단 누리끼리하지 않게, 약간 브라운" 이 요청이었다.
+        그 둘의 차이는 밝기도 대비도 아니라 **색상(hue)** 이고, 지금 있는 어떤
+        테스트도 색상을 보지 않는다 — 중립 회색으로 되돌리든 노란 미색을 넣든
+        대비·휘도·팔레트 가드가 **전부 통과한다.**
+
+          #faf7f0 (#180 의 미색, 퇴짜)   hue 42도  -> 노랑
+          warm-gray-20 #e5e0df          hue 10도  -> 적갈(브라운)
+          gray-20      #e0e0e0          hue  0도, R=B -> 완전 중립
+
+        그래서 두 가지를 검사한다.
+
+          1) **따뜻한가**: R > B. 중립 회색은 R == B 라 여기서 걸린다.
+          2) **노랗지 않은가**: hue <= 25도. 노랑은 40~70도 대역이다.
+
+        포커스 링은 제외한다 — 흰색(R == B)이고 면이 아니라 액센트다. 의미색
+        (yellow-30 경고)도 같은 이유로 토큰 목록에 없다.
+        """
+        tokens = _theme_tokens(stage_html, theme)
+        surfaces = (
+            "--canvas",
+            "--frame",
+            "--layer-01",
+            "--layer-02",
+            "--hairline",
+            "--ink",
+            "--button-bg",
+            "--button-ink",
+        )
+        for name in surfaces:
+            red, green, blue, _alpha = resolve_color(tokens[name], tokens)
+            if (red, green, blue) == (0, 0, 0):
+                continue  # 투사면 — 팔레트 밖의 의도된 예외
+            assert red > blue, (
+                f"{theme} {name} = {tokens[name]} 은 중립이거나 차갑다 "
+                f"(R={red:.0f} B={blue:.0f}). 면은 Warm Gray 여야 한다"
+            )
+            hue = 60 * (green - blue) / (red - blue)
+            assert hue <= 25, (
+                f"{theme} {name} = {tokens[name]} 의 색상이 {hue:.0f}도 — 노랑 "
+                "대역으로 넘어가 누리끼리해진다 (브라운은 0~25도)"
+            )
+
     def test_every_colour_comes_from_the_declared_palette(self, stage_html):
         """스타일시트의 모든 색이 **선언된 팔레트**에서 나와야 한다 (#183).
 
@@ -1433,21 +1479,20 @@ class TestStageDisplayCapture:
         테스트가 선언만 보도록 한다.
         """
         palette = {
-            # IBM Carbon — gray ramp (background / layer / border 역할 전부)
-            "gray-10": (244, 244, 244),
-            "gray-20": (224, 224, 224),
-            "gray-30": (198, 198, 198),
-            "gray-40": (168, 168, 168),
-            "gray-50": (141, 141, 141),
-            "gray-60": (111, 111, 111),
-            "gray-70": (82, 82, 82),
-            "gray-80": (57, 57, 57),
-            "gray-90": (38, 38, 38),
-            "gray-100": (22, 22, 22),
+            # IBM Carbon — Warm Gray 램프 (background / layer / border 역할 전부).
+            # 중립 Gray 가 아니라 Warm Gray 인 이유는 색상이다: 적갈 10~12° 로
+            # 따뜻하되, 퇴짜 맞은 미색(#faf7f0, 42°)처럼 노랗지 않다 (#187).
+            "warm-gray-10": (247, 243, 242),
+            "warm-gray-20": (229, 224, 223),
+            "warm-gray-30": (202, 197, 196),
+            "warm-gray-40": (173, 168, 168),
+            "warm-gray-50": (143, 139, 139),
+            "warm-gray-60": (114, 110, 110),
+            "warm-gray-70": (86, 81, 81),
+            "warm-gray-80": (60, 56, 56),
+            "warm-gray-90": (39, 37, 37),
+            "warm-gray-100": (23, 20, 20),
             "white": (255, 255, 255),
-            # Carbon blue — 포커스 (테마마다 단계가 다르다)
-            "blue-60": (15, 98, 254),
-            "blue-70": (0, 67, 206),
             # Carbon yellow — 자기 캡처 경고 (의미색)
             "yellow-30": (241, 194, 27),
             # 팔레트 밖의 유일한 예외: 투사면
