@@ -36,6 +36,7 @@ import pytest
 from tests.wcag import (
     _composite,
     _contrast_ratio,
+    _relative_luminance,
     _rule_block,
     _rule_rgba,
     custom_properties,
@@ -566,8 +567,8 @@ class TestStageHtmlMarkup:
         `clamp()` 하한이 전부 24px 미만이라(자막 20px, 라벨 11px, 빈 상태 14px)
         large-text 3:1 완화를 쓸 수 없다.
 
-        **테마마다 알파가 다르다.** `zinc-50` 캔버스 위 `zinc-900` 0.48(다크의
-        자막 알파)은 3.33:1 로 미달이다 — 라이트의 하한은 0.60 이다 (#178/#183).
+        **테마마다 알파가 다르다.** `zinc-200` 캔버스 위 `zinc-900` 0.48(다크의
+        자막 알파)은 3.07:1 로 미달이다 — 라이트의 하한은 0.62 다 (#178/#183/#184).
         그 사실을 토큰 주석에 적는 것으로 끝내면 다음 사람이 다크 값을 복사해
         넣는 날 아무도 모른다 — 그래서 두 테마를 각각 계산한다.
         """
@@ -591,7 +592,7 @@ class TestStageHtmlMarkup:
         (톤 × 테마) 조합마다 성립해야 한다:
 
           - `auto`  : 면이 없다 → 배경은 캔버스, 라벨은 `--ink-dim` (테마를 따라감)
-          - `light` : 밝은 카드(`zinc-200`) → 테마와 무관하게 고정
+          - `light` : 밝은 카드(`zinc-100`) → 테마와 무관하게 고정
           - `dark`  : 어두운 밴드(`zinc-800`) → 테마와 무관하게 고정
 
         배경을 캔버스로 가정한 채 계산하면 `dark` 톤 + 라이트 테마에서 **밝은
@@ -663,7 +664,7 @@ class TestStageHtmlMarkup:
     def test_an_opaque_logo_surface_declares_a_border(self, stage_html, tone):
         """면을 깔았으면 **보여야** 한다 — 두 톤 다 한쪽 캔버스에서 거의 안 보인다.
 
-        밝은 카드는 라이트 캔버스와 **1.22:1**, 어두운 밴드는 다크 캔버스와
+        밝은 카드는 라이트 캔버스와 **1.15:1**, 어두운 밴드는 다크 캔버스와
         **1.34:1** 이다. 색만으로는 카드가 존재하지 않으므로 경계선이 **필수**다. 톤은 테마와
         독립이라 "반대쪽 캔버스에서는 잘 보인다" 는 변명이 통하지 않는다 — 두 조합
         모두 실제로 쓰인다.
@@ -675,6 +676,37 @@ class TestStageHtmlMarkup:
             "면이 보이지 않는다"
         )
         assert resolve_color(border, tokens)[3] > 0, f"경계선이 완전 투명하다: {border}"
+
+    @pytest.mark.parametrize("tone", ["light", "dark"])
+    @pytest.mark.parametrize("theme", _THEMES)
+    def test_a_tone_differs_from_every_canvas_it_can_sit_on(
+        self, stage_html, tone, theme
+    ):
+        """톤은 **두 테마 모두에서** 캔버스와 달라야 한다 (#184).
+
+        톤은 테마와 독립이라 (톤 × 테마) 네 조합이 전부 실제로 쓰인다. 어느 한
+        조합에서 면이 캔버스와 같은 값이면 그 조합에서는 톤을 고른 것이 **아무
+        일도 하지 않는다** — 관리자는 골랐는데 화면은 `auto` 와 똑같다.
+
+        경계선 가드(`test_an_opaque_logo_surface_declares_a_border`)는 이걸 잡지
+        못한다. 테두리는 그려지니까 "면이 보인다" 는 성립하고, 라벨 대비도 면이
+        캔버스와 같으면 오히려 통과한다. 실제로 밝은 카드를 라이트 캔버스와 같은
+        단계로 내린 변이가 **두 테스트를 모두 통과했다.**
+
+        1.1:1 은 "한 단계 차이" 의 하한이다 (현재 밝은 카드 vs 라이트 캔버스
+        1.15:1 — 네 조합 중 가장 빠듯하다). 가시성 자체는 여전히 경계선이
+        책임지고, 이 테스트가 보는 것은 **톤이 값을 실제로 움직였는가** 다.
+        """
+        tokens = {
+            **_theme_tokens(stage_html, theme),
+            **_logo_tone_tokens(stage_html, tone),
+        }
+        surface = resolve_color(tokens["--logo-surface"], tokens)
+        ratio = _contrast_ratio(surface, _canvas_rgb(tokens))
+        assert ratio >= 1.1, (
+            f"tone={tone} 의 면이 {theme} 캔버스와 {ratio:.2f}:1 — 그 조합에서 "
+            "톤을 골라도 auto 와 같은 화면이 된다"
+        )
 
     @pytest.mark.parametrize("selector", _CAPTURE_SURFACES)
     def test_dim_text_meets_wcag_aa_contrast(self, stage_html, selector):
@@ -1173,7 +1205,7 @@ class TestStageDisplayCapture:
 
         그래서 수치로 못 박는다: 프레임과 캔버스의 명도 대비가 낮아야 한다
         (같은 톤의 한 단계 차이). 상한 1.8:1 은 "경계가 보이되 구멍이 아니다" 를
-        뜻한다 — 현재 값은 다크 1.06:1, 라이트 1.22:1 이다.
+        뜻한다 — 현재 값은 다크 1.06:1, 라이트 1.16:1 이다.
         """
         tokens = _theme_tokens(stage_html, theme)
         frame = resolve_color(tokens["--frame"], tokens)
@@ -1183,13 +1215,40 @@ class TestStageDisplayCapture:
             "보인다. 프레임은 캔버스와 같은 톤의 한 단계 차이여야 한다"
         )
 
+    @pytest.mark.parametrize("token", ["--canvas", "--frame"])
+    def test_the_light_theme_is_not_a_light_source(self, stage_html, token):
+        """라이트의 두 큰 면은 **스케일 맨 끝에서 시작하지 않는다** (#184).
+
+        `zinc-50` 캔버스로 출하했다가 **눈이 아프다**는 피드백을 받았다. 대비는
+        전부 통과했는데 — 당연하다. 대비는 "글자와 배경이 떨어지는가" 를 보지
+        **면이 내뿜는 빛의 절대량**을 보지 않는다. 그리고 이 화면은 모니터가
+        아니라 행사장 프로젝터다: 캔버스와 16:9 프레임이 벽 전체를 채우고,
+        그 면적에서 near-white 는 디자인이 아니라 조명이다.
+
+        그래서 비율이 아니라 **상대 휘도 자체**에 상한을 둔다. 0.82 는 `zinc-100`
+        (0.905)을 막고 `zinc-200`(0.778) 이하만 통과시킨다 — 한 단계로는 체감이
+        없다는 실측(빛의 양 94.7%)을 수치로 옮긴 것이다.
+
+        두 토큰을 모두 보는 이유: 프레임은 발표자료가 연결되기 전까지 화면에서
+        **가장 넓은 면**이라 캔버스만 내려 두면 효과의 대부분이 사라진다.
+        다크 테마는 이 상한 아래에 한참 있으므로 따로 검사하지 않는다.
+        """
+        tokens = _theme_tokens(stage_html, "light")
+        surface = resolve_color(tokens[token], tokens)
+        assert surface[3] == 1.0, f"{token} 이 반투명하다: {tokens[token]}"
+        luminance = _relative_luminance(surface[:3])
+        assert luminance <= 0.82, (
+            f"라이트 {token} 의 상대 휘도가 {luminance:.3f} — 프로젝터에서 눈이 "
+            "아프다. zinc-200(0.778) 이하여야 한다"
+        )
+
     def test_the_connect_button_separates_from_the_frame_in_both_themes(
         self, stage_html
     ):
         """버튼이 프레임과 구별돼야 한다 — 밝은 프레임 위 밝은 pill 은 1.2:1 이다.
 
         글자 대비만 보면 "밝은 pill + 어두운 글자" 는 어느 프레임 위에서도
-        19.06:1 로 통과한다. 그런데 밝은 프레임 위에서는 pill **자체**가 보이지 않아
+        14:1 위로 통과한다. 그런데 밝은 프레임 위에서는 pill **자체**가 보이지 않아
         오퍼레이터가 누를 것을 찾지 못한다 — 글자 대비가 잡아 주지 않는 실패다.
         3:1 은 WCAG 1.4.11(비텍스트 대비) 기준이다.
         """
@@ -1212,12 +1271,14 @@ class TestStageDisplayCapture:
 
         `outline-offset: 3px` 이므로 링은 pill 바깥에 그려지고 **양쪽이 모두
         프레임**이다. 그래서 "밝은 pill 과 잘 구별되는 색" 을 골라도 소용이 없다 —
-        고정 `#7cc4ff` 는 검정 프레임 위 9.80:1 이지만 `zinc-200` 라이트 프레임
+        고정 `#7cc4ff` 는 검정 프레임 위 9.80:1 이지만 밝은 라이트 프레임
         위에서는 1.69:1 로 **사라진다.** 라이트 프레임이 도입된 #180 이 만들고도
         아무 테스트가 잡지 못한 결함이다.
 
         그래서 링도 테마 토큰이어야 하고, 두 프레임 위에서 각각 1.4.11 의 3:1 을
-        넘겨야 한다 (현재 다크 sky-400 9.80:1 / 라이트 sky-700 4.68:1).
+        넘겨야 한다 (현재 다크 sky-400 9.80:1 / 라이트 sky-700 4.01:1). 이 여유가
+        라이트 캔버스를 더 내리지 못한 이유이기도 하다 — `zinc-300` 캔버스는
+        프레임을 `zinc-400` 으로 밀고, 거기서는 sky-800 조차 2.95:1 이다 (#184).
         """
         block = _rule_block(stage_html, ".capture-button:focus-visible")
         outline = re.search(r"outline:\s*([^;]+);", block)

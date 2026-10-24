@@ -1082,10 +1082,12 @@ def _render_stage_config_form(room_id):
             horizontal=True,
             format_func=lambda t: _LOGO_TONE_LABELS[t],
             help=(
-                "로고 아트워크 한 벌로 밝은 배경과 어두운 배경을 모두 만족시킬 수는 "
-                "없습니다. 흰색 로고는 어두운 면에서만, 검정 로고는 밝은 면에서만 "
-                "읽힙니다. '테마 따라감' 은 면을 깔지 않아 화면이 가장 깔끔하지만, "
-                "무대 테마를 바꾸면 로고가 뒤집혀 묻힙니다."
+                "로고는 배경이 투명한 파일을 올린다는 전제입니다 — 여기서 고른 면이 "
+                "로고 뒤로 그대로 비칩니다. 아트워크 한 벌로 밝은 배경과 어두운 "
+                "배경을 모두 만족시킬 수는 없습니다: 흰색 로고는 어두운 면에서만, "
+                "검정 로고는 밝은 면에서만 읽힙니다. '테마 따라감' 은 면을 깔지 않아 "
+                "화면이 가장 깔끔하지만, 무대 테마를 바꾸면 로고가 뒤집혀 묻힙니다. "
+                "오퍼레이터가 행사 중에 이 값을 덮어쓸 수 있습니다."
             ),
         )
         for label in LOGO_GROUP_LABELS:
@@ -1109,6 +1111,12 @@ def _render_stage_config_form(room_id):
                 type=_LOGO_UPLOAD_TYPES,
                 accept_multiple_files=True,
                 key=f"stage_cfg_upload_{label}_{room_id}_{nonce}",
+                help=(
+                    "**배경이 투명한 PNG** 를 권장합니다. 무대 로고 바는 위에서 고른 "
+                    "면 위에 로고를 얹으므로, 흰 배경이 박혀 있는 파일은 어두운 면 "
+                    "위에서 흰 네모로 보입니다. 아트워크 색(흰색/검정)에 맞춰 로고 "
+                    "바 배경을 골라 주세요."
+                ),
             )
         submitted = st.form_submit_button("저장")
 
