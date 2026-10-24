@@ -733,7 +733,7 @@ _STAGE_LOGO_TONE_KEY = "stage_cfg_logo_bar_tone"
 # 값이 바뀌지 않는다.
 _LOGO_TONE_LABELS = {
     "auto": "테마 따라감",
-    "light": "밝게 (흰 카드)",
+    "light": "밝게 (밝은 카드)",
     "dark": "어둡게 (어두운 밴드)",
 }
 _STAGE_SEEDED_ROOM_KEY = "stage_cfg_seeded_room"

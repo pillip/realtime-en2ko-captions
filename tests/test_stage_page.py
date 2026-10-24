@@ -54,15 +54,19 @@ _STAGE_TEMPLATE = Path(__file__).resolve().parent.parent / "components" / "stage
 # 인라인 <script> 블록이 조기 종료된 것이다.
 _BREAKOUT_TITLE = "</script><script>alert(1)</script>"
 
-# 페이지가 칠하는 두 배경. 대비 계산은 합성 후 색으로 한다 (RL-018).
-# 다크 테마의 캔버스. 프레임 안 캡처 상태 문구들은 **자기 배경**으로
-# `#0b0b0c` 를 선언하므로(= 이 값과 동일) 테마가 바뀌어도 그 판정은 그대로다 —
-# 16:9 프레임은 두 테마에서 모두 어둡다 (stage.html 의 토큰 주석 참고).
-_CANVAS_RGB = (11, 11, 12)  # --canvas: #0b0b0c
-
 # 테마 토큰이 선언된 두 선택자. 라이트는 다크 위에 **덮어쓰는** 집합이라
 # (CSS 캐스케이드와 같은 방식) 다크에만 있는 토큰도 라이트에서 유효하다.
 _THEMES = ("dark", "light")
+
+# 프레임 안 캡처 상태 문구들. 테마와 무관하게 **자기 불투명 배경**을 선언한다 —
+# 재생 중인 <video> 위에 뜨므로 조상 배경에 기댈 수 없다
+# (test_capture_surfaces_declare_an_opaque_background).
+_CAPTURE_SURFACES = (
+    ".capture-hint",
+    ".capture-warning",
+    ".handoff-prompt",
+    ".debug-overlay",
+)
 
 
 def _theme_tokens(css: str, theme: str) -> dict[str, str]:
@@ -562,10 +566,10 @@ class TestStageHtmlMarkup:
         `clamp()` 하한이 전부 24px 미만이라(자막 20px, 라벨 11px, 빈 상태 14px)
         large-text 3:1 완화를 쓸 수 없다.
 
-        **테마마다 알파가 다르다.** 흰 캔버스 위 검정 0.45 는 3.31:1 로 미달이라
-        다크의 알파를 그대로 쓸 수 없다 (#178). 그 사실을 토큰 주석에 적는 것으로
-        끝내면 다음 사람이 다크 값을 복사해 넣는 날 아무도 모른다 — 그래서 두
-        테마를 각각 계산한다.
+        **테마마다 알파가 다르다.** `zinc-50` 캔버스 위 `zinc-900` 0.48(다크의
+        자막 알파)은 3.33:1 로 미달이다 — 라이트의 하한은 0.60 이다 (#178/#183).
+        그 사실을 토큰 주석에 적는 것으로 끝내면 다음 사람이 다크 값을 복사해
+        넣는 날 아무도 모른다 — 그래서 두 테마를 각각 계산한다.
         """
         tokens = _theme_tokens(stage_html, theme)
         ratio = _contrast_ratio(
@@ -587,11 +591,11 @@ class TestStageHtmlMarkup:
         (톤 × 테마) 조합마다 성립해야 한다:
 
           - `auto`  : 면이 없다 → 배경은 캔버스, 라벨은 `--ink-dim` (테마를 따라감)
-          - `light` : 흰 카드 → 테마와 무관하게 고정
-          - `dark`  : 어두운 밴드 → 테마와 무관하게 고정
+          - `light` : 밝은 카드(`zinc-200`) → 테마와 무관하게 고정
+          - `dark`  : 어두운 밴드(`zinc-800`) → 테마와 무관하게 고정
 
-        배경을 캔버스로 가정한 채 계산하면 `dark` 톤 + 라이트 테마에서 **미색
-        글자를 미색 배경 위로** 재던져 1.1:1 을 통과시킨다.
+        배경을 캔버스로 가정한 채 계산하면 `dark` 톤 + 라이트 테마에서 **밝은
+        글자를 밝은 배경 위로** 재던져 1.1:1 을 통과시킨다.
         """
         tokens = {
             **_theme_tokens(stage_html, theme),
@@ -659,8 +663,8 @@ class TestStageHtmlMarkup:
     def test_an_opaque_logo_surface_declares_a_border(self, stage_html, tone):
         """면을 깔았으면 **보여야** 한다 — 두 톤 다 한쪽 캔버스에서 거의 안 보인다.
 
-        흰 카드는 미색 캔버스와 **1.07:1**, 어두운 밴드는 다크 캔버스와 **1.30:1**
-        이다. 색만으로는 카드가 존재하지 않으므로 경계선이 **필수**다. 톤은 테마와
+        밝은 카드는 라이트 캔버스와 **1.22:1**, 어두운 밴드는 다크 캔버스와
+        **1.34:1** 이다. 색만으로는 카드가 존재하지 않으므로 경계선이 **필수**다. 톤은 테마와
         독립이라 "반대쪽 캔버스에서는 잘 보인다" 는 변명이 통하지 않는다 — 두 조합
         모두 실제로 쓰인다.
         """
@@ -672,37 +676,31 @@ class TestStageHtmlMarkup:
         )
         assert resolve_color(border, tokens)[3] > 0, f"경계선이 완전 투명하다: {border}"
 
-    @pytest.mark.parametrize(
-        "selector,backdrop",
-        [
-            # ISSUE-42 가 추가한 캡처 상태들. 배경은 전부 **불투명**이라
-            # 임의의 캡처 영상 위에서도 대비가 결정적이다.
-            # .capture-hint 의 backdrop 이 _FRAME_RGB 가 아닌 이유는
-            # test_capture_surfaces_declare_an_opaque_background 를 볼 것 —
-            # 이 문구는 재생 중인 <video> **위**에 뜨므로 조상의 #000000 은
-            # 실제 배경이 아니다.
-            (".capture-hint", _CANVAS_RGB),
-            (".capture-warning", _CANVAS_RGB),
-            (".handoff-prompt", _CANVAS_RGB),
-            (".debug-overlay", _CANVAS_RGB),
-        ],
-    )
-    def test_dim_text_meets_wcag_aa_contrast(self, stage_html, selector, backdrop):
-        """WCAG 1.4.3 — 어두운 캔버스 위 흐린 텍스트도 4.5:1 이상 (RL-018).
+    @pytest.mark.parametrize("selector", _CAPTURE_SURFACES)
+    def test_dim_text_meets_wcag_aa_contrast(self, stage_html, selector):
+        """WCAG 1.4.3 — 캡처 상태 문구가 **자기 배경 위에서** 4.5:1 이상 (RL-018).
 
         `clamp()` 하한이 전부 24px 미만이라(자막 20px, 라벨 11px, 빈 상태 14px)
         large-text 3:1 완화를 쓸 수 없다. ISSUE-42 가 추가한 네 상태도 마찬가지로
-        1920px 뷰포트에서 resolve 된 크기가 전부 24px 미만이다 — 눈대중 대신
-        수치로 확인한다. `#0b0b0c` 위에서 4.5:1 을 넘기는 흰색 알파 하한은
-        0.45 다.
+        1920px 뷰포트에서 resolve 된 크기가 전부 24px 미만이다.
+
+        **backdrop 을 상수로 적어 두지 않는다.** 예전에는 `_CANVAS_RGB =
+        (11, 11, 12)` 를 손으로 적고 "네 규칙이 같은 값을 선언하니까 맞다" 는
+        주석을 달아 두었는데, 그건 CSS 리터럴을 테스트에 복사한 것이다 —
+        팔레트를 `zinc` 로 옮기는 #183 에서 네 규칙은 `#09090b` 가 되고 상수만
+        남으면 테스트는 **존재하지 않는 배경** 위에서 계산을 계속한다 (RL-001).
+        각 규칙이 선언한 배경을 그대로 읽는다. 그 배경이 알파 1 이라는 사실은
+        test_capture_surfaces_declare_an_opaque_background 가 보증한다.
         """
+        declared = re.search(
+            r"background:\s*([^;]+);", _rule_block(stage_html, selector)
+        )
+        assert declared is not None, f"{selector} declares no background"
+        backdrop = resolve_color(declared.group(1).strip())[:3]
         ratio = _contrast_ratio(_rule_rgba(stage_html, selector), backdrop)
         assert ratio >= 4.5, f"{selector} is {ratio:.2f}:1, WCAG AA needs 4.5:1"
 
-    @pytest.mark.parametrize(
-        "selector",
-        [".capture-hint", ".capture-warning", ".handoff-prompt", ".debug-overlay"],
-    )
+    @pytest.mark.parametrize("selector", _CAPTURE_SURFACES)
     def test_capture_surfaces_declare_an_opaque_background(self, stage_html, selector):
         """캡처 상태 문구는 **자기 배경**을 갖는다 — 조상 배경에 기대지 않는다.
 
@@ -714,8 +712,9 @@ class TestStageHtmlMarkup:
         테스트는 `_FRAME_RGB` 를 가정했기 때문에 11.42:1 로 통과했다.
 
         그래서 backdrop 가정을 **구조적 사실**로 바꾼다: 네 규칙 모두 알파 1의
-        배경을 직접 선언해야 한다. 그러면 위 테스트의 `_CANVAS_RGB` 가정이
-        비로소 참이 된다 (RL-018 — 합성된 실제 배경으로 계산할 것).
+        배경을 직접 선언해야 한다. 위 테스트는 바로 그 선언을 backdrop 으로
+        읽으므로, 이 테스트가 그 계산의 전제를 지키는 셈이다 (RL-018 — 합성된
+        실제 배경으로 계산할 것).
         """
         block = _rule_block(stage_html, selector)
         match = re.search(r"background:\s*([^;]+);", block)
@@ -1142,7 +1141,7 @@ class TestStageDisplayCapture:
         large-text(24px) 완화를 쓸 수 없다 — 4.5:1 이 하한이다.
 
         **두 테마를 각각 본다.** 버튼은 프레임 위에서 분리돼 보여야 하므로
-        테마마다 명도가 뒤집힌다 — 다크 프레임 위에는 흰 pill, 미색 프레임 위에는
+        테마마다 명도가 뒤집힌다 — 어두운 프레임 위에는 밝은 pill, 밝은 프레임 위에는
         잉크 pill 이다. 한쪽만 검사하면 반대쪽에서 글자가 배경에 묻는 조합이
         들어와도 통과한다.
         """
@@ -1174,7 +1173,7 @@ class TestStageDisplayCapture:
 
         그래서 수치로 못 박는다: 프레임과 캔버스의 명도 대비가 낮아야 한다
         (같은 톤의 한 단계 차이). 상한 1.8:1 은 "경계가 보이되 구멍이 아니다" 를
-        뜻한다 — 현재 값은 다크 1.13:1, 라이트 1.20:1 이다.
+        뜻한다 — 현재 값은 다크 1.06:1, 라이트 1.22:1 이다.
         """
         tokens = _theme_tokens(stage_html, theme)
         frame = resolve_color(tokens["--frame"], tokens)
@@ -1187,10 +1186,10 @@ class TestStageDisplayCapture:
     def test_the_connect_button_separates_from_the_frame_in_both_themes(
         self, stage_html
     ):
-        """버튼이 프레임과 구별돼야 한다 — 미색 프레임 위 흰 pill 은 1.2:1 이다.
+        """버튼이 프레임과 구별돼야 한다 — 밝은 프레임 위 밝은 pill 은 1.2:1 이다.
 
-        글자 대비만 보면 "흰 pill + 검은 글자" 는 두 테마에서 모두 19.67:1 로
-        통과한다. 그런데 미색 프레임 위에서는 pill **자체**가 보이지 않아
+        글자 대비만 보면 "밝은 pill + 어두운 글자" 는 어느 프레임 위에서도
+        19.06:1 로 통과한다. 그런데 밝은 프레임 위에서는 pill **자체**가 보이지 않아
         오퍼레이터가 누를 것을 찾지 못한다 — 글자 대비가 잡아 주지 않는 실패다.
         3:1 은 WCAG 1.4.11(비텍스트 대비) 기준이다.
         """
@@ -1207,6 +1206,93 @@ class TestStageDisplayCapture:
                 f"연결 버튼이 프레임과 {ratio:.2f}:1 ({theme}) — 1.4.11 은 3:1 이다. "
                 "pill 이 프레임에 묻혀 누를 것을 찾을 수 없다"
             )
+
+    def test_the_focus_ring_separates_from_the_frame_in_both_themes(self, stage_html):
+        """포커스 링의 대비 상대는 pill 이 아니라 **프레임**이다 (#183).
+
+        `outline-offset: 3px` 이므로 링은 pill 바깥에 그려지고 **양쪽이 모두
+        프레임**이다. 그래서 "밝은 pill 과 잘 구별되는 색" 을 골라도 소용이 없다 —
+        고정 `#7cc4ff` 는 검정 프레임 위 9.80:1 이지만 `zinc-200` 라이트 프레임
+        위에서는 1.69:1 로 **사라진다.** 라이트 프레임이 도입된 #180 이 만들고도
+        아무 테스트가 잡지 못한 결함이다.
+
+        그래서 링도 테마 토큰이어야 하고, 두 프레임 위에서 각각 1.4.11 의 3:1 을
+        넘겨야 한다 (현재 다크 sky-400 9.80:1 / 라이트 sky-700 4.68:1).
+        """
+        block = _rule_block(stage_html, ".capture-button:focus-visible")
+        outline = re.search(r"outline:\s*([^;]+);", block)
+        assert outline is not None, block
+        colour = re.search(
+            r"(var\(--[\w-]+\)|#[0-9a-fA-F]{6}|rgba?\([^)]*\))", outline.group(1)
+        )
+        assert colour is not None, f"포커스 링에 색 선언이 없다: {outline.group(1)!r}"
+
+        for theme in _THEMES:
+            tokens = _theme_tokens(stage_html, theme)
+            ring = resolve_color(colour.group(1), tokens)
+            frame = resolve_color(tokens["--frame"], tokens)
+            ratio = _contrast_ratio(ring, frame[:3])
+            assert ratio >= 3.0, (
+                f"포커스 링이 프레임과 {ratio:.2f}:1 ({theme}) — 1.4.11 은 3:1 이다. "
+                "키보드 사용자가 포커스 위치를 볼 수 없다"
+            )
+
+    def test_every_colour_comes_from_the_declared_palette(self, stage_html):
+        """스타일시트의 모든 색이 **선언된 팔레트**에서 나와야 한다 (#183).
+
+        직접 고른 색으로 두 번 실패했다 — 반전 라이트(순백+순검정)와 미색
+        (`#faf7f0`/`#261e16`). 둘 다 대비는 전부 AA 를 넘겼으므로 **기존 대비
+        테스트는 전부 통과했다.** 미감 실패는 비율로 잡히지 않는다.
+
+        그래서 비율이 아니라 **출처**를 검사한다: 알파는 자유지만 기본 삼원색은
+        Tailwind 스케일의 한 단계여야 한다. 다음 사람이 "조금만 따뜻하게" 하려고
+        스케일 밖의 값을 끼워 넣는 순간 이 테스트가 막는다.
+
+        `#000000` 은 **의도된 예외**다 — 16:9 프레임은 발표 영상이 들어가는
+        투사면이고 레터박스 띠가 화면에서 사라져야 한다. UI 색이 아니므로
+        스케일에 속할 이유가 없다.
+
+        주석을 먼저 제거하는 이유: 토큰 주석이 **이력으로 구 색상을 인용**한다
+        (`#0b0b0c`, `#faf7f0`). 그 서술을 지우면 왜 바뀌었는지가 사라지므로,
+        테스트가 선언만 보도록 한다.
+        """
+        palette = {
+            # Tailwind CSS `zinc` — 중립 회색 스케일 (무대 테마의 전부)
+            "zinc-50": (250, 250, 250),
+            "zinc-100": (244, 244, 245),
+            "zinc-200": (228, 228, 231),
+            "zinc-300": (212, 212, 216),
+            "zinc-400": (161, 161, 170),
+            "zinc-500": (113, 113, 122),
+            "zinc-600": (82, 82, 91),
+            "zinc-700": (63, 63, 70),
+            "zinc-800": (39, 39, 42),
+            "zinc-900": (24, 24, 27),
+            "zinc-950": (9, 9, 11),
+            # Tailwind `amber` — 자기 캡처 경고 (의미색)
+            "amber-200": (253, 230, 138),
+            "amber-400": (251, 191, 36),
+            # Tailwind `sky` — 포커스 링 (테마별로 단계가 다르다)
+            "sky-400": (56, 189, 248),
+            "sky-700": (3, 105, 161),
+            # 팔레트 밖의 유일한 예외: 투사면
+            "projection surface": (0, 0, 0),
+        }
+        allowed = set(palette.values())
+
+        style = re.search(r"<style>(.*?)</style>", stage_html, re.S)
+        assert style is not None, "stage.html 에 <style> 블록이 없다"
+        css = re.sub(r"/\*.*?\*/", "", style.group(1), flags=re.S)
+
+        found = {
+            resolve_color(raw)[:3]
+            for raw in re.findall(r"#[0-9a-fA-F]{6}|rgba?\([^)]*\)", css)
+        }
+        stray = sorted(tuple(round(c) for c in rgb) for rgb in found - allowed)
+        assert not stray, (
+            f"스케일 밖의 색이 있다: {stray}. 무대 테마의 색은 Tailwind "
+            f"zinc/amber/sky 에서만 가져온다 — 허용 목록은 이 테스트에 있다"
+        )
 
     def test_track_ended_is_registered_exactly_once(self, stage_html):
         """RL-009 — 벤더 프리픽스도, 중복 리스너도 두지 않는다.
