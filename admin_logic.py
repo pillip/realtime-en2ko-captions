@@ -18,7 +18,11 @@ from collections.abc import Iterable, MutableMapping
 from typing import Any
 
 from branding_assets import delete_asset, save_asset
-from stage_config import LOGO_GROUP_LABELS, normalize_group_title
+from stage_config import (
+    DEFAULT_LOGO_BAR_TONE,
+    LOGO_GROUP_LABELS,
+    normalize_group_title,
+)
 
 # 관리자 대시보드 룸 표시용 한글 라벨 — operator_ui._ROOM_STATUS_LABELS
 # 와 동일 정의이지만, admin_logic 은 operator_ui 에 의존하지 않도록 자체
@@ -490,6 +494,7 @@ def build_stage_config_from_form(
     logo_groups: dict[str, list[str]] | None,
     logo_titles: dict[str, str] | None = None,
     show_logo_labels: bool = True,
+    logo_bar_tone: str = DEFAULT_LOGO_BAR_TONE,
 ) -> dict[str, Any]:
     """폼 입력을 ``stage_config`` 후보 dict 로 조립한다 (검증은 하지 않는다).
 
@@ -528,6 +533,8 @@ def build_stage_config_from_form(
         "event_title": _clean_text(event_title),
         "caption_ratio": caption_ratio,
         "show_logo_labels": bool(show_logo_labels),
+        # 보정하지 않는다 — 잘못된 값은 validate 가 사유와 함께 거절해야 한다.
+        "logo_bar_tone": logo_bar_tone,
         "logo_groups": [
             {
                 "label": label,

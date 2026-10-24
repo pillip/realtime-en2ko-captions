@@ -54,9 +54,6 @@
          명도를 쓴다 — 다크 프레임 위에는 흰 pill, 미색 프레임 위에는 잉크 pill. */
       --button-bg: #ffffff;
       --button-ink: #0b0b0c;          /* 19.67:1 */
-      /* 로고 바 표면. 다크에서는 캔버스에 그대로 올려 둔다. */
-      --logo-surface: transparent;
-      --logo-border: transparent;
     }
 
     /* 라이트 테마 — **다크의 반전이 아니다.**
@@ -90,14 +87,6 @@
          잉크 pill + 미색 글자로 둔다: 글자 15.34:1, 프레임과의 분리도 12.83:1. */
       --button-bg: #261e16;
       --button-ink: #faf7f0;
-      /* 로고 바에 흰 카드를 깐다. 스폰서 로고 아트워크는 대개 인쇄용(어두운/
-         컬러)이라 미색 위보다 흰 면에서 또렷하다. 캔버스와의 분리도가 1.07:1
-         뿐이라 경계선을 함께 준다 — 색만으로는 카드가 보이지 않는다.
-         **흰색/밝은 로고만 올린 룸은 라이트 테마에서 로고가 묻힌다** — 이미지를
-         CSS 로 되살릴 수 없으므로 그 경우는 다크 테마를 쓰거나 어두운 버전의
-         아트워크를 올려야 한다. */
-      --logo-surface: #ffffff;
-      --logo-border: rgba(38, 30, 22, 0.1);
     }
 
     html, body {
@@ -366,10 +355,39 @@
       min-height: 76px;
       padding: 14px 44px;
       border-top: 1px solid var(--hairline);
-      /* 라이트 테마에서만 흰 카드가 깔린다 (다크는 transparent). 로고 아트워크가
-         미색 위에서 묻히지 않게 하는 면이다 — 토큰 주석 참고. */
-      background: var(--logo-surface);
-      box-shadow: inset 0 0 0 1px var(--logo-border);
+      /* --- 로고 바 배경 톤 (관리자 설정, 테마와 **독립**) --------------------
+         아트워크 한 벌로 두 배경을 모두 만족시킬 수 없다: 흰 로고는 어두운 면
+         에서만, 검정 로고는 밝은 면에서만 읽힌다. CSS 로 이미지를 되살릴 방법은
+         없으므로 **어느 면을 깔지를 관리자가 고른다** (`stage_config.logo_bar_tone`).
+
+         실측 근거: 실제 룸의 로고 4개 중 3개가 평균 광도 217~237(밝은 픽셀
+         78~96%, 투명 71~73%)인 흰색 아트워크였고, 흰 카드 위에서 TYM·HP+·
+         현대포리텍 세 마크가 통째로 사라졌다. 반대로 검정 아트워크는 어두운
+         밴드에서 같은 일이 일어난다.
+
+         기본값 `auto` 는 면을 깔지 않아 테마를 따라간다 — 이 설정 도입 이전의
+         동작이라 기존 룸의 화면이 바뀌지 않는다. 라벨 글자는 그때만 캔버스를
+         따라가고(`--ink-dim`), 면을 깔면 그 면에 맞춰 고정된다. */
+      background: var(--logo-surface, transparent);
+      box-shadow: inset 0 0 0 1px var(--logo-border, transparent);
+      --logo-label-ink: var(--ink-dim);
+    }
+    /* 밝은 카드. **순백이 아니다** — 미색 캔버스 위에서 `#ffffff` 는 혼자 튀어
+       보인다(실측 피드백). 라이트 프레임과 **같은 값**을 써서 "움푹한 판" 이라는
+       재질 언어를 통일한다: 캔버스와 1.20:1 이라 경계가 보이되 주의를 끌지 않고,
+       어두운 캔버스 위에서는 15.38:1 로 명백한 밝은 면이다.
+       검정 로고 16.42:1, 라벨 5.73:1. 두 캔버스 중 한쪽과는 늘 대비가 낮으므로
+       경계선은 여전히 필수다. */
+    .logo-bar[data-tone="light"] {
+      --logo-surface: #eae3d2;
+      --logo-border: rgba(38, 30, 22, 0.12);
+      --logo-label-ink: rgba(38, 30, 22, 0.72);
+    }
+    /* 어두운 밴드. 다크 캔버스와 1.30:1 뿐이라 역시 경계선이 필수다. 라벨 6.05:1. */
+    .logo-bar[data-tone="dark"] {
+      --logo-surface: #2e2419;
+      --logo-border: rgba(250, 247, 240, 0.1);
+      --logo-label-ink: rgba(250, 247, 240, 0.6);
     }
     /* UA 의 [hidden] 규칙은 위 display:flex 에 밀리므로 명시적으로 잡는다. */
     .logo-bar[hidden] { display: none; }
@@ -383,7 +401,7 @@
       letter-spacing: 0.1em;
       /* 0.4 은 3.80:1 로 WCAG AA(4.5:1) 미달이었다. #0b0b0c 위에서 흰색이
          4.5:1 을 넘기는 알파 하한은 0.45, 0.5 는 5.34:1 (RL-018). */
-      color: var(--ink-dim);
+      color: var(--logo-label-ink);
       white-space: nowrap;
     }
     .logo-group img {
@@ -1096,6 +1114,19 @@
     // 통째로 깨진다.
     const STAGE_THEMES = ["dark", "light"];
 
+    // 로고 바 배경 톤 — 서버(`stage_config.LOGO_BAR_TONES`)와 같은 목록이다.
+    const LOGO_BAR_TONES = ["auto", "light", "dark"];
+
+    function applyLogoBarTone(value) {
+      if (LOGO_BAR_TONES.indexOf(value) === -1) return;
+      const bar = document.getElementById("logo-bar");
+      if (!bar) return;
+      // `auto` 는 속성을 **지운다** — 기본 `.logo-bar` 규칙이 곧 auto 이고,
+      // 속성을 달면 같은 값이 두 곳에 살게 된다 (테마의 data-theme 과 같은 이유).
+      if (value === "auto") bar.removeAttribute("data-tone");
+      else bar.dataset.tone = value;
+    }
+
     function applyStageTheme(value) {
       if (STAGE_THEMES.indexOf(value) === -1) return;
       const root = document.documentElement;
@@ -1121,6 +1152,7 @@
       if (!payload) return;
       applyCaptionScale(payload.caption_scale);
       applyStageTheme(payload.theme);
+      applyLogoBarTone(payload.logo_bar_tone);
       applyPrimaryLang(payload.primary_lang);
       // 일회성 명령. 서버가 control **상태**에 저장하지 않으므로 재접속한
       // 화면이 지난 명령을 다시 받는 일은 없다
@@ -1200,6 +1232,9 @@
       headerTitle.textContent = title;
 
       const logoBar = $("logo-bar");
+      // 룸 기본값을 적용한다. 행사 중 오퍼레이터가 보내는 control 은 같은 함수로
+      // 들어와 이 값을 덮어쓴다 — 두 경로가 갈라지면 한쪽만 고쳐진다 (#182).
+      applyLogoBarTone(cfg.logo_bar_tone);
       const groups = Array.isArray(cfg.logo_groups) ? cfg.logo_groups : [];
       // `!== false` 로 읽는다 — 키가 없는(이 옵션 도입 이전) 설정은 종전처럼
       // 라벨이 보여야 한다. `Boolean(cfg.show_logo_labels)` 로 쓰면 키 부재가

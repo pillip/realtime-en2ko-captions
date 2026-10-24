@@ -41,6 +41,7 @@ class TestDefaultStageConfig:
             "event_title": "",
             "caption_ratio": "1/4",
             "show_logo_labels": True,
+            "logo_bar_tone": "auto",
             "logo_groups": [
                 {"label": "주최", "title": "주최", "assets": []},
                 {"label": "주관", "title": "주관", "assets": []},
@@ -156,6 +157,7 @@ class TestNormalizeAcceptedShapes:
             "event_title": "2026 개발자 콘퍼런스",
             "caption_ratio": "1/3",
             "show_logo_labels": False,
+            "logo_bar_tone": "dark",
             "logo_groups": [
                 {"label": "주최", "title": "Host", "assets": ["host-1.png"]},
                 {"label": "주관", "title": "주관", "assets": []},

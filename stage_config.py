@@ -47,6 +47,21 @@ DEFAULT_CAPTION_RATIO: str = CAPTION_RATIOS[0]
 # 나가지 않는다.
 LOGO_GROUP_LABELS: tuple[str, ...] = ("주최", "주관", "후원")
 
+# 로고 바 배경 톤 (관리자 선택). 아트워크 한 벌로 두 배경을 모두 만족시킬 수
+# 없기 때문에 존재하는 설정이다 — 흰 아트워크는 어두운 면에서, 검정 아트워크는
+# 밝은 면에서만 읽힌다. CSS 로 이미지를 되살릴 방법은 없다.
+#
+#   "auto"  — 면을 깔지 않는다. 로고가 페이지 캔버스에 그대로 얹혀 **테마를
+#             따라간다**. 화면이 가장 깔끔하지만 테마를 바꾸면 로고가 뒤집혀
+#             묻힌다 (= 이 설정 도입 이전의 동작).
+#   "light" — 항상 흰 카드. 어두운·컬러 아트워크가 읽힌다.
+#   "dark"  — 항상 어두운 밴드. 흰 아트워크가 읽힌다.
+#
+# 기본이 "auto" 인 이유는 `show_logo_labels` 와 같다 — 이 키가 없던 룸의 화면을
+# 말없이 바꾸지 않는다.
+LOGO_BAR_TONES: tuple[str, ...] = ("auto", "light", "dark")
+DEFAULT_LOGO_BAR_TONE: str = LOGO_BAR_TONES[0]
+
 EVENT_TITLE_MAX_LEN = 120
 
 # 로고 그룹 표시 글자 상한. 로고 바 한 칸에 들어가는 짧은 캡션이므로 타이틀과
@@ -74,6 +89,8 @@ DEFAULT_STAGE_CONFIG: dict[str, Any] = {
     # 쓰고 있었으므로, 키 부재를 "끄기" 로 읽으면 **기존 무대 화면이 말없이
     # 바뀐다**. 부재 = 종전 동작으로 둔다.
     "show_logo_labels": True,
+    # 로고 바 배경 톤 (LOGO_BAR_TONES 주석 참고). 부재 = 종전 동작("auto").
+    "logo_bar_tone": DEFAULT_LOGO_BAR_TONE,
     # `label` 은 바꿀 수 없는 식별 키, `title` 은 관리자가 고치는 표시 글자다
     # (LOGO_GROUP_LABELS 주석 참고). 기본 `title` 은 키와 같아서, 이 키가 도입되기
     # 전에 저장된 룸도 종전과 똑같은 화면을 유지한다.
@@ -104,6 +121,7 @@ def normalize_stage_config(raw: Any) -> dict[str, Any]:
         "event_title": _as_text(data.get("event_title")),
         "caption_ratio": _as_caption_ratio(data.get("caption_ratio")),
         "show_logo_labels": _as_show_logo_labels(data.get("show_logo_labels")),
+        "logo_bar_tone": _as_logo_bar_tone(data.get("logo_bar_tone")),
         "logo_groups": _as_logo_groups(data.get("logo_groups")),
     }
 
@@ -143,6 +161,11 @@ def validate_stage_config(cfg: Any) -> tuple[bool, str]:
     # 한다: 쓰기 경로는 조용히 고치지 않고 사유와 함께 거절한다.
     if "show_logo_labels" in cfg and not isinstance(cfg["show_logo_labels"], bool):
         return False, "로고 라벨 표시 여부는 참/거짓 값이어야 합니다."
+
+    # 같은 이유로 키 부재는 허용하고, 들어 있다면 허용 목록 안이어야 한다.
+    if "logo_bar_tone" in cfg and cfg["logo_bar_tone"] not in LOGO_BAR_TONES:
+        allowed = " / ".join(LOGO_BAR_TONES)
+        return False, f"로고 바 배경 톤은 {allowed} 중 하나여야 합니다."
 
     groups = cfg.get("logo_groups", [])
     if not isinstance(groups, list):
@@ -249,6 +272,16 @@ def normalize_group_title(raw: Any, label: str) -> str:
         if cleaned:
             return cleaned
     return label
+
+
+def _as_logo_bar_tone(raw: Any) -> str:
+    """로고 바 톤을 정규화한다. 알 수 없는 값은 기본값으로 degrade 한다.
+
+    읽기 경로는 예외를 던지지 않는다 — `rooms.stage_config` 는 컬럼 레벨 스키마가
+    없는 JSON-in-TEXT 라 손으로 들어간 값이 언제든 있을 수 있고, 무대 화면은 행사
+    중에 죽으면 안 된다. 쓰기 경로(`validate_stage_config`)는 반대로 거절한다.
+    """
+    return raw if raw in LOGO_BAR_TONES else DEFAULT_LOGO_BAR_TONE
 
 
 def _as_logo_groups(value: Any) -> list[dict[str, Any]]:

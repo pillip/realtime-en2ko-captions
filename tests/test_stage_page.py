@@ -72,6 +72,14 @@ def _theme_tokens(css: str, theme: str) -> dict[str, str]:
     return tokens
 
 
+def _logo_tone_tokens(css: str, tone: str) -> dict[str, str]:
+    """로고 바 톤별 토큰. `auto` 는 `.logo-bar` 기본 규칙이 곧 그 값이다."""
+    base = custom_properties(css, ".logo-bar")
+    if tone == "auto":
+        return base
+    return {**base, **custom_properties(css, f'.logo-bar[data-tone="{tone}"]')}
+
+
 def _canvas_rgb(tokens: dict[str, str]) -> tuple[float, float, float]:
     r, g, b, _a = resolve_color(tokens["--canvas"], tokens)
     return (r, g, b)
@@ -544,7 +552,7 @@ class TestStageHtmlMarkup:
     @pytest.mark.parametrize("theme", _THEMES)
     @pytest.mark.parametrize(
         "selector",
-        [".logo-group-label", ".caption-line", ".caption-empty", ".caption-ended"],
+        [".caption-line", ".caption-empty", ".caption-ended"],
     )
     def test_canvas_text_meets_wcag_aa_in_both_themes(
         self, stage_html, selector, theme
@@ -566,6 +574,103 @@ class TestStageHtmlMarkup:
         assert (
             ratio >= 4.5
         ), f"{selector} is {ratio:.2f}:1 in the {theme} theme; WCAG AA needs 4.5:1"
+
+    @pytest.mark.parametrize("tone", ["auto", "light", "dark"])
+    @pytest.mark.parametrize("theme", _THEMES)
+    def test_logo_group_label_meets_wcag_aa_on_its_surface(
+        self, stage_html, tone, theme
+    ):
+        """라벨의 배경은 캔버스가 아니라 **로고 바가 실제로 깐 면**이다 (RL-018).
+
+        로고 바 배경은 테마가 아니라 **관리자 설정(`logo_bar_tone`)** 이 정한다 —
+        아트워크 한 벌로 두 배경을 만족시킬 수 없기 때문이다. 그래서 라벨 대비는
+        (톤 × 테마) 조합마다 성립해야 한다:
+
+          - `auto`  : 면이 없다 → 배경은 캔버스, 라벨은 `--ink-dim` (테마를 따라감)
+          - `light` : 흰 카드 → 테마와 무관하게 고정
+          - `dark`  : 어두운 밴드 → 테마와 무관하게 고정
+
+        배경을 캔버스로 가정한 채 계산하면 `dark` 톤 + 라이트 테마에서 **미색
+        글자를 미색 배경 위로** 재던져 1.1:1 을 통과시킨다.
+        """
+        tokens = {
+            **_theme_tokens(stage_html, theme),
+            **_logo_tone_tokens(stage_html, tone),
+        }
+        surface = tokens.get("--logo-surface", "transparent").strip()
+        backdrop = (
+            _canvas_rgb(tokens)
+            if surface in ("transparent", "")
+            else resolve_color(surface, tokens)[:3]
+        )
+        ink = resolve_color(tokens["--logo-label-ink"], tokens)
+        ratio = _contrast_ratio(ink, backdrop)
+        assert ratio >= 4.5, (
+            f".logo-group-label is {ratio:.2f}:1 (tone={tone}, theme={theme}); "
+            "WCAG AA needs 4.5:1"
+        )
+
+    def test_the_tone_is_applied_as_a_data_attribute(self, stage_html):
+        """톤이 `data-tone` 으로 걸리고, `auto` 는 속성을 **지운다**.
+
+        `auto` 에 속성을 달면 같은 값이 두 곳(기본 `.logo-bar` 규칙 + 속성 규칙)에
+        살게 되고, 둘이 갈라지는 날 어느 쪽이 쓰이는지 아무도 모른다 — 테마가
+        `data-theme="dark"` 를 쓰지 않는 것과 같은 이유다.
+        """
+        body = re.search(
+            r"function applyLogoBarTone\(value\) \{(.*?)\n    \}", stage_html, re.S
+        )
+        assert body is not None, "applyLogoBarTone() not found"
+        fn = body.group(1)
+        assert "LOGO_BAR_TONES.indexOf(value) === -1" in fn, fn
+        assert (
+            'removeAttribute("data-tone")' in fn
+        ), "auto 에서 속성을 지우지 않는다 — 기본 규칙과 중복된다"
+        assert "bar.dataset.tone = value" in fn, fn
+
+        from stage_config import LOGO_BAR_TONES
+
+        declared = re.search(r"const LOGO_BAR_TONES = \[(.*?)\];", stage_html, re.S)
+        assert declared is not None, "LOGO_BAR_TONES not declared in stage.html"
+        client = re.findall(r'"([^"]+)"', declared.group(1))
+        assert client == list(LOGO_BAR_TONES), (
+            f"클라이언트 톤 목록 {client} 가 서버 {list(LOGO_BAR_TONES)} 와 다르다 "
+            "— 손으로 적은 목록은 갈라진다 (RL-001)"
+        )
+
+    def test_the_room_default_and_the_live_control_share_one_path(self, stage_html):
+        """룸 기본값과 오퍼레이터 control 이 **같은 함수**로 들어온다 (#182).
+
+        두 경로가 갈라지면 한쪽만 고쳐지는 날이 온다 — 발표자료 해제가
+        `disconnectPresentation()` 하나로 수렴하는 것과 같은 이유다.
+        """
+        assert (
+            "applyLogoBarTone(cfg.logo_bar_tone)" in stage_html
+        ), "부트스트랩이 룸 기본값을 적용하지 않는다"
+        control = re.search(
+            r"function handleControl\(payload\) \{(.*?)\n    \}", stage_html, re.S
+        )
+        assert control is not None
+        assert "applyLogoBarTone(payload.logo_bar_tone)" in control.group(
+            1
+        ), f"control 이 로고 바 톤을 반영하지 않는다: {control.group(1)!r}"
+
+    @pytest.mark.parametrize("tone", ["light", "dark"])
+    def test_an_opaque_logo_surface_declares_a_border(self, stage_html, tone):
+        """면을 깔았으면 **보여야** 한다 — 두 톤 다 한쪽 캔버스에서 거의 안 보인다.
+
+        흰 카드는 미색 캔버스와 **1.07:1**, 어두운 밴드는 다크 캔버스와 **1.30:1**
+        이다. 색만으로는 카드가 존재하지 않으므로 경계선이 **필수**다. 톤은 테마와
+        독립이라 "반대쪽 캔버스에서는 잘 보인다" 는 변명이 통하지 않는다 — 두 조합
+        모두 실제로 쓰인다.
+        """
+        tokens = _logo_tone_tokens(stage_html, tone)
+        border = tokens.get("--logo-border", "transparent").strip()
+        assert border not in ("transparent", ""), (
+            f"tone={tone} 이 면을 깔면서 경계선을 선언하지 않았다 — 한쪽 캔버스에서 "
+            "면이 보이지 않는다"
+        )
+        assert resolve_color(border, tokens)[3] > 0, f"경계선이 완전 투명하다: {border}"
 
     @pytest.mark.parametrize(
         "selector,backdrop",

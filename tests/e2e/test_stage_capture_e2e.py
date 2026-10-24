@@ -966,3 +966,67 @@ class TestStageThemeControl:
         page.wait_for_timeout(300)
 
         assert _capture_state(page)["theme"] is None
+
+
+class TestLogoBarToneControl:
+    """로고 바 배경을 오퍼레이터가 행사 중에 바꾼다 (#182).
+
+    관리자 설정이 룸의 기본값이고, 이 control 은 그 세션에 한해 덮어쓴다 —
+    행사장 프로젝터에서 로고가 묻히는 것을 그 자리에서 고칠 수 있어야 한다.
+    """
+
+    @staticmethod
+    def _tone(page) -> str:
+        return page.evaluate(
+            "() => document.getElementById('logo-bar').dataset.tone || 'auto'"
+        )
+
+    @pytest.mark.parametrize("tone", ["light", "dark"])
+    def test_a_tone_from_control_is_applied(self, page, capture_server, tone):
+        _open_stage(page, capture_server)
+        assert self._tone(page) == "auto", "룸 기본값이 auto 가 아니다"
+
+        page.evaluate(
+            "(t) => window.__emit('control', JSON.stringify({logo_bar_tone: t}))", tone
+        )
+        page.wait_for_function(
+            "(t) => document.getElementById('logo-bar').dataset.tone === t",
+            arg=tone,
+            timeout=3000,
+        )
+
+        # 선언된 면이 실제로 칠해졌는지 — 토큰 선언이 아니라 렌더된 값으로 본다.
+        bg = page.evaluate(
+            "() => getComputedStyle(document.getElementById('logo-bar')).backgroundColor"
+        )
+        nums = [int(n) for n in re.findall(r"\d+", bg)[:3]]
+        if tone == "light":
+            assert min(nums) > 180, f"밝은 톤인데 면이 어둡다: {bg}"
+        else:
+            assert max(nums) < 90, f"어두운 톤인데 면이 밝다: {bg}"
+
+    def test_returning_to_auto_removes_the_attribute(self, page, capture_server):
+        """`auto` 는 속성을 지운다 — 기본 규칙과 값이 두 곳에 살면 안 된다."""
+        _open_stage(page, capture_server)
+        page.evaluate(
+            "() => window.__emit('control', JSON.stringify({logo_bar_tone: 'dark'}))"
+        )
+        page.wait_for_function(
+            "() => document.getElementById('logo-bar').dataset.tone === 'dark'"
+        )
+
+        page.evaluate(
+            "() => window.__emit('control', JSON.stringify({logo_bar_tone: 'auto'}))"
+        )
+        page.wait_for_function(
+            "() => !document.getElementById('logo-bar').hasAttribute('data-tone')",
+            timeout=3000,
+        )
+
+    def test_an_unknown_tone_is_ignored(self, page, capture_server):
+        _open_stage(page, capture_server)
+        page.evaluate(
+            "() => window.__emit('control', JSON.stringify({logo_bar_tone: 'band'}))"
+        )
+        page.wait_for_timeout(300)
+        assert self._tone(page) == "auto"

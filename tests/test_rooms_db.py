@@ -620,6 +620,7 @@ _VALID_CONFIG = {
     "caption_ratio": "1/3",
     # show_logo_labels 는 normalize 가 항상 채우므로 기대값에도 있어야 한다.
     "show_logo_labels": True,
+    "logo_bar_tone": "auto",
     "logo_groups": [
         {"label": "주최", "title": "주최", "assets": ["host-1.png"]},
         {"label": "주관", "title": "주관", "assets": []},

@@ -485,6 +485,7 @@ class TestStageConfigMigrationOnExistingRooms:
             "event_title": "2026 개발자 콘퍼런스",
             "caption_ratio": "1/3",
             "show_logo_labels": True,
+            "logo_bar_tone": "auto",
             "logo_groups": [
                 {"label": "주최", "title": "주최", "assets": ["host-1.png"]},
                 {"label": "주관", "title": "주관", "assets": []},

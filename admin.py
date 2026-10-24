@@ -50,7 +50,9 @@ from database import (
 from qr_generator import build_stage_url, build_view_url, make_qr_png
 from stage_config import (
     CAPTION_RATIOS,
+    DEFAULT_LOGO_BAR_TONE,
     EVENT_TITLE_MAX_LEN,
+    LOGO_BAR_TONES,
     LOGO_GROUP_LABELS,
     LOGO_GROUP_TITLE_MAX_LEN,
     validate_stage_config,
@@ -725,6 +727,15 @@ def _render_admin_room_create(room_model, user_model, current_user):
 _STAGE_TITLE_KEY = "stage_cfg_title"
 _STAGE_RATIO_KEY = "stage_cfg_ratio"
 _STAGE_SHOW_LABELS_KEY = "stage_cfg_show_logo_labels"
+_STAGE_LOGO_TONE_KEY = "stage_cfg_logo_bar_tone"
+
+# 라디오에 보일 한국어 라벨. 값(코드)과 표시를 분리해 두면 문구를 고쳐도 저장되는
+# 값이 바뀌지 않는다.
+_LOGO_TONE_LABELS = {
+    "auto": "테마 따라감",
+    "light": "밝게 (흰 카드)",
+    "dark": "어둡게 (어두운 밴드)",
+}
 _STAGE_SEEDED_ROOM_KEY = "stage_cfg_seeded_room"
 # 업로더 초기화용 nonce — key 가 바뀌면 Streamlit 이 위젯 상태를 버린다.
 # 저장에 반영된 파일이 폼에 남아 다음 저장 때 중복 업로드되는 것을 막는다.
@@ -848,6 +859,10 @@ def _seed_stage_form_state(room_id, config):
     # 키가 없는 기존 룸은 True — 라벨이 보이던 종전 동작을 유지한다.
     st.session_state[_STAGE_SHOW_LABELS_KEY] = bool(
         config.get("show_logo_labels", True)
+    )
+    tone = config.get("logo_bar_tone", DEFAULT_LOGO_BAR_TONE)
+    st.session_state[_STAGE_LOGO_TONE_KEY] = (
+        tone if tone in LOGO_BAR_TONES else DEFAULT_LOGO_BAR_TONE
     )
 
 
@@ -1060,6 +1075,19 @@ def _render_stage_config_form(room_id):
             ),
         )
         logo_titles = {}
+        logo_bar_tone = st.radio(
+            "로고 바 배경",
+            options=list(LOGO_BAR_TONES),
+            key=_STAGE_LOGO_TONE_KEY,
+            horizontal=True,
+            format_func=lambda t: _LOGO_TONE_LABELS[t],
+            help=(
+                "로고 아트워크 한 벌로 밝은 배경과 어두운 배경을 모두 만족시킬 수는 "
+                "없습니다. 흰색 로고는 어두운 면에서만, 검정 로고는 밝은 면에서만 "
+                "읽힙니다. '테마 따라감' 은 면을 깔지 않아 화면이 가장 깔끔하지만, "
+                "무대 테마를 바꾸면 로고가 뒤집혀 묻힙니다."
+            ),
+        )
         for label in LOGO_GROUP_LABELS:
             # 표시 글자 입력. 라벨(`label`)은 그룹 **식별 키**라 바뀌지 않고,
             # 여기서 고치는 것은 무대 화면에 보이는 글자뿐이다 — 영문 행사면
@@ -1088,6 +1116,7 @@ def _render_stage_config_form(room_id):
         "event_title": title,
         "caption_ratio": ratio,
         "show_logo_labels": show_logo_labels,
+        "logo_bar_tone": logo_bar_tone,
         "logo_titles": logo_titles,
         "uploads": uploads,
     }
@@ -1135,6 +1164,7 @@ def _save_stage_config(room_model, room_id, current_config, values):
     preflight = build_stage_config_from_form(
         event_title=values["event_title"],
         logo_titles=values["logo_titles"],
+        logo_bar_tone=values["logo_bar_tone"],
         caption_ratio=values["caption_ratio"],
         show_logo_labels=values["show_logo_labels"],
         logo_groups=existing,
@@ -1157,6 +1187,7 @@ def _save_stage_config(room_model, room_id, current_config, values):
     candidate = build_stage_config_from_form(
         event_title=values["event_title"],
         logo_titles=values["logo_titles"],
+        logo_bar_tone=values["logo_bar_tone"],
         caption_ratio=values["caption_ratio"],
         show_logo_labels=values["show_logo_labels"],
         logo_groups={
