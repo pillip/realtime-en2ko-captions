@@ -1359,3 +1359,56 @@ class TestAdminFormExposesTheToggle:
         assert (
             src.count('show_logo_labels=values["show_logo_labels"]') == 2
         ), "preflight/저장 두 호출부 모두에서 토글을 넘겨야 한다"
+
+
+class TestLogoBarToneReachesTheConfig:
+    """관리자 라디오 → `stage_config.logo_bar_tone` 배선.
+
+    아트워크 한 벌로 두 배경을 만족시킬 수 없어서 생긴 설정이다 — 흰 로고는
+    어두운 면에서만, 검정 로고는 밝은 면에서만 읽힌다.
+    """
+
+    @staticmethod
+    def _build(**overrides):
+        kwargs = {
+            "event_title": "",
+            "caption_ratio": "1/4",
+            "logo_groups": {},
+        }
+        kwargs.update(overrides)
+        return build_stage_config_from_form(**kwargs)
+
+    @pytest.mark.parametrize("tone", ["auto", "light", "dark"])
+    def test_each_tone_is_carried_into_the_config(self, tone):
+        cfg = self._build(logo_bar_tone=tone)
+        assert cfg["logo_bar_tone"] == tone
+        ok, reason = validate_stage_config(cfg)
+        assert ok is True, reason
+
+    def test_default_is_auto_when_caller_omits_it(self):
+        """부재 = 종전 동작. 이 설정 도입 이전 룸의 화면을 바꾸지 않는다."""
+        assert self._build()["logo_bar_tone"] == "auto"
+
+    def test_an_unknown_tone_is_reported_not_silently_fixed(self):
+        """폼 조립은 보정하지 않는다 — 관리자가 무엇이 틀렸는지 알아야 한다.
+
+        `caption_ratio` 와 같은 원칙이다. 정규화(읽기 경로)는 반대로 기본값으로
+        degrade 한다 — 무대 화면은 행사 중에 죽으면 안 되기 때문이다.
+        """
+        cfg = self._build(logo_bar_tone="sepia")
+        assert cfg["logo_bar_tone"] == "sepia"
+        ok, reason = validate_stage_config(cfg)
+        assert ok is False
+        assert reason.strip()
+
+    def test_the_admin_form_exposes_the_radio(self, monkeypatch):
+        import admin
+
+        fake_st = MagicMock()
+        monkeypatch.setattr(admin, "st", fake_st)
+        admin._render_stage_config_form("r-1")
+
+        labels = [call.args[0] for call in fake_st.radio.call_args_list if call.args]
+        assert (
+            "로고 바 배경" in labels
+        ), f"관리자 폼에 로고 바 배경 라디오가 없다: {labels}"

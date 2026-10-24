@@ -1677,6 +1677,51 @@ class TestStageThemeControl:
         assert [m for m in sent if m.get("type") == "stage_control_error"]
 
 
+class TestLogoBarToneControl:
+    """로고 바 배경 — 관리자 설정을 그 세션에 한해 덮어쓰는 control 상태 (#182).
+
+    행사장 프로젝터에서 로고가 묻히는 것을 그 자리에서 고칠 수 있어야 한다.
+    """
+
+    @pytest.mark.parametrize("tone", ["auto", "light", "dark"])
+    def test_each_tone_updates_state_publishes_and_acks(self, tone):
+        from tests.broadcast_spy import SpyBroadcastManager
+
+        spy = SpyBroadcastManager()
+        ws = _ws_yielding([{"type": "stage_control", "logo_bar_tone": tone}])
+
+        sent = _run_with_spy(ws, _RecordingRoomRepo(), spy)
+
+        assert spy.get_control("r1") == {"logo_bar_tone": tone}
+        assert spy.control_count == 1, spy.control_calls
+        _room, payload = spy.control_calls[0]
+        assert payload["logo_bar_tone"] == tone
+        ack = next(m for m in sent if m["type"] == "stage_control_ack")
+        assert ack["logo_bar_tone"] == tone
+
+    @pytest.mark.parametrize("tone", ["Dark", "band", "", None, 1, True])
+    def test_unknown_tones_change_nothing_and_are_refused(self, tone):
+        from tests.broadcast_spy import SpyBroadcastManager
+
+        spy = SpyBroadcastManager()
+        ws = _ws_yielding([{"type": "stage_control", "logo_bar_tone": tone}])
+
+        sent = _run_with_spy(ws, _RecordingRoomRepo(), spy)
+
+        assert spy.get_control("r1") is None
+        assert spy.control_count == 0, spy.control_calls
+        assert [m for m in sent if m.get("type") == "stage_control_error"]
+
+    def test_the_allow_list_comes_from_stage_config(self):
+        """허용 목록을 손으로 적지 않는다 — 관리자 폼과 갈라진다 (RL-001)."""
+        import websocket_handler
+        from stage_config import LOGO_BAR_TONES
+
+        for tone in LOGO_BAR_TONES:
+            assert websocket_handler._coerce_logo_bar_tone(tone) == tone
+        assert websocket_handler._coerce_logo_bar_tone("sepia") is None
+
+
 class TestPresentationDisconnectIsAOneShotCommand:
     """발표자료 해제는 **상태가 아니라 일회성 명령**이다 (#178).
 

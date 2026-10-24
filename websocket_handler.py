@@ -92,6 +92,18 @@ def _coerce_presentation_command(value):
     return value if value in PRESENTATION_COMMANDS else None
 
 
+def _coerce_logo_bar_tone(value):
+    """허용 목록에 있는 로고 바 톤이면 그대로, 아니면 None (#182).
+
+    허용 목록은 `stage_config.LOGO_BAR_TONES` 에서 가져온다 — 여기에 손으로 적어
+    두면 관리자 폼과 갈라진다 (RL-001). 관리자 설정이 룸의 **기본값**이고, 이
+    control 은 행사 중 그 세션에 한해 덮어쓴다 (테마와 같은 성질).
+    """
+    from stage_config import LOGO_BAR_TONES
+
+    return value if value in LOGO_BAR_TONES else None
+
+
 # Module-level RoomManager singleton.
 # Tests substitute this via `patch("websocket_handler._room_manager", ...)`.
 _room_manager: RoomManager = RoomManager()
@@ -252,9 +264,12 @@ async def _handle_stage_control(websocket, data, user_info):
     """오퍼레이터의 무대 제어 메시지 처리 (ISSUE-53/54, #178).
 
     세 가지를 받는다. 한 메시지에 여러 개가 함께 올 수도 있다.
-      - ``caption_scale`` : 자막 배율 (상태)
-      - ``theme``         : 무대 테마 (상태) — `caption_scale` 과 같은 세션 한정
-      - ``presentation``  : 발표자료 제어 (**일회성 명령**, 상태 아님)
+      - ``caption_scale``  : 자막 배율 (상태)
+      - ``theme``          : 무대 테마 (상태) — `caption_scale` 과 같은 세션 한정
+      - ``logo_bar_tone``  : 로고 바 배경 (상태). 관리자 설정이 룸의 기본값이고
+        이 control 은 그 세션에 한해 덮어쓴다 — 행사장 프로젝터에서 로고가 묻히는
+        것을 그 자리에서 고칠 수 있어야 하기 때문이다.
+      - ``presentation``   : 발표자료 제어 (**일회성 명령**, 상태 아님)
 
     ``room_id`` 는 클라이언트 payload 가 아니라 인증이 확정한 값이다 (RL-002)
     — 다른 룸의 화면을 조작할 수 없다.
@@ -282,6 +297,13 @@ async def _handle_stage_control(websocket, data, user_info):
         else:
             state["theme"] = theme
 
+    if "logo_bar_tone" in data:
+        tone = _coerce_logo_bar_tone(data.get("logo_bar_tone"))
+        if tone is None:
+            invalid.append("logo_bar_tone")
+        else:
+            state["logo_bar_tone"] = tone
+
     command = None
     if "presentation" in data:
         command = _coerce_presentation_command(data.get("presentation"))
@@ -292,7 +314,7 @@ async def _handle_stage_control(websocket, data, user_info):
         # 상태도 발행도 없다. 사유는 서버 로그로만 (RL-006).
         print(
             f"[Control] stage_control 거절 (room={room_id}): "
-            f"invalid={invalid} data={ {k: data.get(k) for k in ('caption_scale', 'theme', 'presentation') if k in data} }"
+            f"invalid={invalid} data={ {k: data.get(k) for k in ('caption_scale', 'theme', 'logo_bar_tone', 'presentation') if k in data} }"
         )
         await websocket.send(
             json.dumps(

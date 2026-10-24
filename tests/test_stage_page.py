@@ -36,8 +36,8 @@ import pytest
 from tests.wcag import (
     _composite,
     _contrast_ratio,
+    _relative_luminance,
     _rule_block,
-    _rule_hex,
     _rule_rgba,
     custom_properties,
     resolve_color,
@@ -55,15 +55,19 @@ _STAGE_TEMPLATE = Path(__file__).resolve().parent.parent / "components" / "stage
 # 인라인 <script> 블록이 조기 종료된 것이다.
 _BREAKOUT_TITLE = "</script><script>alert(1)</script>"
 
-# 페이지가 칠하는 두 배경. 대비 계산은 합성 후 색으로 한다 (RL-018).
-# 다크 테마의 캔버스. 프레임 안 캡처 상태 문구들은 **자기 배경**으로
-# `#0b0b0c` 를 선언하므로(= 이 값과 동일) 테마가 바뀌어도 그 판정은 그대로다 —
-# 16:9 프레임은 두 테마에서 모두 어둡다 (stage.html 의 토큰 주석 참고).
-_CANVAS_RGB = (11, 11, 12)  # --canvas: #0b0b0c
-
 # 테마 토큰이 선언된 두 선택자. 라이트는 다크 위에 **덮어쓰는** 집합이라
 # (CSS 캐스케이드와 같은 방식) 다크에만 있는 토큰도 라이트에서 유효하다.
 _THEMES = ("dark", "light")
+
+# 프레임 안 캡처 상태 문구들. 테마와 무관하게 **자기 불투명 배경**을 선언한다 —
+# 재생 중인 <video> 위에 뜨므로 조상 배경에 기댈 수 없다
+# (test_capture_surfaces_declare_an_opaque_background).
+_CAPTURE_SURFACES = (
+    ".capture-hint",
+    ".capture-warning",
+    ".handoff-prompt",
+    ".debug-overlay",
+)
 
 
 def _theme_tokens(css: str, theme: str) -> dict[str, str]:
@@ -71,6 +75,14 @@ def _theme_tokens(css: str, theme: str) -> dict[str, str]:
     if theme == "light":
         tokens = {**tokens, **custom_properties(css, ':root[data-theme="light"]')}
     return tokens
+
+
+def _logo_tone_tokens(css: str, tone: str) -> dict[str, str]:
+    """로고 바 톤별 토큰. `auto` 는 `.logo-bar` 기본 규칙이 곧 그 값이다."""
+    base = custom_properties(css, ".logo-bar")
+    if tone == "auto":
+        return base
+    return {**base, **custom_properties(css, f'.logo-bar[data-tone="{tone}"]')}
 
 
 def _canvas_rgb(tokens: dict[str, str]) -> tuple[float, float, float]:
@@ -545,7 +557,7 @@ class TestStageHtmlMarkup:
     @pytest.mark.parametrize("theme", _THEMES)
     @pytest.mark.parametrize(
         "selector",
-        [".logo-group-label", ".caption-line", ".caption-empty", ".caption-ended"],
+        [".caption-line", ".caption-empty", ".caption-ended"],
     )
     def test_canvas_text_meets_wcag_aa_in_both_themes(
         self, stage_html, selector, theme
@@ -555,10 +567,10 @@ class TestStageHtmlMarkup:
         `clamp()` 하한이 전부 24px 미만이라(자막 20px, 라벨 11px, 빈 상태 14px)
         large-text 3:1 완화를 쓸 수 없다.
 
-        **테마마다 알파가 다르다.** 흰 캔버스 위 검정 0.45 는 3.31:1 로 미달이라
-        다크의 알파를 그대로 쓸 수 없다 (#178). 그 사실을 토큰 주석에 적는 것으로
-        끝내면 다음 사람이 다크 값을 복사해 넣는 날 아무도 모른다 — 그래서 두
-        테마를 각각 계산한다.
+        **테마마다 알파가 다르다.** `gray-20` 캔버스 위 `gray-100` 0.50(다크의
+        자막 알파)은 3.23:1 로 미달이다 — 라이트의 하한은 0.62 다 (#178/#183/#184).
+        그 사실을 토큰 주석에 적는 것으로 끝내면 다음 사람이 다크 값을 복사해
+        넣는 날 아무도 모른다 — 그래서 두 테마를 각각 계산한다.
         """
         tokens = _theme_tokens(stage_html, theme)
         ratio = _contrast_ratio(
@@ -568,37 +580,159 @@ class TestStageHtmlMarkup:
             ratio >= 4.5
         ), f"{selector} is {ratio:.2f}:1 in the {theme} theme; WCAG AA needs 4.5:1"
 
-    @pytest.mark.parametrize(
-        "selector,backdrop",
-        [
-            # ISSUE-42 가 추가한 캡처 상태들. 배경은 전부 **불투명**이라
-            # 임의의 캡처 영상 위에서도 대비가 결정적이다.
-            # .capture-hint 의 backdrop 이 _FRAME_RGB 가 아닌 이유는
-            # test_capture_surfaces_declare_an_opaque_background 를 볼 것 —
-            # 이 문구는 재생 중인 <video> **위**에 뜨므로 조상의 #000000 은
-            # 실제 배경이 아니다.
-            (".capture-hint", _CANVAS_RGB),
-            (".capture-warning", _CANVAS_RGB),
-            (".handoff-prompt", _CANVAS_RGB),
-            (".debug-overlay", _CANVAS_RGB),
-        ],
-    )
-    def test_dim_text_meets_wcag_aa_contrast(self, stage_html, selector, backdrop):
-        """WCAG 1.4.3 — 어두운 캔버스 위 흐린 텍스트도 4.5:1 이상 (RL-018).
+    @pytest.mark.parametrize("tone", ["auto", "light", "dark"])
+    @pytest.mark.parametrize("theme", _THEMES)
+    def test_logo_group_label_meets_wcag_aa_on_its_surface(
+        self, stage_html, tone, theme
+    ):
+        """라벨의 배경은 캔버스가 아니라 **로고 바가 실제로 깐 면**이다 (RL-018).
+
+        로고 바 배경은 테마가 아니라 **관리자 설정(`logo_bar_tone`)** 이 정한다 —
+        아트워크 한 벌로 두 배경을 만족시킬 수 없기 때문이다. 그래서 라벨 대비는
+        (톤 × 테마) 조합마다 성립해야 한다:
+
+          - `auto`  : 면이 없다 → 배경은 캔버스, 라벨은 `--ink-dim` (테마를 따라감)
+          - `light` : 밝은 카드(`gray-10`) → 테마와 무관하게 고정
+          - `dark`  : 어두운 밴드(`gray-80`) → 테마와 무관하게 고정
+
+        배경을 캔버스로 가정한 채 계산하면 `dark` 톤 + 라이트 테마에서 **밝은
+        글자를 밝은 배경 위로** 재던져 1.1:1 을 통과시킨다.
+        """
+        tokens = {
+            **_theme_tokens(stage_html, theme),
+            **_logo_tone_tokens(stage_html, tone),
+        }
+        surface = tokens.get("--logo-surface", "transparent").strip()
+        backdrop = (
+            _canvas_rgb(tokens)
+            if surface in ("transparent", "")
+            else resolve_color(surface, tokens)[:3]
+        )
+        ink = resolve_color(tokens["--logo-label-ink"], tokens)
+        ratio = _contrast_ratio(ink, backdrop)
+        assert ratio >= 4.5, (
+            f".logo-group-label is {ratio:.2f}:1 (tone={tone}, theme={theme}); "
+            "WCAG AA needs 4.5:1"
+        )
+
+    def test_the_tone_is_applied_as_a_data_attribute(self, stage_html):
+        """톤이 `data-tone` 으로 걸리고, `auto` 는 속성을 **지운다**.
+
+        `auto` 에 속성을 달면 같은 값이 두 곳(기본 `.logo-bar` 규칙 + 속성 규칙)에
+        살게 되고, 둘이 갈라지는 날 어느 쪽이 쓰이는지 아무도 모른다 — 테마가
+        `data-theme="dark"` 를 쓰지 않는 것과 같은 이유다.
+        """
+        body = re.search(
+            r"function applyLogoBarTone\(value\) \{(.*?)\n    \}", stage_html, re.S
+        )
+        assert body is not None, "applyLogoBarTone() not found"
+        fn = body.group(1)
+        assert "LOGO_BAR_TONES.indexOf(value) === -1" in fn, fn
+        assert (
+            'removeAttribute("data-tone")' in fn
+        ), "auto 에서 속성을 지우지 않는다 — 기본 규칙과 중복된다"
+        assert "bar.dataset.tone = value" in fn, fn
+
+        from stage_config import LOGO_BAR_TONES
+
+        declared = re.search(r"const LOGO_BAR_TONES = \[(.*?)\];", stage_html, re.S)
+        assert declared is not None, "LOGO_BAR_TONES not declared in stage.html"
+        client = re.findall(r'"([^"]+)"', declared.group(1))
+        assert client == list(LOGO_BAR_TONES), (
+            f"클라이언트 톤 목록 {client} 가 서버 {list(LOGO_BAR_TONES)} 와 다르다 "
+            "— 손으로 적은 목록은 갈라진다 (RL-001)"
+        )
+
+    def test_the_room_default_and_the_live_control_share_one_path(self, stage_html):
+        """룸 기본값과 오퍼레이터 control 이 **같은 함수**로 들어온다 (#182).
+
+        두 경로가 갈라지면 한쪽만 고쳐지는 날이 온다 — 발표자료 해제가
+        `disconnectPresentation()` 하나로 수렴하는 것과 같은 이유다.
+        """
+        assert (
+            "applyLogoBarTone(cfg.logo_bar_tone)" in stage_html
+        ), "부트스트랩이 룸 기본값을 적용하지 않는다"
+        control = re.search(
+            r"function handleControl\(payload\) \{(.*?)\n    \}", stage_html, re.S
+        )
+        assert control is not None
+        assert "applyLogoBarTone(payload.logo_bar_tone)" in control.group(
+            1
+        ), f"control 이 로고 바 톤을 반영하지 않는다: {control.group(1)!r}"
+
+    @pytest.mark.parametrize("tone", ["light", "dark"])
+    def test_an_opaque_logo_surface_declares_a_border(self, stage_html, tone):
+        """면을 깔았으면 **보여야** 한다 — 두 톤 다 한쪽 캔버스에서 거의 안 보인다.
+
+        밝은 카드는 라이트 캔버스와 **1.20:1**, 어두운 밴드는 다크 캔버스와
+        **1.57:1** 이다. 색만으로는 카드가 존재하지 않으므로 경계선이 **필수**다. 톤은 테마와
+        독립이라 "반대쪽 캔버스에서는 잘 보인다" 는 변명이 통하지 않는다 — 두 조합
+        모두 실제로 쓰인다.
+        """
+        tokens = _logo_tone_tokens(stage_html, tone)
+        border = tokens.get("--logo-border", "transparent").strip()
+        assert border not in ("transparent", ""), (
+            f"tone={tone} 이 면을 깔면서 경계선을 선언하지 않았다 — 한쪽 캔버스에서 "
+            "면이 보이지 않는다"
+        )
+        assert resolve_color(border, tokens)[3] > 0, f"경계선이 완전 투명하다: {border}"
+
+    @pytest.mark.parametrize("tone", ["light", "dark"])
+    @pytest.mark.parametrize("theme", _THEMES)
+    def test_a_tone_differs_from_every_canvas_it_can_sit_on(
+        self, stage_html, tone, theme
+    ):
+        """톤은 **두 테마 모두에서** 캔버스와 달라야 한다 (#184).
+
+        톤은 테마와 독립이라 (톤 × 테마) 네 조합이 전부 실제로 쓰인다. 어느 한
+        조합에서 면이 캔버스와 같은 값이면 그 조합에서는 톤을 고른 것이 **아무
+        일도 하지 않는다** — 관리자는 골랐는데 화면은 `auto` 와 똑같다.
+
+        경계선 가드(`test_an_opaque_logo_surface_declares_a_border`)는 이걸 잡지
+        못한다. 테두리는 그려지니까 "면이 보인다" 는 성립하고, 라벨 대비도 면이
+        캔버스와 같으면 오히려 통과한다. 실제로 밝은 카드를 라이트 캔버스와 같은
+        단계로 내린 변이가 **두 테스트를 모두 통과했다.**
+
+        1.1:1 은 "한 단계 차이" 의 하한이다 (현재 밝은 카드 vs 라이트 캔버스
+        1.20:1 — 네 조합 중 가장 빠듯하다). 가시성 자체는 여전히 경계선이
+        책임지고, 이 테스트가 보는 것은 **톤이 값을 실제로 움직였는가** 다.
+        """
+        tokens = {
+            **_theme_tokens(stage_html, theme),
+            **_logo_tone_tokens(stage_html, tone),
+        }
+        surface = resolve_color(tokens["--logo-surface"], tokens)
+        ratio = _contrast_ratio(surface, _canvas_rgb(tokens))
+        assert ratio >= 1.1, (
+            f"tone={tone} 의 면이 {theme} 캔버스와 {ratio:.2f}:1 — 그 조합에서 "
+            "톤을 골라도 auto 와 같은 화면이 된다"
+        )
+
+    @pytest.mark.parametrize("selector", _CAPTURE_SURFACES)
+    def test_dim_text_meets_wcag_aa_contrast(self, stage_html, selector):
+        """WCAG 1.4.3 — 캡처 상태 문구가 **자기 배경 위에서** 4.5:1 이상 (RL-018).
 
         `clamp()` 하한이 전부 24px 미만이라(자막 20px, 라벨 11px, 빈 상태 14px)
         large-text 3:1 완화를 쓸 수 없다. ISSUE-42 가 추가한 네 상태도 마찬가지로
-        1920px 뷰포트에서 resolve 된 크기가 전부 24px 미만이다 — 눈대중 대신
-        수치로 확인한다. `#0b0b0c` 위에서 4.5:1 을 넘기는 흰색 알파 하한은
-        0.45 다.
+        1920px 뷰포트에서 resolve 된 크기가 전부 24px 미만이다.
+
+        **backdrop 을 상수로 적어 두지 않는다.** 예전에는 `_CANVAS_RGB =
+        (11, 11, 12)` 를 손으로 적고 "네 규칙이 같은 값을 선언하니까 맞다" 는
+        주석을 달아 두었는데, 그건 CSS 리터럴을 테스트에 복사한 것이다 —
+        팔레트를 `zinc` 로 옮기는 #183 에서 네 규칙은 `#09090b` 가 되고 상수만
+        남으면 테스트는 **존재하지 않는 배경** 위에서 계산을 계속한다 (RL-001).
+        각 규칙이 선언한 배경을 그대로 읽는다. 그 배경이 알파 1 이라는 사실은
+        test_capture_surfaces_declare_an_opaque_background 가 보증한다.
         """
+        declared = re.search(
+            r"background:\s*([^;]+);", _rule_block(stage_html, selector)
+        )
+        assert declared is not None, f"{selector} declares no background"
+        backdrop = resolve_color(declared.group(1).strip())[:3]
         ratio = _contrast_ratio(_rule_rgba(stage_html, selector), backdrop)
         assert ratio >= 4.5, f"{selector} is {ratio:.2f}:1, WCAG AA needs 4.5:1"
 
-    @pytest.mark.parametrize(
-        "selector",
-        [".capture-hint", ".capture-warning", ".handoff-prompt", ".debug-overlay"],
-    )
+    @pytest.mark.parametrize("selector", _CAPTURE_SURFACES)
     def test_capture_surfaces_declare_an_opaque_background(self, stage_html, selector):
         """캡처 상태 문구는 **자기 배경**을 갖는다 — 조상 배경에 기대지 않는다.
 
@@ -610,8 +744,9 @@ class TestStageHtmlMarkup:
         테스트는 `_FRAME_RGB` 를 가정했기 때문에 11.42:1 로 통과했다.
 
         그래서 backdrop 가정을 **구조적 사실**로 바꾼다: 네 규칙 모두 알파 1의
-        배경을 직접 선언해야 한다. 그러면 위 테스트의 `_CANVAS_RGB` 가정이
-        비로소 참이 된다 (RL-018 — 합성된 실제 배경으로 계산할 것).
+        배경을 직접 선언해야 한다. 위 테스트는 바로 그 선언을 backdrop 으로
+        읽으므로, 이 테스트가 그 계산의 전제를 지키는 셈이다 (RL-018 — 합성된
+        실제 배경으로 계산할 것).
         """
         block = _rule_block(stage_html, selector)
         match = re.search(r"background:\s*([^;]+);", block)
@@ -1032,17 +1167,388 @@ class TestStageDisplayCapture:
         assert "outline:" in ring, ring
 
     def test_capture_button_meets_wcag_aa_contrast(self, stage_html):
-        """RL-018 — 버튼은 hex 불투명 색이므로 알파 합성 없이 직접 계산한다.
+        """RL-018 — 글자/배경 모두 불투명이므로 알파 합성 없이 직접 계산한다.
 
         `clamp(15px, 1vw, 22px)` 는 1920px 뷰포트에서 19.2px 로 resolve 되어
         large-text(24px) 완화를 쓸 수 없다 — 4.5:1 이 하한이다.
+
+        **두 테마를 각각 본다.** 버튼은 프레임 위에서 분리돼 보여야 하므로
+        테마마다 명도가 뒤집힌다 — 어두운 프레임 위에는 밝은 pill, 밝은 프레임 위에는
+        잉크 pill 이다. 한쪽만 검사하면 반대쪽에서 글자가 배경에 묻는 조합이
+        들어와도 통과한다.
         """
         block = _rule_block(stage_html, ".capture-button")
         assert "font-size: clamp(15px, 1vw, 22px);" in block, block
-        fg = _rule_hex(stage_html, ".capture-button", "color")
-        bg = _rule_hex(stage_html, ".capture-button", "background")
-        ratio = _contrast_ratio((*fg, 1.0), bg)
-        assert ratio >= 4.5, f".capture-button is {ratio:.2f}:1, WCAG AA needs 4.5:1"
+        fg_decl = re.search(r"(?<![-\w])color:\s*([^;]+);", block)
+        bg_decl = re.search(r"(?<![-\w])background:\s*([^;]+);", block)
+        assert fg_decl and bg_decl, block
+
+        for theme in _THEMES:
+            tokens = _theme_tokens(stage_html, theme)
+            fg = resolve_color(fg_decl.group(1), tokens)
+            bg = resolve_color(bg_decl.group(1), tokens)
+            assert bg[3] == 1.0, f"버튼 배경이 반투명하다 ({theme}): {bg}"
+            ratio = _contrast_ratio(fg, bg[:3])
+            assert ratio >= 4.5, (
+                f".capture-button is {ratio:.2f}:1 in the {theme} theme, "
+                "WCAG AA needs 4.5:1"
+            )
+
+    def test_the_gutter_and_the_panel_are_different_surfaces(self, stage_html):
+        """16:9 패널과 그 바깥 레터박스 여백은 **다른 면**이다 (#185).
+
+        예전에는 `.presentation`(여백)과 `.stage-frame`(패널)이 **둘 다**
+        `--frame` 이었다. 그래서 발표 영역이 어디서 시작하는지 화면에 아무 단서가
+        없었고, 라이트에서 "엉성하다" 는 인상의 가장 큰 원인이었다. 대비 테스트는
+        당연히 전부 통과했다 — 두 면이 같은 색인 것은 **글자 가독성 문제가
+        아니다.**
+
+        그래서 구조로 못 박는다: 여백은 페이지(`--canvas`), 패널은 `--frame`.
+        값이 아니라 **어느 토큰을 쓰는가**를 검사하므로, 다음 사람이 여백을
+        패널 색으로 되돌리는 순간 막힌다.
+        """
+        gutter = re.search(
+            r"(?<![-\w])background:\s*([^;]+);",
+            _rule_block(stage_html, ".presentation"),
+        )
+        panel = re.search(
+            r"(?<![-\w])background:\s*([^;]+);",
+            _rule_block(stage_html, ".stage-frame"),
+        )
+        assert gutter is not None and panel is not None
+        assert gutter.group(1).strip() == "var(--canvas)", (
+            f"레터박스 여백이 `{gutter.group(1).strip()}` 이다 — 페이지 면이어야 "
+            "한다. 패널과 같은 색이면 발표 영역의 경계가 사라진다"
+        )
+        assert panel.group(1).strip() == "var(--frame)", panel.group(1)
+
+    @pytest.mark.parametrize("theme", _THEMES)
+    def test_the_dividers_are_opaque_tokens_not_alpha_smudges(self, stage_html, theme):
+        """구분선은 **불투명 토큰**이어야 한다 — 알파 선은 캔버스를 탄다 (#185).
+
+        `--hairline` 은 10% 알파였고, 캔버스가 `zinc-200` 으로 내려오자 캔버스와
+        **1.2:1** 이 됐다. 헤더 아래·로고 바 위·자막 컬럼 왼쪽에 선이 선언돼
+        있는데 화면에는 없는 상태였다 — "선이 있다" 는 구조 테스트도, 글자 대비
+        테스트도 이걸 잡지 못한다.
+
+        Carbon 의 `border-subtle` 은 알파가 아니라 **색 토큰**이다. 같은 방식을
+        쓰면 캔버스가 어디로 가든 선이 보이는지 계산으로 확인할 수 있다.
+        1.5:1 은 "1px 선이 보인다" 의 하한이다 (현재 다크 1.57:1 / 라이트 1.80:1).
+        """
+        tokens = _theme_tokens(stage_html, theme)
+        hairline = resolve_color(tokens["--hairline"], tokens)
+        assert hairline[3] == 1.0, (
+            f"{theme} 구분선이 반투명하다 ({tokens['--hairline']}) — 캔버스가 "
+            "바뀌면 보이기도 하고 사라지기도 한다"
+        )
+        ratio = _contrast_ratio(hairline, _canvas_rgb(tokens))
+        assert ratio >= 1.5, (
+            f"{theme} 구분선이 캔버스와 {ratio:.2f}:1 — 선언돼 있지만 화면에는 " "없다"
+        )
+
+    def test_the_projection_well_separates_in_light_and_melts_in_dark(self, stage_html):
+        """16:9 패널은 **라이트에서 또렷하고 다크에서 녹는다** (#186).
+
+        이 테스트는 예전의 `test_the_frame_stays_on_the_same_side_as_the_canvas`
+        (패널-캔버스 ≤ 1.8:1)를 **대체한다.** 그 상한은 #180 의 "검은 구멍" 에서
+        나왔는데, 거기서 화면을 망친 것은 "패널이 어둡다" 가 아니라 **near-white
+        캔버스에서 순검정으로 중간 단계 없이 튀었고 화면에 다른 어두운 요소가
+        하나도 없었다** 는 구성이었다. 상한은 그 증상의 해법 하나를 규칙으로
+        굳힌 것이라 결과적으로 **옳은 구성까지 금지했다** — 밝은 페이지 위의
+        어두운 스크린. 그 상한에 묶여 있는 동안 화면은 전부 중간 회색이 됐고
+        "축 쳐진다" 는 피드백을 받았다.
+
+        그래서 상한 대신 **테마별 의도**를 적는다.
+
+          라이트: 패널이 스스로 경계가 돼야 한다 (>= 3:1). 꺼진 스크린은 어둡고,
+                  슬라이드가 붙으면 그 위를 덮는다.
+          다크  : 패널이 캔버스에 녹아야 한다 (<= 1.8:1). 어두운 방에서 투사면
+                  경계가 드러나면 안 된다.
+
+        한쪽만 검사하면 반대쪽이 조용히 뒤집힌다 — 두 방향을 모두 못 박는다.
+        """
+        light = _theme_tokens(stage_html, "light")
+        ratio = _contrast_ratio(
+            resolve_color(light["--frame"], light), _canvas_rgb(light)
+        )
+        assert ratio >= 3.0, (
+            f"라이트 패널이 캔버스와 {ratio:.2f}:1 — 발표 영역이 페이지와 같은 "
+            "명도 대역에 묻혀 화면이 한 덩어리 회색으로 읽힌다"
+        )
+
+        dark = _theme_tokens(stage_html, "dark")
+        ratio = _contrast_ratio(resolve_color(dark["--frame"], dark), _canvas_rgb(dark))
+        assert ratio <= 1.8, (
+            f"다크 패널이 캔버스와 {ratio:.2f}:1 — 어두운 방에서 투사면 경계가 "
+            "드러난다"
+        )
+
+    @pytest.mark.parametrize("theme", _THEMES)
+    def test_the_layers_step_up_one_at_a_time(self, stage_html, theme):
+        """캔버스 → layer-01 → layer-02 가 **한 겹씩** 올라간다 (#186).
+
+        Carbon 의 레이어 모델을 쓰는 이유가 이것이다: 읽는 면(자막 컬럼)은
+        페이지보다 한 겹 위, 그 위에 뜨는 칩은 또 한 겹 위. 세 면이 같은 값이면
+        칩이 자기 배경에 묻히고, 너무 벌어지면 자막 컬럼이 따로 노는 패널처럼
+        보인다.
+
+        1.1:1 은 "한 겹 올라갔다" 의 하한, 2.0:1 은 "아직 같은 재질이다" 의
+        상한이다 (현재 두 테마 모두 1.20:1). 두 레이어를 같은 값으로 합치는
+        변이는 대비 테스트를 **전부 통과한다** — 글자는 여전히 읽히기 때문이다.
+        """
+        tokens = _theme_tokens(stage_html, theme)
+        one = resolve_color(tokens["--layer-01"], tokens)
+        two = resolve_color(tokens["--layer-02"], tokens)
+        assert one[3] == 1.0 and two[3] == 1.0, "레이어는 불투명이어야 한다"
+
+        for name, pair in (
+            ("layer-01 vs 캔버스", (one, _canvas_rgb(tokens))),
+            ("layer-02 vs layer-01", (two, one[:3])),
+        ):
+            ratio = _contrast_ratio(pair[0], pair[1])
+            assert 1.1 <= ratio <= 2.0, (
+                f"{theme} {name} 가 {ratio:.2f}:1 — 1.1~2.0 밖이다. 레이어는 "
+                "한 겹씩 올라가야 한다"
+            )
+
+    def test_the_caption_column_reads_on_a_layer_not_the_page(self, stage_html):
+        """자막 컬럼은 페이지가 아니라 **레이어** 위에 있다 (#186).
+
+        어두운 패널 옆에서 읽는 면이 밝아야 자막이 "종이" 로 읽힌다. 값이 아니라
+        **어느 토큰을 쓰는가**를 검사하므로, 다음 사람이 페이지 색으로 되돌리는
+        순간 막힌다 — 되돌려도 글자 대비는 그대로라 다른 테스트는 통과한다.
+        """
+        block = _rule_block(stage_html, ".caption-column")
+        match = re.search(r"(?<![-\w])background:\s*([^;]+);", block)
+        assert match is not None, block
+        assert match.group(1).strip() == "var(--layer-01)", (
+            f"자막 컬럼 배경이 `{match.group(1).strip()}` 이다 — 읽는 면은 "
+            "페이지보다 한 겹 위여야 한다"
+        )
+
+    @pytest.mark.parametrize("token", ["--canvas", "--frame"])
+    def test_the_light_theme_is_not_a_light_source(self, stage_html, token):
+        """라이트의 밝은 면들은 **스케일 맨 끝에서 시작하지 않는다** (#184).
+
+        `zinc-50` 캔버스로 출하했다가 **눈이 아프다**는 피드백을 받았다. 대비는
+        전부 통과했는데 — 당연하다. 대비는 "글자와 배경이 떨어지는가" 를 보지
+        **면이 내뿜는 빛의 절대량**을 보지 않는다. 그리고 이 화면은 모니터가
+        아니라 행사장 프로젝터다.
+
+        그래서 비율이 아니라 **상대 휘도 자체**에 상한을 둔다. 0.82 는 Carbon 의
+        라이트 테마 기본 배경 `gray-10`(0.905)을 막고 `gray-20`(0.745) 이하만
+        통과시킨다. Carbon Gray 10 테마를 그대로 쓰지 못하고 **역할은 두되 단계만
+        한 칸 내려 앵커한** 이유가 이 수치다 (#185).
+
+        **`--layer-01`(자막 컬럼)은 이 상한을 받지 않는다.** 그 면은 `gray-10`
+        (0.905)으로, 상한을 적용하면 걸린다. 면제하는 이유는 면적이다 — 자막
+        컬럼은 `--caption-width`(1/4 또는 1/3)로 **폭이 구조적으로 묶여 있는**
+        읽는 면이고, 눈이 아팠던 것은 캔버스와 패널이 **벽 전체**를 near-white
+        로 채웠을 때다. 패널이 어두워진 지금(#186) 화면이 내뿜는 빛의 총량은
+        어느 이전 버전보다 낮다. 넓은 면 둘만 묶어 두면 "읽는 면은 종이처럼
+        밝게" 와 "벽은 어둡게" 를 동시에 지킬 수 있다.
+        """
+        tokens = _theme_tokens(stage_html, "light")
+        surface = resolve_color(tokens[token], tokens)
+        assert surface[3] == 1.0, f"{token} 이 반투명하다: {tokens[token]}"
+        luminance = _relative_luminance(surface[:3])
+        assert luminance <= 0.82, (
+            f"라이트 {token} 의 상대 휘도가 {luminance:.3f} — 프로젝터에서 눈이 "
+            "아프다. gray-20(0.745) 이하여야 한다"
+        )
+
+    def test_the_connect_button_separates_from_the_frame_in_both_themes(
+        self, stage_html
+    ):
+        """버튼이 프레임과 구별돼야 한다 — 밝은 프레임 위 밝은 pill 은 1.2:1 이다.
+
+        글자 대비만 보면 "밝은 pill + 어두운 글자" 는 어느 프레임 위에서도
+        16:1 위로 통과한다. 그런데 밝은 프레임 위에서는 pill **자체**가 보이지 않아
+        오퍼레이터가 누를 것을 찾지 못한다 — 글자 대비가 잡아 주지 않는 실패다.
+        3:1 은 WCAG 1.4.11(비텍스트 대비) 기준이다.
+        """
+        block = _rule_block(stage_html, ".capture-button")
+        bg_decl = re.search(r"(?<![-\w])background:\s*([^;]+);", block)
+        assert bg_decl is not None, block
+
+        for theme in _THEMES:
+            tokens = _theme_tokens(stage_html, theme)
+            pill = resolve_color(bg_decl.group(1), tokens)
+            frame = resolve_color(tokens["--frame"], tokens)
+            ratio = _contrast_ratio(pill, frame[:3])
+            assert ratio >= 3.0, (
+                f"연결 버튼이 프레임과 {ratio:.2f}:1 ({theme}) — 1.4.11 은 3:1 이다. "
+                "pill 이 프레임에 묻혀 누를 것을 찾을 수 없다"
+            )
+
+    def test_the_focus_ring_separates_from_the_frame_in_both_themes(self, stage_html):
+        """포커스 링의 대비 상대는 pill 이 아니라 **프레임**이다 (#183).
+
+        `outline-offset: 3px` 이므로 링은 pill 바깥에 그려지고 **양쪽이 모두
+        프레임**이다. 그래서 "밝은 pill 과 잘 구별되는 색" 을 골라도 소용이 없다 —
+        고정 `#7cc4ff` 는 검정 프레임 위 9.80:1 이지만 밝은 라이트 프레임
+        위에서는 1.69:1 로 **사라진다.** 라이트 프레임이 도입된 #180 이 만들고도
+        아무 테스트가 잡지 못한 결함이다.
+
+        그래서 링도 테마 토큰이어야 하고, 두 프레임 위에서 각각 1.4.11 의 3:1 을
+        넘겨야 한다 (현재 다크 white 21.00:1 / 라이트 blue-70 4.56:1). Carbon 의
+        라이트 포커스 기본값 blue-60 은 `gray-30` 패널 위에서 **2.93:1** 로
+        미달이라 한 단계 더 어두운 blue-70 을 쓴다 (#185).
+        """
+        block = _rule_block(stage_html, ".capture-button:focus-visible")
+        outline = re.search(r"outline:\s*([^;]+);", block)
+        assert outline is not None, block
+        colour = re.search(
+            r"(var\(--[\w-]+\)|#[0-9a-fA-F]{6}|rgba?\([^)]*\))", outline.group(1)
+        )
+        assert colour is not None, f"포커스 링에 색 선언이 없다: {outline.group(1)!r}"
+
+        for theme in _THEMES:
+            tokens = _theme_tokens(stage_html, theme)
+            ring = resolve_color(colour.group(1), tokens)
+            frame = resolve_color(tokens["--frame"], tokens)
+            ratio = _contrast_ratio(ring, frame[:3])
+            assert ratio >= 3.0, (
+                f"포커스 링이 프레임과 {ratio:.2f}:1 ({theme}) — 1.4.11 은 3:1 이다. "
+                "키보드 사용자가 포커스 위치를 볼 수 없다"
+            )
+
+    @pytest.mark.parametrize("theme", _THEMES)
+    def test_the_surfaces_are_warm_but_not_yellow(self, stage_html, theme):
+        """면 색은 **따뜻하되 노랗지 않다** (#187).
+
+        "조금 더 따뜻한 미색, 단 누리끼리하지 않게, 약간 브라운" 이 요청이었다.
+        그 둘의 차이는 밝기도 대비도 아니라 **색상(hue)** 이고, 지금 있는 어떤
+        테스트도 색상을 보지 않는다 — 중립 회색으로 되돌리든 노란 미색을 넣든
+        대비·휘도·팔레트 가드가 **전부 통과한다.**
+
+          #faf7f0 (#180 의 미색, 퇴짜)   hue 42도  -> 노랑
+          warm-gray-20 #e5e0df          hue 10도  -> 적갈(브라운)
+          gray-20      #e0e0e0          hue  0도, R=B -> 완전 중립
+
+        그래서 두 가지를 검사한다.
+
+          1) **따뜻한가**: R > B. 중립 회색은 R == B 라 여기서 걸린다.
+          2) **노랗지 않은가**: hue <= 25도. 노랑은 40~70도 대역이다.
+
+        포커스 링은 제외한다 — 흰색(R == B)이고 면이 아니라 액센트다. 의미색
+        (yellow-30 경고)도 같은 이유로 토큰 목록에 없다.
+        """
+        tokens = _theme_tokens(stage_html, theme)
+        surfaces = (
+            "--canvas",
+            "--frame",
+            "--layer-01",
+            "--layer-02",
+            "--hairline",
+            "--ink",
+            "--button-bg",
+            "--button-ink",
+        )
+        for name in surfaces:
+            red, green, blue, _alpha = resolve_color(tokens[name], tokens)
+            if (red, green, blue) == (0, 0, 0):
+                continue  # 투사면 — 팔레트 밖의 의도된 예외
+            assert red > blue, (
+                f"{theme} {name} = {tokens[name]} 은 중립이거나 차갑다 "
+                f"(R={red:.0f} B={blue:.0f}). 면은 Warm Gray 여야 한다"
+            )
+            hue = 60 * (green - blue) / (red - blue)
+            assert hue <= 25, (
+                f"{theme} {name} = {tokens[name]} 의 색상이 {hue:.0f}도 — 노랑 "
+                "대역으로 넘어가 누리끼리해진다 (브라운은 0~25도)"
+            )
+
+    @pytest.mark.parametrize("token", ["--canvas", "--layer-01"])
+    def test_the_light_surfaces_carry_real_brown(self, stage_html, token):
+        """라이트의 **보이는 두 면**은 갈색기가 실제로 있어야 한다 (#188).
+
+        `test_the_surfaces_are_warm_but_not_yellow` 는 방향(R > B, hue <= 25도)만
+        본다. 그래서 Carbon `Warm Gray`(#187)도 통과한다 — 방향은 맞지만 채도가
+        10% 뿐이라 **"좀 더 브라운" 요청에는 못 미쳤다.** 방향만 검사하면 다음
+        사람이 중립에 가까운 램프로 되돌려도 아무도 모른다.
+
+        그래서 **양**도 본다. R - B 는 그 램프가 실제로 얼마나 갈색인지의 가장
+        단순한 척도다:
+
+          warm-gray-20 #e5e0df   R-B  6   (#187, 방향은 맞지만 약하다)
+          bronze-5     #e7d9d3   R-B 20   (#188, 현행)
+          bronze-3     #f6edea   R-B 12
+
+        10 은 그 둘을 가르는 선이다. 캔버스와 layer-01 만 보는 이유는 **그 둘이
+        화면에서 색으로 읽히는 면 전부**이기 때문이다 — 16:9 패널은 거의 검고,
+        구분선은 1px 이며, 어두운 토큰은 명도가 낮아 R - B 가 구조적으로 작다
+        (bronzeDark-1 은 4). 같은 기준을 어두운 값에 들이대면 통과할 수 있는
+        색이 없다.
+        """
+        tokens = _theme_tokens(stage_html, "light")
+        red, _green, blue, _alpha = resolve_color(tokens[token], tokens)
+        warmth = red - blue
+        assert warmth >= 10, (
+            f"라이트 {token} = {tokens[token]} 의 R-B 가 {warmth:.0f} — 갈색기가 "
+            "거의 없다. 중립에 가까운 램프로 되돌아간 것이다"
+        )
+
+    def test_every_colour_comes_from_the_declared_palette(self, stage_html):
+        """스타일시트의 모든 색이 **선언된 팔레트**에서 나와야 한다 (#183).
+
+        직접 고른 색으로 두 번 실패했다 — 반전 라이트(순백+순검정)와 미색
+        (`#faf7f0`/`#261e16`). 둘 다 대비는 전부 AA 를 넘겼으므로 **기존 대비
+        테스트는 전부 통과했다.** 미감 실패는 비율로 잡히지 않는다.
+
+        그래서 비율이 아니라 **출처**를 검사한다: 알파는 자유지만 기본 삼원색은
+        Tailwind 스케일의 한 단계여야 한다. 다음 사람이 "조금만 따뜻하게" 하려고
+        스케일 밖의 값을 끼워 넣는 순간 이 테스트가 막는다.
+
+        `#000000` 은 **의도된 예외**다 — 16:9 프레임은 발표 영상이 들어가는
+        투사면이고 레터박스 띠가 화면에서 사라져야 한다. UI 색이 아니므로
+        스케일에 속할 이유가 없다.
+
+        주석을 먼저 제거하는 이유: 토큰 주석이 **이력으로 구 색상을 인용**한다
+        (`#0b0b0c`, `#faf7f0`). 그 서술을 지우면 왜 바뀌었는지가 사라지므로,
+        테스트가 선언만 보도록 한다.
+        """
+        palette = {
+            # Radix Colors `bronze` — 중립이 아니라 **적갈 계열 뉴트럴**이다.
+            # Carbon 의 Warm Gray(채도 10%)로는 "더 브라운" 요청을 만족할 수
+            # 없었다. Carbon 팔레트에 브라운 램프가 없기 때문이다 (#188).
+            "bronze-3": (246, 237, 234),
+            "bronze-4": (239, 228, 223),
+            "bronze-5": (231, 217, 211),
+            "bronze-8": (194, 164, 153),
+            "bronze-9": (161, 128, 114),
+            # bronze dark — 어두운 면과 다크 테마 전체
+            "bronzeDark-1": (20, 17, 16),
+            "bronzeDark-2": (28, 25, 23),
+            "bronzeDark-3": (38, 34, 32),
+            "bronzeDark-4": (48, 42, 39),
+            "bronzeDark-5": (59, 51, 48),
+            "bronzeDark-6": (73, 62, 58),
+            "bronzeDark-7": (90, 76, 71),
+            "bronzeDark-8": (111, 95, 88),
+            "bronzeDark-12": (237, 224, 217),
+            # Radix `amber` — 자기 캡처 경고 (의미색이라 노란 것이 맞다)
+            "amberDark-9": (255, 197, 61),
+            "amberDark-8": (143, 100, 36),
+            "white": (255, 255, 255),
+            # 팔레트 밖의 유일한 예외: 투사면
+            "projection surface": (0, 0, 0),
+        }
+        allowed = set(palette.values())
+
+        style = re.search(r"<style>(.*?)</style>", stage_html, re.S)
+        assert style is not None, "stage.html 에 <style> 블록이 없다"
+        css = re.sub(r"/\*.*?\*/", "", style.group(1), flags=re.S)
+
+        found = {
+            resolve_color(raw)[:3]
+            for raw in re.findall(r"#[0-9a-fA-F]{6}|rgba?\([^)]*\)", css)
+        }
+        stray = sorted(tuple(round(c) for c in rgb) for rgb in found - allowed)
+        assert not stray, (
+            f"스케일 밖의 색이 있다: {stray}. 무대 테마의 색은 Tailwind "
+            f"zinc/amber/sky 에서만 가져온다 — 허용 목록은 이 테스트에 있다"
+        )
 
     def test_track_ended_is_registered_exactly_once(self, stage_html):
         """RL-009 — 벤더 프리픽스도, 중복 리스너도 두지 않는다.
