@@ -2282,6 +2282,25 @@ class TestStageSourceText:
         block = _rule_block(stage_html, ".caption-source")
         assert "display: none;" in block, block
 
+    def test_the_source_sits_above_the_translation_in_the_dom(self, stage_html):
+        """원문이 번역 **위**다 — 그리고 그 순서는 DOM 으로만 표현한다 (#192).
+
+        `flex-direction: column-reverse` 로 보이는 순서만 뒤집으면 DOM 과 화면이
+        어긋난다. 그러면 다음 사람이 둘 중 어느 쪽을 믿어야 하는지 알 수 없고,
+        드래그 선택·복사 순서가 화면과 달라진다. 순서를 DOM 하나로 못 박아 두면
+        읽는 순서와 보이는 순서가 영원히 같다.
+
+        `appendChild` 로 되돌리는 변이는 **다른 테스트를 전부 통과한다** — 두
+        노드가 다 있고 대비도 그대로이기 때문이다.
+        """
+        fn = self._js(stage_html, "setCurrentSource")
+        assert "insertBefore(node, currentEntry.firstChild)" in fn, fn
+        assert "currentEntry.appendChild(node)" not in fn, fn
+
+        entry = _rule_block(stage_html, ".caption-entry")
+        assert "column-reverse" not in entry, entry
+        assert "flex-direction: column;" in entry, entry
+
     def test_the_default_is_off_and_off_removes_the_attribute(self, stage_html):
         """기본은 꺼짐이고, 끄면 속성을 **지운다** (테마/로고 톤과 같은 규칙).
 

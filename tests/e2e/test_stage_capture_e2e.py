@@ -1022,6 +1022,37 @@ class TestStageSourceText:
         )
         assert self._visible(page) is False
 
+    def test_the_source_renders_above_the_translation(self, page, capture_server):
+        """화면에서 원문이 번역 **위**에 그려진다 (#192).
+
+        DOM 순서만 보면 `column-reverse` 로 뒤집힌 경우를 놓친다 — 실제 렌더
+        좌표로 확인한다.
+        """
+        _open_stage(page, capture_server)
+        page.evaluate(
+            "() => window.__emit('message', JSON.stringify("
+            "{text: '번역문입니다', source_text: 'this is the source'}))"
+        )
+        page.evaluate(
+            "() => window.__emit('control', JSON.stringify({show_source: true}))"
+        )
+        page.wait_for_function(
+            "() => { const el = document.querySelector('.caption-source');"
+            "  return !!el && getComputedStyle(el).display !== 'none'; }",
+            timeout=3000,
+        )
+
+        tops = page.evaluate(
+            "() => { const e = document.querySelector('.caption-entry');"
+            "  return [e.querySelector('.caption-source').getBoundingClientRect().top,"
+            "          e.querySelector('.caption-line').getBoundingClientRect().top]; }"
+        )
+        source_top, line_top = tops
+        assert source_top < line_top, (
+            f"원문이 번역 위에 있지 않다 (원문 top={source_top}, 번역 "
+            f"top={line_top})"
+        )
+
     def test_one_utterance_is_one_entry(self, page, capture_server):
         """발화 하나가 entry 하나 — 번역과 원문이 한 묶음으로 산다."""
         _open_stage(page, capture_server)
