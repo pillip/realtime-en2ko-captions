@@ -968,6 +968,202 @@ class TestStageThemeControl:
         assert _capture_state(page)["theme"] is None
 
 
+class TestStageSourceText:
+    """무대 원문 표시 — 실제로 그려지고, 실제로 켜지는가 (#189)."""
+
+    @staticmethod
+    def _source_texts(page) -> list[str]:
+        return page.eval_on_selector_all(
+            ".caption-source", "els => els.map(el => el.textContent)"
+        )
+
+    @staticmethod
+    def _visible(page) -> bool:
+        return page.evaluate(
+            "() => { const el = document.querySelector('.caption-source');"
+            "  return !!el && getComputedStyle(el).display !== 'none'; }"
+        )
+
+    def test_the_source_is_rendered_but_hidden_until_switched_on(
+        self, page, capture_server
+    ):
+        """노드는 기본에서도 채워지고, **보이기만** control 이 정한다.
+
+        켜는 순간 쌓여 있던 줄까지 함께 나타나야 한다 — 렌더 자체를 토글에
+        걸면 켠 뒤에 도착한 줄만 원문을 갖는다.
+        """
+        _open_stage(page, capture_server)
+        page.evaluate(
+            "() => window.__emit('message', JSON.stringify("
+            "{text: '안녕하세요', source_text: 'Hello there'}))"
+        )
+        page.wait_for_function(
+            "() => document.querySelectorAll('.caption-source').length === 1",
+            timeout=3000,
+        )
+        assert self._source_texts(page) == ["Hello there"]
+        assert self._visible(page) is False, "기본은 숨김이어야 한다"
+
+        page.evaluate(
+            "() => window.__emit('control', JSON.stringify({show_source: true}))"
+        )
+        page.wait_for_function(
+            "() => document.documentElement.getAttribute('data-source') === 'on'",
+            timeout=3000,
+        )
+        assert self._visible(page) is True, "이미 쌓인 줄이 함께 나타나야 한다"
+
+        page.evaluate(
+            "() => window.__emit('control', JSON.stringify({show_source: false}))"
+        )
+        page.wait_for_function(
+            "() => !document.documentElement.hasAttribute('data-source')",
+            timeout=3000,
+        )
+        assert self._visible(page) is False
+
+    def test_the_source_renders_above_the_translation(self, page, capture_server):
+        """화면에서 원문이 번역 **위**에 그려진다 (#192).
+
+        DOM 순서만 보면 `column-reverse` 로 뒤집힌 경우를 놓친다 — 실제 렌더
+        좌표로 확인한다.
+        """
+        _open_stage(page, capture_server)
+        page.evaluate(
+            "() => window.__emit('message', JSON.stringify("
+            "{text: '번역문입니다', source_text: 'this is the source'}))"
+        )
+        page.evaluate(
+            "() => window.__emit('control', JSON.stringify({show_source: true}))"
+        )
+        page.wait_for_function(
+            "() => { const el = document.querySelector('.caption-source');"
+            "  return !!el && getComputedStyle(el).display !== 'none'; }",
+            timeout=3000,
+        )
+
+        tops = page.evaluate(
+            "() => ["
+            "  document.querySelector('.caption-source')"
+            "    .getBoundingClientRect().top,"
+            "  document.querySelector('.caption-line')"
+            "    .getBoundingClientRect().top]"
+        )
+        source_top, line_top = tops
+        assert source_top < line_top, (
+            f"원문이 번역 위에 있지 않다 (원문 top={source_top}, 번역 "
+            f"top={line_top})"
+        )
+
+    def test_the_lines_interleave_as_flat_siblings(self, page, capture_server):
+        """원문·번역이 **평평한 형제**로 번갈아 쌓인다 (#192).
+
+        오퍼레이터 자막 화면과 같은 배치다. 순서가 어긋나면 어느 원문이 어느
+        번역의 것인지 화면에서 알 수 없게 된다.
+        """
+        _open_stage(page, capture_server)
+        for i in range(3):
+            page.evaluate(
+                "(i) => window.__emit('message', JSON.stringify("
+                "{text: '번역 ' + i, source_text: 'source ' + i}))",
+                i,
+            )
+        # 원문 노드는 즉시 생기지만 번역은 rAF 타자기로 점진적으로 드러난다 —
+        # 마지막 줄이 **확정될 때까지** 기다리지 않으면 중간 접두사를 읽는다.
+        page.wait_for_function(
+            "() => { const l = [...document.querySelectorAll('.caption-line')];"
+            "  return l.length === 3 && l[2].textContent === '번역 2'; }",
+            timeout=5000,
+        )
+        assert self._source_texts(page) == ["source 0", "source 1", "source 2"]
+
+        order = page.eval_on_selector_all(
+            "#caption-container > *",
+            "els => els.map(el => el.className + '|' + el.textContent)",
+        )
+        assert order == [
+            "caption-source|source 0",
+            "caption-line|번역 0",
+            "caption-source|source 1",
+            "caption-line|번역 1",
+            "caption-source|source 2",
+            "caption-line|번역 2",
+        ], order
+
+    def test_the_two_scales_move_independently(self, page, capture_server):
+        """원문 배율이 번역 글자 크기를 건드리지 않는다 — 그 반대도 마찬가지."""
+        _open_stage(page, capture_server)
+        page.evaluate(
+            "() => window.__emit('message', JSON.stringify("
+            "{text: '번역문', source_text: 'source'}))"
+        )
+        page.evaluate(
+            "() => window.__emit('control', JSON.stringify({show_source: true}))"
+        )
+        page.wait_for_function(
+            "() => { const el = document.querySelector('.caption-source');"
+            "  return !!el && getComputedStyle(el).display !== 'none'; }",
+            timeout=3000,
+        )
+
+        def sizes():
+            return page.evaluate(
+                "() => [getComputedStyle(document.querySelector('.caption-line'))"
+                ".fontSize,"
+                " getComputedStyle(document.querySelector('.caption-source'))"
+                ".fontSize]"
+            )
+
+        line_before, source_before = sizes()
+
+        page.evaluate(
+            "() => window.__emit('control', JSON.stringify({source_scale: 1.6}))"
+        )
+        page.wait_for_function(
+            "(before) => getComputedStyle(document.querySelector('.caption-source'))"
+            ".fontSize !== before",
+            arg=source_before,
+            timeout=3000,
+        )
+        line_after, source_after = sizes()
+        assert (
+            line_after == line_before
+        ), f"원문 배율이 번역 크기까지 바꿨다: {line_before} -> {line_after}"
+        assert float(source_after[:-2]) > float(source_before[:-2])
+
+        page.evaluate(
+            "() => window.__emit('control', JSON.stringify({caption_scale: 1.6}))"
+        )
+        page.wait_for_function(
+            "(before) => getComputedStyle(document.querySelector('.caption-line'))"
+            ".fontSize !== before",
+            arg=line_before,
+            timeout=3000,
+        )
+        _line_final, source_final = sizes()
+        assert source_final == source_after, "번역 배율이 원문 크기까지 바꿨다"
+
+    def test_an_invalid_show_source_does_not_flip_the_screen(
+        self, page, capture_server
+    ):
+        """배율만 담긴 control 하나가 원문을 꺼 버리면 안 된다."""
+        _open_stage(page, capture_server)
+        page.evaluate(
+            "() => window.__emit('control', JSON.stringify({show_source: true}))"
+        )
+        page.wait_for_function(
+            "() => document.documentElement.getAttribute('data-source') === 'on'"
+        )
+        page.evaluate(
+            "() => window.__emit('control', JSON.stringify({caption_scale: 1.2}))"
+        )
+        page.wait_for_timeout(300)
+        assert (
+            page.evaluate("() => document.documentElement.getAttribute('data-source')")
+            == "on"
+        )
+
+
 class TestLogoBarToneControl:
     """로고 바 배경을 오퍼레이터가 행사 중에 바꾼다 (#182).
 

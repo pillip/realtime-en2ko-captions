@@ -604,6 +604,131 @@ def _bootstrapped_lang(body: str, key: str) -> str:
     return m.group(1)
 
 
+class TestSourceReachesTheStageOverRealSse:
+    """원문과 표시 플래그가 **진짜 SSE 프레임**으로 무대에 닿는가 (#189).
+
+    단위 테스트는 Spy 로 publish 호출만 본다. 중간에 필드를 떨어뜨리는 계층이
+    하나라도 있으면(허용 목록, 직렬화, 프레임 조립) Spy 는 통과하고 화면만
+    비어 있게 된다 — "안 보인다" 는 그 모양으로 나타난다. 여기서는 실제
+    aiohttp 앱에 붙어 **수신한 바이트**를 읽는다.
+    """
+
+    @staticmethod
+    async def _read_frames(resp, count: int, timeout: float = 5.0) -> list[dict]:
+        import asyncio as _asyncio
+
+        frames: list[dict] = []
+        buf = b""
+
+        async def _pump():
+            nonlocal buf
+            while len(frames) < count:
+                chunk = await resp.content.read(256)
+                if not chunk:
+                    return
+                buf += chunk
+                while b"\n\n" in buf:
+                    raw, buf = buf.split(b"\n\n", 1)
+                    block = raw.decode()
+                    data = [
+                        ln[len("data:") :].strip()
+                        for ln in block.splitlines()
+                        if ln.startswith("data:")
+                    ]
+                    if not data:
+                        continue
+                    name = next(
+                        (
+                            ln[len("event:") :].strip()
+                            for ln in block.splitlines()
+                            if ln.startswith("event:")
+                        ),
+                        "message",
+                    )
+                    frames.append({"event": name, "data": json.loads(data[0])})
+
+        await _asyncio.wait_for(_pump(), timeout=timeout)
+        return frames
+
+    @pytest.mark.asyncio
+    async def test_the_caption_frame_carries_the_source_text(self, real_room_repo):
+        import asyncio as _asyncio
+
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from sse_broadcast import (
+            BroadcastManager,
+            broadcast_translation_for_room,
+            build_sse_app,
+        )
+
+        _db, room_repo, admin_id = real_room_repo
+        room_id = "src-int-1"
+        room_repo.create(room_id=room_id, name="원문 통합", created_by=admin_id)
+        mgr = BroadcastManager()
+        app = build_sse_app(broadcast_manager=mgr, room_repo=room_repo)
+
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get(f"/stream/{room_id}?lang=ko")
+            assert resp.status == 200
+
+            async def _publish():
+                # 구독이 등록될 때까지 한 틱 양보한다.
+                for _ in range(50):
+                    if mgr.has_viewers(room_id, "ko"):
+                        break
+                    await _asyncio.sleep(0.01)
+                await broadcast_translation_for_room(
+                    mgr,
+                    {"id": room_id, "primary_output_lang": "ko"},
+                    primary_translated="안녕하세요",
+                    source_text="hello there",
+                    source_lang="en",
+                    translate_fn=lambda *a: None,
+                )
+
+            task = _asyncio.create_task(_publish())
+            frames = await self._read_frames(resp, 1)
+            await task
+
+        caption = frames[0]["data"]
+        assert caption["text"] == "안녕하세요"
+        assert caption["source_text"] == "hello there", (
+            f"SSE 프레임에 원문이 없다: {caption!r} — 무대는 이 경로 말고 원문에 "
+            "닿을 길이 없다"
+        )
+        assert caption["source_lang"] == "en"
+
+    @pytest.mark.asyncio
+    async def test_the_control_frame_carries_show_source_and_scale(
+        self, real_room_repo
+    ):
+        """접속 시점 스냅샷에 두 필드가 실려야 한다.
+
+        무대가 세션 도중에 새로고침되면 이 스냅샷이 유일한 복원 경로다 —
+        여기서 빠지면 켜 둔 원문이 새로고침마다 꺼진다.
+        """
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from sse_broadcast import BroadcastManager, build_sse_app
+
+        _db, room_repo, admin_id = real_room_repo
+        room_id = "src-int-2"
+        room_repo.create(room_id=room_id, name="원문 스냅샷", created_by=admin_id)
+        mgr = BroadcastManager()
+        mgr.set_control(room_id, show_source=True, source_scale=1.3)
+        app = build_sse_app(broadcast_manager=mgr, room_repo=room_repo)
+
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get(f"/stream/{room_id}?lang=ko")
+            frames = await self._read_frames(resp, 1)
+
+        assert frames[0]["event"] == "control", frames[0]
+        control = frames[0]["data"]
+        assert control["show_source"] is True, control
+        assert control["source_scale"] == 1.3, control
+
+
 class TestPublishChannelMatchesRenderedChannel:
     """AC2 의 통합판 — 기록 → 새 페이지 렌더 → publish 채널 일치."""
 

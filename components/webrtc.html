@@ -101,6 +101,25 @@
       letter-spacing: 0.08em;
     }
 
+    /* #189: 체크박스 + 글자가 한 줄로 붙는 토글 라벨. `.control-group label` 은
+       블록이라 체크박스가 위에 떨어진다. 색/크기는 그 규칙을 그대로 상속해
+       패널 안에서 다른 라벨들과 같은 위계로 읽힌다 — 새 색을 만들지 않으므로
+       "근거 없는 준수 추정"(RL-018)을 늘리지 않는다. */
+    .toggle-label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      text-transform: none;
+      letter-spacing: normal;
+    }
+    .toggle-label input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      margin: 0;
+      cursor: pointer;
+    }
+
     .control-group button, .control-group select {
       width: 100%;
       padding: 14px 16px;
@@ -763,6 +782,24 @@
       <div class="control-hint" id="stageScaleHint">세션을 시작하면 적용됩니다.</div>
     </div>
 
+    <!-- #189: 무대 원문. 위의 "원문 표시"/"원문 글자 크기"는 오퍼레이터
+         **자기 화면**용이고 이쪽은 행사장 무대용이다 — 자막 크기와 같은 구분이다.
+         배율을 번역과 따로 두는 이유: 원문은 번역보다 작게 두는 것이 보통이라
+         한 배율로 묶으면 둘 중 하나가 늘 어중간해진다.
+         기본이 꺼짐인 이유는 `logo_bar_tone` 의 `auto` 와 같다 — 이 기능이 없던
+         룸의 무대 화면이 말없이 바뀌지 않아야 한다. -->
+    <div class="control-group">
+      <label class="toggle-label" for="stageSourceToggle">
+        <input type="checkbox" id="stageSourceToggle">
+        <span>무대 원문 표시</span>
+      </label>
+      <label for="stageSourceSlider">무대 원문 크기</label>
+      <input type="range" id="stageSourceSlider" min="0.8" max="1.6" value="1" step="0.1"
+             class="slider" aria-describedby="stageSourceHint" aria-valuetext="1.0배">
+      <span id="stageSourceValue" aria-hidden="true">1.0×</span>
+      <div class="control-hint" id="stageSourceHint">세션을 시작하면 적용됩니다.</div>
+    </div>
+
     <!-- #178: 무대 테마. 자막 크기와 같은 경로(`stage_control` → SSE `control`)
          이고 같은 성질이다 — **세션 한정**이라 서버 재시작 시 다크로 돌아간다.
          무대 페이지에는 조작 UI 가 없으므로(NFR-025/NFR-030) 선택은 여기서만
@@ -994,6 +1031,10 @@ try {
   const stageScaleSlider = document.getElementById('stageScaleSlider');
   const stageScaleValue = document.getElementById('stageScaleValue');
   const stageScaleHint = document.getElementById('stageScaleHint');
+  const stageSourceToggle = document.getElementById('stageSourceToggle');
+  const stageSourceSlider = document.getElementById('stageSourceSlider');
+  const stageSourceValue = document.getElementById('stageSourceValue');
+  const stageSourceHint = document.getElementById('stageSourceHint');
   // #178: 무대 테마 / 발표자료 해제 컨트롤. **여기서 선언한다** — 부트스트랩이
   // `updateStageControlHints()` 를 파일 뒤쪽보다 먼저 부르는데, `function` 선언은
   // 호이스팅되지만 `const` 는 TDZ 에 있어 ReferenceError 로 컴포넌트 전체가 죽는다.
@@ -1039,6 +1080,14 @@ try {
   // 수십 건의 control 방송이 되면 그 룸의 모든 뷰어에게 그대로 fan-out 된다.
   const STAGE_SCALE_SEND_DELAY_MS = 150;
   let stageScaleSendTimer = null;
+  let stageSourceSendTimer = null;
+  // 소켓이 닫혀 있는 동안 **사용자가 실제로 만진** 무대 원문 컨트롤 (#192).
+  //
+  // localStorage 폴백과 구분하기 위해 존재한다. 폴백은 "지난번에 이랬다" 일
+  // 뿐이고 그것을 로드 때 서버로 밀어 올리면 공유 룸에서 **다른 오퍼레이터의
+  // 설정을 덮어쓴다** (`test_a_room_without_control_state_sends_nothing_on_load`).
+  // 반면 이번 페이지에서 직접 누른 것은 아직 전달되지 못한 **지시**다.
+  const pendingStageSource = { show: false, scale: false };
 
   // localStorage에서 설정 불러오기
   const loadSettings = () => {
@@ -1083,6 +1132,10 @@ try {
     // 아무것도 전송하지 않는 것이 중요하다: 자동 전송은 이미 그 룸을 보고 있는
     // 다른 오퍼레이터의 설정을 조용히 되돌린다.
     showStageScale(localStorage.getItem('stageCaptionScale') || CAPTION_SCALE_DEFAULT);
+    // #189: 원문 배율/표시도 같은 폴백 규칙을 따른다. 서버가 들고 있는 값이
+    // 있으면 auth_success 가 곧바로 덮어쓴다.
+    showStageSourceScale(localStorage.getItem('stageSourceScale') || CAPTION_SCALE_DEFAULT);
+    showStageShowSource(localStorage.getItem('stageShowSource') === '1');
     updateStageScaleHint();
     updateStageControlHints();  // #178: 테마/해제 컨트롤도 같은 상태를 따른다
 
@@ -1306,6 +1359,10 @@ try {
     stageScaleHint.textContent = isTranslationSocketOpen()
       ? '무대·뷰어 화면에 바로 적용됩니다.'
       : '세션을 시작하면 적용됩니다.';
+    if (!stageSourceHint) return;
+    stageSourceHint.textContent = isTranslationSocketOpen()
+      ? '무대 화면에 바로 적용됩니다.'
+      : '세션을 시작하면 적용됩니다.';
   }
 
   // 표시만 바꾼다 — **전송하지 않는다.** 서버 스냅샷(auth_success)과 ack 가
@@ -1326,6 +1383,47 @@ try {
       stageScaleSlider.setAttribute('aria-valuetext', `${clamped.toFixed(1)}배`);
     }
     if (stageScaleValue) stageScaleValue.textContent = `${clamped.toFixed(1)}×`;
+  }
+
+  // 표시만 바꾼다 — showStageScale 과 같은 규칙 (전송하면 서버 값이 되돌아온다).
+  function showStageSourceScale(value) {
+    const scale = Number(value);
+    if (!Number.isFinite(scale)) return;
+    const clamped = Math.min(CAPTION_SCALE_MAX, Math.max(CAPTION_SCALE_MIN, scale));
+    if (stageSourceSlider) {
+      stageSourceSlider.value = String(clamped);
+      stageSourceSlider.setAttribute('aria-valuetext', `${clamped.toFixed(1)}배`);
+    }
+    if (stageSourceValue) stageSourceValue.textContent = `${clamped.toFixed(1)}×`;
+  }
+
+  function showStageShowSource(value) {
+    if (typeof value !== 'boolean' || !stageSourceToggle) return;
+    stageSourceToggle.checked = value;
+  }
+
+  function sendStageSourceScale() {
+    stageSourceSendTimer = null;
+    if (!isTranslationSocketOpen() || !stageSourceSlider) return;
+    openaiWebSocket.send(JSON.stringify({
+      type: 'stage_control',
+      source_scale: Number(stageSourceSlider.value)
+    }));
+    console.log('[Control] 무대 원문 배율 전송:', stageSourceSlider.value);
+  }
+
+  function queueStageSourceScale() {
+    if (stageSourceSendTimer !== null) clearTimeout(stageSourceSendTimer);
+    stageSourceSendTimer = setTimeout(sendStageSourceScale, STAGE_SCALE_SEND_DELAY_MS);
+  }
+
+  function sendStageShowSource(value) {
+    if (!isTranslationSocketOpen()) return;
+    openaiWebSocket.send(JSON.stringify({
+      type: 'stage_control',
+      show_source: value
+    }));
+    console.log('[Control] 무대 원문 표시 전송:', value);
   }
 
   function sendStageControl() {
@@ -1464,6 +1562,38 @@ try {
         console.warn('[Control] 배율 로컬 저장 실패:', err);
       }
       queueStageControl();
+    };
+  }
+
+  // #189: 무대 원문. 배율은 슬라이더와 같은 디바운스 경로를 쓰고, 표시 토글은
+  // 체크박스라 **즉시** 보낸다 — 토글은 연속 입력이 아니므로 디바운스가 지연만
+  // 더한다.
+  if (stageSourceSlider) {
+    stageSourceSlider.oninput = (e) => {
+      showStageSourceScale(e.target.value);
+      try {
+        localStorage.setItem('stageSourceScale', String(Number(e.target.value)));
+      } catch (err) {
+        console.warn('[Control] 원문 배율 로컬 저장 실패:', err);
+      }
+      // 소켓이 닫혀 있으면 전송이 조용히 건너뛰어진다 — 그 사실을 기억해 두고
+      // 세션이 열릴 때 흘려보낸다 (#192).
+      if (!isTranslationSocketOpen()) pendingStageSource.scale = true;
+      queueStageSourceScale();
+    };
+  }
+  if (stageSourceToggle) {
+    stageSourceToggle.onchange = (e) => {
+      const on = !!e.target.checked;
+      try {
+        localStorage.setItem('stageShowSource', on ? '1' : '0');
+      } catch (err) {
+        console.warn('[Control] 원문 표시 로컬 저장 실패:', err);
+      }
+      if (!isTranslationSocketOpen()) pendingStageSource.show = true;
+      sendStageShowSource(on);
+      // 전송이 건너뛰어졌어도 힌트는 현재 상태를 말해야 한다.
+      updateStageScaleHint();
     };
   }
 
@@ -2373,6 +2503,36 @@ try {
         if (data.control && typeof data.control.caption_scale === 'number') {
           showStageScale(data.control.caption_scale);
         }
+        // #189/#192: 서버가 이 룸의 값을 들고 있으면 그것이 우선이다.
+        const serverKnowsSourceScale =
+          !!data.control && typeof data.control.source_scale === 'number';
+        const serverKnowsShowSource =
+          !!data.control && typeof data.control.show_source === 'boolean';
+        if (serverKnowsSourceScale) showStageSourceScale(data.control.source_scale);
+        if (serverKnowsShowSource) showStageShowSource(data.control.show_source);
+
+        // 세션 시작 **전에** 누른 조작을 이제서야 흘려보낸다 (#192).
+        //
+        // 이것이 없으면 "원문이 안 보인다" 가 된다: 소켓이 없는 동안의 토글은
+        // 전송이 조용히 건너뛰어지고 localStorage 에만 남는데, 서버는 그 값을
+        // 모르니 위에서 복원할 것도 없다 — **패널은 켜진 채, 무대는 끝까지
+        // 꺼짐.** 체크박스가 켜져 있는데 화면에 원문이 없는, 설명할 수 없는
+        // 상태가 된다.
+        //
+        // **localStorage 폴백은 밀어 올리지 않는다.** 그것은 "지난번에 이랬다"
+        // 일 뿐이고, 로드만으로 서버에 쓰면 공유 룸에서 다른 오퍼레이터의
+        // 설정을 덮어쓴다. 이번 페이지에서 **직접 누른 것**만 보낸다.
+        //
+        // 서버가 이미 아는 필드도 보내지 않는다 — 룸의 현재 상태가 권위이고,
+        // 보내면 서버 값이 곧바로 서버로 되돌아가는 왕복이 된다.
+        if (!serverKnowsShowSource && pendingStageSource.show && stageSourceToggle) {
+          sendStageShowSource(!!stageSourceToggle.checked);
+        }
+        if (!serverKnowsSourceScale && pendingStageSource.scale) {
+          sendStageSourceScale();
+        }
+        pendingStageSource.show = false;
+        pendingStageSource.scale = false;
         updateStageScaleHint();
         break;
 
@@ -2382,6 +2542,12 @@ try {
         // 바꾸면 ack 하나가 무한 왕복이 된다.
         if (typeof data.caption_scale === 'number') {
           showStageScale(data.caption_scale);
+        }
+        if (typeof data.source_scale === 'number') {
+          showStageSourceScale(data.source_scale);
+        }
+        if (typeof data.show_source === 'boolean') {
+          showStageShowSource(data.show_source);
         }
         break;
 

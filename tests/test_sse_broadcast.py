@@ -561,6 +561,49 @@ class TestLazyTranslationAndNonBlocking:
 # ---------------------------------------------------------------------------
 # RL-006 — error path doesn't leak repository exceptions
 # ---------------------------------------------------------------------------
+class TestSourceTextRidesEveryChannel:
+    """원문이 모든 자막 채널에 실린다 (#189).
+
+    무대 화면은 SSE 말고 전사에 닿을 길이 없다 — 오퍼레이터 브라우저가 들고
+    있는 값이라 무대는 서버가 실어 보내 주지 않으면 원문을 영원히 모른다.
+    그리고 무대가 **어느 언어를 구독하든** 끊기지 않아야 하므로, 메인 채널과
+    2차 언어 채널 둘 다 실어야 한다.
+    """
+
+    @pytest.mark.asyncio
+    async def test_primary_and_secondary_channels_both_carry_the_source(self):
+        from sse_broadcast import BroadcastManager, broadcast_translation_for_room
+
+        mgr = BroadcastManager()
+        room = {"id": "r1", "primary_output_lang": "ko"}
+        ko_q = await mgr.register_viewer("r1", "ko")
+        en_q = await mgr.register_viewer("r1", "en")
+
+        async def fake_translate(text, src, dst):
+            return "Hello" if dst == "en" else "안녕"
+
+        await broadcast_translation_for_room(
+            mgr,
+            room,
+            primary_translated="안녕",
+            source_text="hi there",
+            source_lang="en",
+            translate_fn=fake_translate,
+        )
+
+        primary = await asyncio.wait_for(ko_q.get(), timeout=0.2)
+        assert primary["source_text"] == "hi there"
+        assert primary["source_lang"] == "en"
+
+        secondary = await asyncio.wait_for(en_q.get(), timeout=1.0)
+        assert secondary["lang"] == "en"
+        assert secondary["source_text"] == "hi there", (
+            "2차 언어 채널에 원문이 없다 — 그 언어를 구독한 무대에서는 원문이 "
+            "통째로 사라진다"
+        )
+        assert secondary["source_lang"] == "en"
+
+
 class TestNoErrorLeakOnRepoFailure:
     @pytest.mark.asyncio
     async def test_repo_exception_returns_generic_404(self, db_manager):

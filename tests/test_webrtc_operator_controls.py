@@ -147,6 +147,129 @@ class TestScaleTravelsOverTheSocket:
 # ---------------------------------------------------------------------------
 # 슬라이더 마크업
 # ---------------------------------------------------------------------------
+class TestStageSourceControls:
+    """무대 원문 표시/배율 — 보내는 쪽(오퍼레이터) 계약 (#189)."""
+
+    @staticmethod
+    def _fn(html: str, name: str) -> str:
+        body = re.search(rf"function {name}\([^)]*\) \{{(.*?)\n  \}}", html, re.S)
+        assert body is not None, f"{name}() not found"
+        return body.group(1)
+
+    def test_show_helpers_never_send(self, html: str):
+        """표시 함수는 **전송하지 않는다** — 서버 스냅샷과 ack 가 부르기 때문이다.
+
+        여기서 보내면 서버가 내려준 값이 곧바로 서버로 되돌아가는 무한 왕복이
+        된다. `showStageScale` 이 이미 같은 규칙을 지고 있고, 원문 쪽도 같아야
+        한다 — 한쪽만 어기면 그 한쪽에서만 왕복이 생긴다.
+        """
+        for name in ("showStageSourceScale", "showStageShowSource"):
+            fn = self._fn(html, name)
+            assert "openaiWebSocket.send" not in fn, (name, fn)
+            assert "stage_control" not in fn, (name, fn)
+            # 직접 보내지 않더라도 **전송 함수를 부르면** 같은 왕복이 생긴다.
+            # 리터럴 `send` 만 세는 가드는 그 한 줄을 그대로 통과시킨다.
+            calls = re.findall(r"\b(send|queue)Stage\w*\(", fn)
+            assert not calls, (name, calls, fn)
+
+    def test_the_toggle_sends_immediately_and_the_slider_debounces(self, html: str):
+        """토글은 즉시, 슬라이더는 디바운스.
+
+        체크박스는 연속 입력이 아니므로 디바운스가 지연만 더한다. 슬라이더는
+        드래그 한 번에 수십 번 발화하므로 디바운스가 필요하다 — 번역 배율이
+        이미 그렇게 돼 있다.
+        """
+        slider = self._fn(html, "queueStageSourceScale")
+        assert "setTimeout" in slider and "STAGE_SCALE_SEND_DELAY_MS" in slider, slider
+
+        toggle = self._fn(html, "sendStageShowSource")
+        assert "openaiWebSocket.send" in toggle, toggle
+        assert "setTimeout" not in toggle, toggle
+
+    def test_the_toggle_sends_a_real_bool(self, html: str):
+        """서버가 `bool` 만 받는다 — `checked` 를 그대로 흘리면 거절될 수 있다."""
+        handler = re.search(
+            r"stageSourceToggle\.onchange = \(e\) => \{(.*?)\n    \};", html, re.S
+        )
+        assert handler is not None, "토글 핸들러가 없다"
+        assert "!!e.target.checked" in handler.group(1), handler.group(1)
+
+    def test_the_panel_pushes_its_state_when_the_server_knows_nothing(self, html: str):
+        """세션 시작 전에 켜 둔 토글이 **무대에 전달된다** (#192).
+
+        이것이 없으면 "원문이 안 보인다" 가 된다. 세션 시작 **전에** 토글을
+        켜면 소켓이 없어 전송이 조용히 건너뛰어지고 localStorage 에만 남는다.
+        세션을 시작해도 서버는 그 값을 모르니 `auth_success` 에서 복원할 것이
+        없고 — **패널은 켜진 채인데 무대는 끝까지 꺼져 있다.** 오퍼레이터
+        입장에서는 체크박스가 켜져 있는데 화면에 원문이 없는, 설명할 수 없는
+        상태다.
+
+        서버가 아는 값이 있으면 그쪽이 우선이다(룸의 현재 상태가 권위). 모를
+        때만 패널 값을 밀어 올린다.
+        """
+        block = re.search(r"case 'auth_success':(.*?)\n      case ", html, re.S)
+        assert block is not None, "auth_success 분기를 찾지 못했다"
+        body = block.group(1)
+
+        assert "serverKnowsShowSource" in body, body
+        assert "serverKnowsSourceScale" in body, body
+        # 서버가 아는 경우에는 밀어 올리지 않는다 — 안 그러면 왕복이 된다.
+        assert "!serverKnowsShowSource && pendingStageSource.show" in body, body
+        assert "!serverKnowsSourceScale && pendingStageSource.scale" in body, body
+        assert "sendStageShowSource(!!stageSourceToggle.checked)" in body, body
+        # 한 번 흘려보낸 지시는 비운다 — 재인증마다 다시 쏘면 왕복이 된다.
+        assert "pendingStageSource.show = false;" in body, body
+        assert "pendingStageSource.scale = false;" in body, body
+
+    def test_only_a_real_gesture_is_pending_not_the_local_fallback(self, html: str):
+        """밀어 올리는 것은 **이번 페이지의 조작**뿐이다 (#192).
+
+        localStorage 폴백은 "지난번에 이랬다" 일 뿐이다. 그것을 로드만으로 서버에
+        쓰면 공유 룸에서 **다른 오퍼레이터의 설정을 덮어쓴다** — 기존 계약
+        (`test_a_room_without_control_state_sends_nothing_on_load`)이 막고 있는
+        바로 그 동작이다. 조작 핸들러 안에서만 pending 이 서야 둘이 구분된다.
+        """
+        assert "const pendingStageSource = { show: false, scale: false };" in html
+
+        toggle = re.search(
+            r"stageSourceToggle\.onchange = \(e\) => \{(.*?)\n    \};", html, re.S
+        )
+        assert toggle is not None
+        assert (
+            "if (!isTranslationSocketOpen()) pendingStageSource.show = true;"
+            in toggle.group(1)
+        ), toggle.group(1)
+
+        slider = re.search(
+            r"stageSourceSlider\.oninput = \(e\) => \{(.*?)\n    \};", html, re.S
+        )
+        assert slider is not None
+        assert (
+            "if (!isTranslationSocketOpen()) pendingStageSource.scale = true;"
+            in slider.group(1)
+        ), slider.group(1)
+
+        # 복원 경로(loadSettings)는 pending 을 세우지 않는다.
+        restore = re.search(r"const loadSettings = \(\) => \{(.*?)\n  \};", html, re.S)
+        assert restore is not None
+        assert "pendingStageSource" not in restore.group(1), restore.group(1)
+
+    def test_the_stage_source_fields_are_restored_from_the_server_snapshot(
+        self, html: str
+    ):
+        """서버가 들고 있는 값이 localStorage 폴백보다 우선한다.
+
+        `show_source` 는 **boolean** 으로 판정해야 한다 — falsy 로 분기하면
+        서버가 "꺼짐" 을 들고 있을 때 그 값이 무시되고, 오퍼레이터 패널만 켜진
+        채로 무대와 어긋난다.
+        """
+        assert "typeof data.control.source_scale === 'number'" in html
+        assert "typeof data.control.show_source === 'boolean'" in html
+        assert (
+            "typeof data.show_source === 'boolean'" in html
+        ), "ack 경로에 boolean 판정이 없다"
+
+
 class TestStageScaleSliderMarkup:
     def test_range_bounds_and_step(self, html: str):
         attrs = _input_attrs(html, _SLIDER_ID)
@@ -161,22 +284,41 @@ class TestStageScaleSliderMarkup:
         )
         assert "slider" in attrs.get("class", "").split()
 
-    def test_exactly_one_new_range_input_was_added(self, html: str):
-        """이 범위/스텝을 가진 range 입력은 정확히 하나다."""
+    def test_the_two_stage_sliders_share_one_range(self, html: str):
+        """무대용 슬라이더는 **둘**이고, 둘이 같은 범위를 쓴다 (#189).
+
+        처음에는 "0.8–1.6 range 는 정확히 하나" 였다. 무대 원문 배율이 생기며
+        둘이 됐는데, 중요한 것은 개수가 아니라 **두 슬라이더가 같은 범위를
+        쓴다**는 사실이다 — 범위가 갈라지면 오퍼레이터가 슬라이더마다 끝값을
+        따로 외워야 하고, 서버는 `_coerce_caption_scale` 하나로 둘 다 검증하므로
+        UI 만 어긋난 채 조용히 거절당한다.
+
+        px 슬라이더(오퍼레이터 자기 화면용) 둘은 대상이 달라 여기 섞이지 않는다.
+        """
         ranges = re.findall(r"<input\b[^>]*type=\"range\"[^>]*>", html)
-        matching = [
-            tag
-            for tag in ranges
-            if 'min="0.8"' in tag and 'max="1.6"' in tag and 'step="0.1"' in tag
-        ]
-        assert len(matching) == 1, (
-            f"expected exactly one 0.8–1.6 range input, found {len(matching)}: "
-            f"{matching!r}"
+        assert len(ranges) == 4, (
+            f"설정 패널의 슬라이더는 넷이어야 한다 (번역 px, 원문 px, 무대 자막 "
+            f"배율, 무대 원문 배율) — {len(ranges)}개 발견"
         )
-        assert len(ranges) == 3, (
-            f"the settings panel should hold exactly three sliders (translation "
-            f"px, original px, stage scale), found {len(ranges)}"
+
+        stage = {}
+        for element_id in ("stageScaleSlider", "stageSourceSlider"):
+            tag = next((t for t in ranges if f'id="{element_id}"' in t), None)
+            assert tag is not None, f"{element_id} range 입력이 없다"
+            stage[element_id] = {
+                name: re.search(rf'{name}="([^"]+)"', tag).group(1)
+                for name in ("min", "max", "step")
+            }
+
+        assert stage["stageScaleSlider"] == stage["stageSourceSlider"], (
+            f"무대 슬라이더 둘의 범위가 다르다: {stage!r} — 서버는 둘을 같은 "
+            "규칙으로 검증한다"
         )
+        assert stage["stageScaleSlider"] == {
+            "min": "0.8",
+            "max": "1.6",
+            "step": "0.1",
+        }, stage["stageScaleSlider"]
 
     @pytest.mark.parametrize(
         ("element_id", "expected"),

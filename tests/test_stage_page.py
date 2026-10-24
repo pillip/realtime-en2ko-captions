@@ -463,8 +463,13 @@ class TestStageHtmlMarkup:
         """
         dark = custom_properties(stage_html, ":root")
         light = custom_properties(stage_html, ':root[data-theme="light"]')
-        # 테마와 무관한 레이아웃 토큰은 덮을 필요가 없다.
-        themed = {k for k in dark if k not in ("--caption-width", "--caption-scale")}
+        # 테마와 무관한 레이아웃 토큰은 덮을 필요가 없다. 두 배율은 오퍼레이터가
+        # control 로 미는 값이라 테마와 아무 상관이 없다 (#189).
+        themed = {
+            k
+            for k in dark
+            if k not in ("--caption-width", "--caption-scale", "--source-scale")
+        }
         missing = sorted(themed - set(light))
         assert not missing, f"라이트 테마가 덮지 않은 토큰: {missing}"
 
@@ -2217,6 +2222,193 @@ class TestStageControlChannel:
         assert "includes(next)" in body, body
         assert "CONFIG.lang_pinned" in body, body
         assert "next === currentLang" in body, body
+
+
+class TestStageSourceText:
+    """무대 원문 표시 (#189) — 구조·토큰·제어 경로."""
+
+    @pytest.fixture
+    def stage_html(self) -> str:
+        assert _STAGE_TEMPLATE.exists(), f"stage.html missing: {_STAGE_TEMPLATE}"
+        return _STAGE_TEMPLATE.read_text(encoding="utf-8")
+
+    @staticmethod
+    def _js(stage_html: str, name: str) -> str:
+        body = re.search(
+            rf"function {name}\(([^)]*)\) \{{(.*?)\n    \}}", stage_html, re.S
+        )
+        assert body is not None, f"{name}() not found"
+        return body.group(2)
+
+    def test_the_lines_are_flat_siblings_like_the_operator_caption_view(
+        self, stage_html
+    ):
+        """원문과 번역은 **평평한 형제**다 — 오퍼레이터 자막 화면과 같은 배치 (#192).
+
+        래퍼로 묶었다가(#189) 되돌렸다. 래퍼의 근거였던 두 가지가 평평한 배치
+        에서도 성립하기 때문이다:
+
+          - "현재 줄" 판정: 순서가 원문 → 번역이라 **번역이 늘 마지막 자식**이다.
+            `:last-child` 가 그대로 맞는다.
+          - DOM 상한: 요소 수 제한이 목적이지 발화 수 보존이 아니다. 경계에서
+            짝 없는 줄이 한 개 남을 수 있지만 잘려 나가는 쪽은 언제나 맨 위이고
+            화면은 하단 고정이다.
+
+        대신 구조가 한 겹 얇아지고 오퍼레이터 화면과 같은 모양이 된다.
+        """
+        fn = self._js(stage_html, "_ensureCurrentLine")
+        assert "container.appendChild(div)" in fn, fn
+        assert "caption-entry" not in stage_html, "래퍼가 남아 있다"
+        assert ".caption-container .caption-line:last-child" in stage_html
+
+    def test_the_source_sits_closer_to_its_own_translation(self, stage_html):
+        """원문과 번역이 **한 덩어리**로 묶여 보인다 (#192).
+
+        컨테이너 `gap` 하나로는 "원문↔번역"(가깝게)과 "발화↔발화"(멀게)를
+        구분할 수 없다 — gap 은 모든 형제에 똑같이 걸린다. 세로 margin 은
+        RL-012 로 금지돼 있으므로 **각 줄이 자기 아래 여백을 padding 으로**
+        들고 간다.
+
+        그 여백을 원문이 직접 들고 있는 것이 핵심이다: 원문이 꺼지면
+        `display: none` 과 함께 사라져 발화 간격이 저절로 원래대로 돌아온다.
+        `.caption-source + .caption-line` 쪽에 걸면 **원문을 한 번도 켜지 않는
+        룸의 화면까지** 이 기능 때문에 바뀐다.
+        """
+        container = _rule_block(stage_html, ".caption-container")
+        assert "gap: 0;" in container, container
+
+        source = _rule_block(stage_html, ".caption-source")
+        line = _rule_block(stage_html, ".caption-line")
+        pad = lambda block: int(  # noqa: E731
+            re.search(r"padding-bottom:\s*(\d+)px", block).group(1)
+        )
+        assert pad(source) < pad(line), (
+            f"원문 아래 여백({pad(source)}px)이 발화 간격({pad(line)}px)보다 "
+            "좁아야 한 덩어리로 묶인다"
+        )
+        # 마지막 줄까지 20px 를 들고 있으면 최신 자막이 바닥에서 들려 보인다.
+        assert "padding-bottom: 0;" in _rule_block(
+            stage_html, ".caption-container .caption-line:last-child"
+        )
+
+    def test_the_source_node_is_filled_even_while_hidden(self, stage_html):
+        """꺼져 있어도 노드는 채운다 — 켜는 순간 쌓인 줄까지 나타나야 한다.
+
+        `show_source` 를 렌더 조건으로 쓰면 켠 뒤에 도착하는 줄만 원문을 갖고,
+        오퍼레이터는 "절반만 원문이 있는" 화면을 보게 된다. 표시 여부는 CSS 가
+        혼자 정하고 JS 는 내용만 채운다.
+        """
+        fn = self._js(stage_html, "setCurrentSource")
+        assert "show_source" not in fn, fn
+        assert "data-source" not in fn, fn
+        assert "caption-source" in fn, fn
+        # 빈 원문으로 노드를 만들면 entry 의 gap 만 벌린다.
+        assert "!text" in fn, fn
+
+        assert ':root[data-source="on"] .caption-source { display: block; }' in (
+            stage_html
+        ), "표시 규칙이 CSS 한 곳에 있지 않다"
+        block = _rule_block(stage_html, ".caption-source")
+        assert "display: none;" in block, block
+
+    def test_the_source_sits_above_the_translation_in_the_dom(self, stage_html):
+        """원문이 번역 **위**다 — 그리고 그 순서는 DOM 으로만 표현한다 (#192).
+
+        `flex-direction: column-reverse` 로 보이는 순서만 뒤집으면 DOM 과 화면이
+        어긋난다. 그러면 다음 사람이 둘 중 어느 쪽을 믿어야 하는지 알 수 없고,
+        드래그 선택·복사 순서가 화면과 달라진다. 순서를 DOM 하나로 못 박아 두면
+        읽는 순서와 보이는 순서가 영원히 같다.
+
+        `appendChild` 로 되돌리는 변이는 **다른 테스트를 전부 통과한다** — 두
+        노드가 다 있고 대비도 그대로이기 때문이다.
+        """
+        fn = self._js(stage_html, "setCurrentSource")
+        assert "container.insertBefore(node, currentLine)" in fn, fn
+        assert "container.appendChild(node)" not in fn, fn
+
+        container = _rule_block(stage_html, ".caption-container")
+        assert "column-reverse" not in container, container
+        assert "flex-direction: column;" in container, container
+
+    def test_the_default_is_off_and_off_removes_the_attribute(self, stage_html):
+        """기본은 꺼짐이고, 끄면 속성을 **지운다** (테마/로고 톤과 같은 규칙).
+
+        켬·꺼짐을 둘 다 속성값으로 두면 기본값이 CSS 와 JS 두 곳에 살게 되고,
+        둘이 갈라지는 날 어느 쪽이 쓰이는지 아무도 모른다.
+        """
+        fn = self._js(stage_html, "applyShowSource")
+        assert 'setAttribute("data-source", "on")' in fn, fn
+        assert 'removeAttribute("data-source")' in fn, fn
+        # 부트스트랩이 기본을 켜 두면 배포된 룸의 화면이 말없이 바뀐다.
+        assert 'documentElement.setAttribute("data-source"' not in _rule_block(
+            stage_html, ":root"
+        )
+
+    def test_a_non_boolean_show_source_is_ignored(self, stage_html):
+        """`undefined`(키 없음)로 화면을 끄면 안 된다.
+
+        `handleControl` 은 모든 control 이벤트에서 이 함수를 부르므로, 배율만
+        담긴 이벤트 하나가 원문을 꺼 버리면 안 된다.
+        """
+        fn = self._js(stage_html, "applyShowSource")
+        assert 'typeof value !== "boolean"' in fn, fn
+
+    def test_the_two_scales_are_separate_tokens(self, stage_html):
+        """원문 배율은 번역 배율과 **다른 토큰**이다 (#189).
+
+        하나로 묶으면 원문을 키우려다 번역까지 커진다 — 둘의 적정 크기가 다른
+        것이 이 기능의 전제다.
+        """
+        root = custom_properties(stage_html, ":root")
+        assert root.get("--caption-scale") == "1"
+        assert root.get("--source-scale") == "1"
+
+        line = _rule_block(stage_html, ".caption-line")
+        source = _rule_block(stage_html, ".caption-source")
+        assert "var(--caption-scale)" in line and "var(--source-scale)" not in line
+        assert "var(--source-scale)" in source and "var(--caption-scale)" not in source
+
+    def test_both_scales_clamp_with_the_same_constants(self, stage_html):
+        """두 배율이 같은 상수로 클램프된다 — 서버가 같은 규칙으로 검증한다."""
+        for name in ("applyCaptionScale", "applySourceScale"):
+            fn = self._js(stage_html, name)
+            assert "CAPTION_SCALE_MAX" in fn and "CAPTION_SCALE_MIN" in fn, (name, fn)
+            # NaN 을 클램프하면 NaN 이 CSS 로 들어가 규칙 전체가 무효가 된다.
+            assert "isFinite(value)" in fn, (name, fn)
+
+    def test_control_routes_both_source_fields(self, stage_html):
+        """control 이벤트가 두 필드를 모두 반영한다."""
+        fn = self._js(stage_html, "handleControl")
+        assert "applySourceScale(payload.source_scale)" in fn, fn
+        assert "applyShowSource(payload.show_source)" in fn, fn
+
+    def test_the_source_is_applied_after_the_caption_so_the_entry_exists(
+        self, stage_html
+    ):
+        """원문은 번역 처리 **뒤**에 붙인다 — 그 전에는 entry 가 없다."""
+        handler = re.search(
+            r"es\.addEventListener\(\"message\".*?\n      \}\);", stage_html, re.S
+        )
+        assert handler is not None
+        body = handler.group(0)
+        assert body.index("finalizeCaption(payload.text)") < body.index(
+            "setCurrentSource(payload.source_text)"
+        ), body
+
+    def test_the_source_hangs_off_the_current_line_not_a_separate_pointer(
+        self, stage_html
+    ):
+        """원문은 **현재 번역 라인**을 기준으로 찾는다 — 별도 포인터가 없다 (#192).
+
+        래퍼 시절에는 `currentEntry` 라는 두 번째 포인터가 있었고, 그래서
+        `resubscribe` 가 그것까지 비우지 않으면 다음 원문이 **DOM 에서 떨어져
+        나간 노드**에 쓰였다. 기준을 `currentLine` 하나로 줄이면 그 결함군이
+        통째로 사라진다 — 비울 포인터가 하나뿐이다.
+        """
+        assert "currentEntry" not in stage_html, "두 번째 포인터가 남아 있다"
+        fn = self._js(stage_html, "setCurrentSource")
+        assert "if (!currentLine || !text) return;" in fn, fn
+        assert "currentLine.previousElementSibling" in fn, fn
 
 
 class TestStageCaptionScale:
