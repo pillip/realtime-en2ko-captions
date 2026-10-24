@@ -567,8 +567,8 @@ class TestStageHtmlMarkup:
         `clamp()` 하한이 전부 24px 미만이라(자막 20px, 라벨 11px, 빈 상태 14px)
         large-text 3:1 완화를 쓸 수 없다.
 
-        **테마마다 알파가 다르다.** `zinc-200` 캔버스 위 `zinc-900` 0.48(다크의
-        자막 알파)은 3.07:1 로 미달이다 — 라이트의 하한은 0.62 다 (#178/#183/#184).
+        **테마마다 알파가 다르다.** `gray-20` 캔버스 위 `gray-100` 0.50(다크의
+        자막 알파)은 3.23:1 로 미달이다 — 라이트의 하한은 0.62 다 (#178/#183/#184).
         그 사실을 토큰 주석에 적는 것으로 끝내면 다음 사람이 다크 값을 복사해
         넣는 날 아무도 모른다 — 그래서 두 테마를 각각 계산한다.
         """
@@ -592,8 +592,8 @@ class TestStageHtmlMarkup:
         (톤 × 테마) 조합마다 성립해야 한다:
 
           - `auto`  : 면이 없다 → 배경은 캔버스, 라벨은 `--ink-dim` (테마를 따라감)
-          - `light` : 밝은 카드(`zinc-100`) → 테마와 무관하게 고정
-          - `dark`  : 어두운 밴드(`zinc-800`) → 테마와 무관하게 고정
+          - `light` : 밝은 카드(`gray-10`) → 테마와 무관하게 고정
+          - `dark`  : 어두운 밴드(`gray-80`) → 테마와 무관하게 고정
 
         배경을 캔버스로 가정한 채 계산하면 `dark` 톤 + 라이트 테마에서 **밝은
         글자를 밝은 배경 위로** 재던져 1.1:1 을 통과시킨다.
@@ -664,8 +664,8 @@ class TestStageHtmlMarkup:
     def test_an_opaque_logo_surface_declares_a_border(self, stage_html, tone):
         """면을 깔았으면 **보여야** 한다 — 두 톤 다 한쪽 캔버스에서 거의 안 보인다.
 
-        밝은 카드는 라이트 캔버스와 **1.15:1**, 어두운 밴드는 다크 캔버스와
-        **1.34:1** 이다. 색만으로는 카드가 존재하지 않으므로 경계선이 **필수**다. 톤은 테마와
+        밝은 카드는 라이트 캔버스와 **1.20:1**, 어두운 밴드는 다크 캔버스와
+        **1.57:1** 이다. 색만으로는 카드가 존재하지 않으므로 경계선이 **필수**다. 톤은 테마와
         독립이라 "반대쪽 캔버스에서는 잘 보인다" 는 변명이 통하지 않는다 — 두 조합
         모두 실제로 쓰인다.
         """
@@ -694,7 +694,7 @@ class TestStageHtmlMarkup:
         단계로 내린 변이가 **두 테스트를 모두 통과했다.**
 
         1.1:1 은 "한 단계 차이" 의 하한이다 (현재 밝은 카드 vs 라이트 캔버스
-        1.15:1 — 네 조합 중 가장 빠듯하다). 가시성 자체는 여전히 경계선이
+        1.20:1 — 네 조합 중 가장 빠듯하다). 가시성 자체는 여전히 경계선이
         책임지고, 이 테스트가 보는 것은 **톤이 값을 실제로 움직였는가** 다.
         """
         tokens = {
@@ -1194,6 +1194,90 @@ class TestStageDisplayCapture:
                 "WCAG AA needs 4.5:1"
             )
 
+    def test_the_gutter_and_the_panel_are_different_surfaces(self, stage_html):
+        """16:9 패널과 그 바깥 레터박스 여백은 **다른 면**이다 (#185).
+
+        예전에는 `.presentation`(여백)과 `.stage-frame`(패널)이 **둘 다**
+        `--frame` 이었다. 그래서 발표 영역이 어디서 시작하는지 화면에 아무 단서가
+        없었고, 라이트에서 "엉성하다" 는 인상의 가장 큰 원인이었다. 대비 테스트는
+        당연히 전부 통과했다 — 두 면이 같은 색인 것은 **글자 가독성 문제가
+        아니다.**
+
+        그래서 구조로 못 박는다: 여백은 페이지(`--canvas`), 패널은 `--frame`.
+        값이 아니라 **어느 토큰을 쓰는가**를 검사하므로, 다음 사람이 여백을
+        패널 색으로 되돌리는 순간 막힌다.
+        """
+        gutter = re.search(
+            r"(?<![-\w])background:\s*([^;]+);",
+            _rule_block(stage_html, ".presentation"),
+        )
+        panel = re.search(
+            r"(?<![-\w])background:\s*([^;]+);",
+            _rule_block(stage_html, ".stage-frame"),
+        )
+        assert gutter is not None and panel is not None
+        assert gutter.group(1).strip() == "var(--canvas)", (
+            f"레터박스 여백이 `{gutter.group(1).strip()}` 이다 — 페이지 면이어야 "
+            "한다. 패널과 같은 색이면 발표 영역의 경계가 사라진다"
+        )
+        assert panel.group(1).strip() == "var(--frame)", panel.group(1)
+
+    @pytest.mark.parametrize("theme", _THEMES)
+    def test_the_dividers_are_opaque_tokens_not_alpha_smudges(self, stage_html, theme):
+        """구분선은 **불투명 토큰**이어야 한다 — 알파 선은 캔버스를 탄다 (#185).
+
+        `--hairline` 은 10% 알파였고, 캔버스가 `zinc-200` 으로 내려오자 캔버스와
+        **1.2:1** 이 됐다. 헤더 아래·로고 바 위·자막 컬럼 왼쪽에 선이 선언돼
+        있는데 화면에는 없는 상태였다 — "선이 있다" 는 구조 테스트도, 글자 대비
+        테스트도 이걸 잡지 못한다.
+
+        Carbon 의 `border-subtle` 은 알파가 아니라 **색 토큰**이다. 같은 방식을
+        쓰면 캔버스가 어디로 가든 선이 보이는지 계산으로 확인할 수 있다.
+        1.5:1 은 "1px 선이 보인다" 의 하한이다 (현재 다크 1.57:1 / 라이트 1.80:1).
+        """
+        tokens = _theme_tokens(stage_html, theme)
+        hairline = resolve_color(tokens["--hairline"], tokens)
+        assert hairline[3] == 1.0, (
+            f"{theme} 구분선이 반투명하다 ({tokens['--hairline']}) — 캔버스가 "
+            "바뀌면 보이기도 하고 사라지기도 한다"
+        )
+        ratio = _contrast_ratio(hairline, _canvas_rgb(tokens))
+        assert ratio >= 1.5, (
+            f"{theme} 구분선이 캔버스와 {ratio:.2f}:1 — 선언돼 있지만 화면에는 " "없다"
+        )
+
+    def test_the_light_panel_draws_its_own_edge(self, stage_html):
+        """라이트에서 패널은 **테두리로** 자기 경계를 그린다 (#185).
+
+        여백과 패널을 나눠도 라이트에서는 둘의 대비가 1.29:1 뿐이라 색만으로는
+        경계가 약하다. `border-strong` 급 선이 있어야 "의도적으로 그은 선" 이
+        된다 — `gray-50` 은 패널과 1.94:1 로 또 흐릿해서 `gray-70`(4.57:1) 을
+        쓴다. 3:1 은 WCAG 1.4.11(비텍스트) 기준이다.
+
+        **다크는 반대로 투명이어야 한다.** 어두운 방에서 투사면 경계가 보이면
+        안 되고, 캔버스와 1.16:1 이라 애초에 경계가 거슬리지 않는다. 이 비대칭이
+        의도라는 사실을 적어 두지 않으면 다음 사람이 "다크에도 테두리를" 로
+        통일한다.
+        """
+        dark = _theme_tokens(stage_html, "dark")
+        assert (
+            dark["--panel-border"].strip() == "transparent"
+        ), f"다크 패널에 테두리가 생겼다: {dark['--panel-border']}"
+
+        light = _theme_tokens(stage_html, "light")
+        border = resolve_color(light["--panel-border"], light)
+        assert border[3] == 1.0, f"라이트 패널 테두리가 반투명하다: {border}"
+        frame = resolve_color(light["--frame"], light)
+        ratio = _contrast_ratio(border, frame[:3])
+        assert ratio >= 3.0, (
+            f"라이트 패널 테두리가 패널과 {ratio:.2f}:1 — 1.4.11 은 3:1 이다. "
+            "선이 흐려 발표 영역이 뭉개진다"
+        )
+
+        assert "box-shadow: inset 0 0 0 1px var(--panel-border);" in _rule_block(
+            stage_html, ".stage-frame"
+        ), "패널이 테두리 토큰을 쓰지 않는다"
+
     @pytest.mark.parametrize("theme", _THEMES)
     def test_the_frame_stays_on_the_same_side_as_the_canvas(self, stage_html, theme):
         """프레임은 캔버스와 **같은 쪽**이어야 한다 — 검은 구멍 금지.
@@ -1205,7 +1289,7 @@ class TestStageDisplayCapture:
 
         그래서 수치로 못 박는다: 프레임과 캔버스의 명도 대비가 낮아야 한다
         (같은 톤의 한 단계 차이). 상한 1.8:1 은 "경계가 보이되 구멍이 아니다" 를
-        뜻한다 — 현재 값은 다크 1.06:1, 라이트 1.16:1 이다.
+        뜻한다 — 현재 값은 다크 1.16:1, 라이트 1.29:1 이다.
         """
         tokens = _theme_tokens(stage_html, theme)
         frame = resolve_color(tokens["--frame"], tokens)
@@ -1225,9 +1309,10 @@ class TestStageDisplayCapture:
         아니라 행사장 프로젝터다: 캔버스와 16:9 프레임이 벽 전체를 채우고,
         그 면적에서 near-white 는 디자인이 아니라 조명이다.
 
-        그래서 비율이 아니라 **상대 휘도 자체**에 상한을 둔다. 0.82 는 `zinc-100`
-        (0.905)을 막고 `zinc-200`(0.778) 이하만 통과시킨다 — 한 단계로는 체감이
-        없다는 실측(빛의 양 94.7%)을 수치로 옮긴 것이다.
+        그래서 비율이 아니라 **상대 휘도 자체**에 상한을 둔다. 0.82 는 Carbon 의
+        라이트 테마 기본 배경 `gray-10`(0.905)을 막고 `gray-20`(0.745) 이하만
+        통과시킨다. Carbon Gray 10 테마를 그대로 쓰지 못하고 **역할은 두되 단계만
+        한 칸 내려 앵커한** 이유가 이 수치다 (#185).
 
         두 토큰을 모두 보는 이유: 프레임은 발표자료가 연결되기 전까지 화면에서
         **가장 넓은 면**이라 캔버스만 내려 두면 효과의 대부분이 사라진다.
@@ -1248,7 +1333,7 @@ class TestStageDisplayCapture:
         """버튼이 프레임과 구별돼야 한다 — 밝은 프레임 위 밝은 pill 은 1.2:1 이다.
 
         글자 대비만 보면 "밝은 pill + 어두운 글자" 는 어느 프레임 위에서도
-        14:1 위로 통과한다. 그런데 밝은 프레임 위에서는 pill **자체**가 보이지 않아
+        16:1 위로 통과한다. 그런데 밝은 프레임 위에서는 pill **자체**가 보이지 않아
         오퍼레이터가 누를 것을 찾지 못한다 — 글자 대비가 잡아 주지 않는 실패다.
         3:1 은 WCAG 1.4.11(비텍스트 대비) 기준이다.
         """
@@ -1276,9 +1361,9 @@ class TestStageDisplayCapture:
         아무 테스트가 잡지 못한 결함이다.
 
         그래서 링도 테마 토큰이어야 하고, 두 프레임 위에서 각각 1.4.11 의 3:1 을
-        넘겨야 한다 (현재 다크 sky-400 9.80:1 / 라이트 sky-700 4.01:1). 이 여유가
-        라이트 캔버스를 더 내리지 못한 이유이기도 하다 — `zinc-300` 캔버스는
-        프레임을 `zinc-400` 으로 밀고, 거기서는 sky-800 조차 2.95:1 이다 (#184).
+        넘겨야 한다 (현재 다크 white 21.00:1 / 라이트 blue-70 4.56:1). Carbon 의
+        라이트 포커스 기본값 blue-60 은 `gray-30` 패널 위에서 **2.93:1** 로
+        미달이라 한 단계 더 어두운 blue-70 을 쓴다 (#185).
         """
         block = _rule_block(stage_html, ".capture-button:focus-visible")
         outline = re.search(r"outline:\s*([^;]+);", block)
@@ -1318,24 +1403,23 @@ class TestStageDisplayCapture:
         테스트가 선언만 보도록 한다.
         """
         palette = {
-            # Tailwind CSS `zinc` — 중립 회색 스케일 (무대 테마의 전부)
-            "zinc-50": (250, 250, 250),
-            "zinc-100": (244, 244, 245),
-            "zinc-200": (228, 228, 231),
-            "zinc-300": (212, 212, 216),
-            "zinc-400": (161, 161, 170),
-            "zinc-500": (113, 113, 122),
-            "zinc-600": (82, 82, 91),
-            "zinc-700": (63, 63, 70),
-            "zinc-800": (39, 39, 42),
-            "zinc-900": (24, 24, 27),
-            "zinc-950": (9, 9, 11),
-            # Tailwind `amber` — 자기 캡처 경고 (의미색)
-            "amber-200": (253, 230, 138),
-            "amber-400": (251, 191, 36),
-            # Tailwind `sky` — 포커스 링 (테마별로 단계가 다르다)
-            "sky-400": (56, 189, 248),
-            "sky-700": (3, 105, 161),
+            # IBM Carbon — gray ramp (background / layer / border 역할 전부)
+            "gray-10": (244, 244, 244),
+            "gray-20": (224, 224, 224),
+            "gray-30": (198, 198, 198),
+            "gray-40": (168, 168, 168),
+            "gray-50": (141, 141, 141),
+            "gray-60": (111, 111, 111),
+            "gray-70": (82, 82, 82),
+            "gray-80": (57, 57, 57),
+            "gray-90": (38, 38, 38),
+            "gray-100": (22, 22, 22),
+            "white": (255, 255, 255),
+            # Carbon blue — 포커스 (테마마다 단계가 다르다)
+            "blue-60": (15, 98, 254),
+            "blue-70": (0, 67, 206),
+            # Carbon yellow — 자기 캡처 경고 (의미색)
+            "yellow-30": (241, 194, 27),
             # 팔레트 밖의 유일한 예외: 투사면
             "projection surface": (0, 0, 0),
         }
