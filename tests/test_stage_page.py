@@ -1246,77 +1246,107 @@ class TestStageDisplayCapture:
             f"{theme} 구분선이 캔버스와 {ratio:.2f}:1 — 선언돼 있지만 화면에는 " "없다"
         )
 
-    def test_the_light_panel_draws_its_own_edge(self, stage_html):
-        """라이트에서 패널은 **테두리로** 자기 경계를 그린다 (#185).
+    def test_the_projection_well_separates_in_light_and_melts_in_dark(self, stage_html):
+        """16:9 패널은 **라이트에서 또렷하고 다크에서 녹는다** (#186).
 
-        여백과 패널을 나눠도 라이트에서는 둘의 대비가 1.29:1 뿐이라 색만으로는
-        경계가 약하다. `border-strong` 급 선이 있어야 "의도적으로 그은 선" 이
-        된다 — `gray-50` 은 패널과 1.94:1 로 또 흐릿해서 `gray-70`(4.57:1) 을
-        쓴다. 3:1 은 WCAG 1.4.11(비텍스트) 기준이다.
+        이 테스트는 예전의 `test_the_frame_stays_on_the_same_side_as_the_canvas`
+        (패널-캔버스 ≤ 1.8:1)를 **대체한다.** 그 상한은 #180 의 "검은 구멍" 에서
+        나왔는데, 거기서 화면을 망친 것은 "패널이 어둡다" 가 아니라 **near-white
+        캔버스에서 순검정으로 중간 단계 없이 튀었고 화면에 다른 어두운 요소가
+        하나도 없었다** 는 구성이었다. 상한은 그 증상의 해법 하나를 규칙으로
+        굳힌 것이라 결과적으로 **옳은 구성까지 금지했다** — 밝은 페이지 위의
+        어두운 스크린. 그 상한에 묶여 있는 동안 화면은 전부 중간 회색이 됐고
+        "축 쳐진다" 는 피드백을 받았다.
 
-        **다크는 반대로 투명이어야 한다.** 어두운 방에서 투사면 경계가 보이면
-        안 되고, 캔버스와 1.16:1 이라 애초에 경계가 거슬리지 않는다. 이 비대칭이
-        의도라는 사실을 적어 두지 않으면 다음 사람이 "다크에도 테두리를" 로
-        통일한다.
+        그래서 상한 대신 **테마별 의도**를 적는다.
+
+          라이트: 패널이 스스로 경계가 돼야 한다 (>= 3:1). 꺼진 스크린은 어둡고,
+                  슬라이드가 붙으면 그 위를 덮는다.
+          다크  : 패널이 캔버스에 녹아야 한다 (<= 1.8:1). 어두운 방에서 투사면
+                  경계가 드러나면 안 된다.
+
+        한쪽만 검사하면 반대쪽이 조용히 뒤집힌다 — 두 방향을 모두 못 박는다.
         """
-        dark = _theme_tokens(stage_html, "dark")
-        assert (
-            dark["--panel-border"].strip() == "transparent"
-        ), f"다크 패널에 테두리가 생겼다: {dark['--panel-border']}"
-
         light = _theme_tokens(stage_html, "light")
-        border = resolve_color(light["--panel-border"], light)
-        assert border[3] == 1.0, f"라이트 패널 테두리가 반투명하다: {border}"
-        frame = resolve_color(light["--frame"], light)
-        ratio = _contrast_ratio(border, frame[:3])
+        ratio = _contrast_ratio(
+            resolve_color(light["--frame"], light), _canvas_rgb(light)
+        )
         assert ratio >= 3.0, (
-            f"라이트 패널 테두리가 패널과 {ratio:.2f}:1 — 1.4.11 은 3:1 이다. "
-            "선이 흐려 발표 영역이 뭉개진다"
+            f"라이트 패널이 캔버스와 {ratio:.2f}:1 — 발표 영역이 페이지와 같은 "
+            "명도 대역에 묻혀 화면이 한 덩어리 회색으로 읽힌다"
         )
 
-        assert "box-shadow: inset 0 0 0 1px var(--panel-border);" in _rule_block(
-            stage_html, ".stage-frame"
-        ), "패널이 테두리 토큰을 쓰지 않는다"
+        dark = _theme_tokens(stage_html, "dark")
+        ratio = _contrast_ratio(resolve_color(dark["--frame"], dark), _canvas_rgb(dark))
+        assert ratio <= 1.8, (
+            f"다크 패널이 캔버스와 {ratio:.2f}:1 — 어두운 방에서 투사면 경계가 "
+            "드러난다"
+        )
 
     @pytest.mark.parametrize("theme", _THEMES)
-    def test_the_frame_stays_on_the_same_side_as_the_canvas(self, stage_html, theme):
-        """프레임은 캔버스와 **같은 쪽**이어야 한다 — 검은 구멍 금지.
+    def test_the_layers_step_up_one_at_a_time(self, stage_html, theme):
+        """캔버스 → layer-01 → layer-02 가 **한 겹씩** 올라간다 (#186).
 
-        첫 라이트 구현은 캔버스만 밝게 바꾸고 16:9 프레임을 `#000000` 으로 남겨
-        두었다. 대비 테스트는 전부 통과했지만(프레임 안 문구들은 자기 배경을
-        갖고 있어 판정이 흔들리지 않는다) 화면에서는 **프레임만 검게 뚫린** 모습이
-        되어 심미성이 떨어졌다. 그 실패는 "글자가 읽히는가" 로는 잡히지 않는다.
+        Carbon 의 레이어 모델을 쓰는 이유가 이것이다: 읽는 면(자막 컬럼)은
+        페이지보다 한 겹 위, 그 위에 뜨는 칩은 또 한 겹 위. 세 면이 같은 값이면
+        칩이 자기 배경에 묻히고, 너무 벌어지면 자막 컬럼이 따로 노는 패널처럼
+        보인다.
 
-        그래서 수치로 못 박는다: 프레임과 캔버스의 명도 대비가 낮아야 한다
-        (같은 톤의 한 단계 차이). 상한 1.8:1 은 "경계가 보이되 구멍이 아니다" 를
-        뜻한다 — 현재 값은 다크 1.16:1, 라이트 1.29:1 이다.
+        1.1:1 은 "한 겹 올라갔다" 의 하한, 2.0:1 은 "아직 같은 재질이다" 의
+        상한이다 (현재 두 테마 모두 1.20:1). 두 레이어를 같은 값으로 합치는
+        변이는 대비 테스트를 **전부 통과한다** — 글자는 여전히 읽히기 때문이다.
         """
         tokens = _theme_tokens(stage_html, theme)
-        frame = resolve_color(tokens["--frame"], tokens)
-        ratio = _contrast_ratio(frame, _canvas_rgb(tokens))
-        assert ratio <= 1.8, (
-            f"{theme} 테마에서 프레임이 캔버스와 {ratio:.2f}:1 — 화면에 구멍처럼 "
-            "보인다. 프레임은 캔버스와 같은 톤의 한 단계 차이여야 한다"
+        one = resolve_color(tokens["--layer-01"], tokens)
+        two = resolve_color(tokens["--layer-02"], tokens)
+        assert one[3] == 1.0 and two[3] == 1.0, "레이어는 불투명이어야 한다"
+
+        for name, pair in (
+            ("layer-01 vs 캔버스", (one, _canvas_rgb(tokens))),
+            ("layer-02 vs layer-01", (two, one[:3])),
+        ):
+            ratio = _contrast_ratio(pair[0], pair[1])
+            assert 1.1 <= ratio <= 2.0, (
+                f"{theme} {name} 가 {ratio:.2f}:1 — 1.1~2.0 밖이다. 레이어는 "
+                "한 겹씩 올라가야 한다"
+            )
+
+    def test_the_caption_column_reads_on_a_layer_not_the_page(self, stage_html):
+        """자막 컬럼은 페이지가 아니라 **레이어** 위에 있다 (#186).
+
+        어두운 패널 옆에서 읽는 면이 밝아야 자막이 "종이" 로 읽힌다. 값이 아니라
+        **어느 토큰을 쓰는가**를 검사하므로, 다음 사람이 페이지 색으로 되돌리는
+        순간 막힌다 — 되돌려도 글자 대비는 그대로라 다른 테스트는 통과한다.
+        """
+        block = _rule_block(stage_html, ".caption-column")
+        match = re.search(r"(?<![-\w])background:\s*([^;]+);", block)
+        assert match is not None, block
+        assert match.group(1).strip() == "var(--layer-01)", (
+            f"자막 컬럼 배경이 `{match.group(1).strip()}` 이다 — 읽는 면은 "
+            "페이지보다 한 겹 위여야 한다"
         )
 
     @pytest.mark.parametrize("token", ["--canvas", "--frame"])
     def test_the_light_theme_is_not_a_light_source(self, stage_html, token):
-        """라이트의 두 큰 면은 **스케일 맨 끝에서 시작하지 않는다** (#184).
+        """라이트의 밝은 면들은 **스케일 맨 끝에서 시작하지 않는다** (#184).
 
         `zinc-50` 캔버스로 출하했다가 **눈이 아프다**는 피드백을 받았다. 대비는
         전부 통과했는데 — 당연하다. 대비는 "글자와 배경이 떨어지는가" 를 보지
         **면이 내뿜는 빛의 절대량**을 보지 않는다. 그리고 이 화면은 모니터가
-        아니라 행사장 프로젝터다: 캔버스와 16:9 프레임이 벽 전체를 채우고,
-        그 면적에서 near-white 는 디자인이 아니라 조명이다.
+        아니라 행사장 프로젝터다.
 
         그래서 비율이 아니라 **상대 휘도 자체**에 상한을 둔다. 0.82 는 Carbon 의
         라이트 테마 기본 배경 `gray-10`(0.905)을 막고 `gray-20`(0.745) 이하만
         통과시킨다. Carbon Gray 10 테마를 그대로 쓰지 못하고 **역할은 두되 단계만
         한 칸 내려 앵커한** 이유가 이 수치다 (#185).
 
-        두 토큰을 모두 보는 이유: 프레임은 발표자료가 연결되기 전까지 화면에서
-        **가장 넓은 면**이라 캔버스만 내려 두면 효과의 대부분이 사라진다.
-        다크 테마는 이 상한 아래에 한참 있으므로 따로 검사하지 않는다.
+        **`--layer-01`(자막 컬럼)은 이 상한을 받지 않는다.** 그 면은 `gray-10`
+        (0.905)으로, 상한을 적용하면 걸린다. 면제하는 이유는 면적이다 — 자막
+        컬럼은 `--caption-width`(1/4 또는 1/3)로 **폭이 구조적으로 묶여 있는**
+        읽는 면이고, 눈이 아팠던 것은 캔버스와 패널이 **벽 전체**를 near-white
+        로 채웠을 때다. 패널이 어두워진 지금(#186) 화면이 내뿜는 빛의 총량은
+        어느 이전 버전보다 낮다. 넓은 면 둘만 묶어 두면 "읽는 면은 종이처럼
+        밝게" 와 "벽은 어둡게" 를 동시에 지킬 수 있다.
         """
         tokens = _theme_tokens(stage_html, "light")
         surface = resolve_color(tokens[token], tokens)
@@ -1324,7 +1354,7 @@ class TestStageDisplayCapture:
         luminance = _relative_luminance(surface[:3])
         assert luminance <= 0.82, (
             f"라이트 {token} 의 상대 휘도가 {luminance:.3f} — 프로젝터에서 눈이 "
-            "아프다. zinc-200(0.778) 이하여야 한다"
+            "아프다. gray-20(0.745) 이하여야 한다"
         )
 
     def test_the_connect_button_separates_from_the_frame_in_both_themes(
