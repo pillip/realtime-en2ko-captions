@@ -879,6 +879,11 @@ async def broadcast_translation_for_room(
             "text": primary_translated,
             "lang": primary_lang,
             "timestamp": time.time(),
+            # #189: 무대가 원문을 함께 띄울 수 있도록 전사를 그대로 싣는다.
+            # 뷰어(viewer.html)는 이 필드를 읽지 않아 영향이 없다 — 참석자
+            # 화면은 자기 언어만 본다.
+            "source_text": source_text,
+            "source_lang": source_lang,
         },
     )
 
@@ -941,6 +946,10 @@ async def _translate_and_publish_secondary(
                 "text": translated,
                 "lang": target_lang,
                 "timestamp": time.time(),
+                # 2차 언어 채널도 같은 원문을 싣는다 (#189) — 무대가 어느
+                # 언어를 구독하든 원문이 끊기지 않아야 한다.
+                "source_text": source_text,
+                "source_lang": source_lang,
             },
         )
     except Exception as e:

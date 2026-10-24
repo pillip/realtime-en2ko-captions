@@ -49,6 +49,17 @@ CAPTION_SCALE_MAX = 1.6
 # 받은 값을 되돌려 주지 않는다 — 오퍼레이터 화면은 행사장에서 공유될 수 있다.
 _STAGE_CONTROL_REJECTED_MSG = "자막 크기를 적용하지 못했습니다."
 
+# 거절 로그에 찍는 키 목록. 손으로 적어 두면 필드를 늘릴 때마다 갈라진다
+# (RL-001) — `_handle_stage_control` 이 읽는 키와 같은 목록이어야 한다.
+_STAGE_CONTROL_KEYS: tuple[str, ...] = (
+    "caption_scale",
+    "source_scale",
+    "show_source",
+    "theme",
+    "logo_bar_tone",
+    "presentation",
+)
+
 
 def _coerce_caption_scale(value):
     """유효한 배율이면 float, 아니면 None.
@@ -263,8 +274,14 @@ async def _publish_control_command(room_id, **fields):
 async def _handle_stage_control(websocket, data, user_info):
     """오퍼레이터의 무대 제어 메시지 처리 (ISSUE-53/54, #178).
 
-    세 가지를 받는다. 한 메시지에 여러 개가 함께 올 수도 있다.
-      - ``caption_scale``  : 자막 배율 (상태)
+    여러 가지를 받는다. 한 메시지에 함께 올 수도 있다.
+      - ``caption_scale``  : 번역 자막 배율 (상태)
+      - ``source_scale``   : 원문 배율 (상태, #189) — 번역과 **독립**이다.
+        원문은 번역보다 작게 두는 것이 보통이고, 한 배율로 묶으면 둘 중 하나는
+        항상 어중간해진다. 범위는 `caption_scale` 과 같은 규칙을 쓴다.
+      - ``show_source``    : 원문 표시 여부 (상태, #189). 기본이 꺼짐이라 이미
+        배포된 룸의 무대 화면이 말없이 바뀌지 않는다 (`logo_bar_tone` 과 같은
+        이유).
       - ``theme``          : 무대 테마 (상태) — `caption_scale` 과 같은 세션 한정
       - ``logo_bar_tone``  : 로고 바 배경 (상태). 관리자 설정이 룸의 기본값이고
         이 control 은 그 세션에 한해 덮어쓴다 — 행사장 프로젝터에서 로고가 묻히는
@@ -290,6 +307,25 @@ async def _handle_stage_control(websocket, data, user_info):
         else:
             state["caption_scale"] = scale
 
+    if "source_scale" in data:
+        # 번역 배율과 **같은 허용 범위**를 쓴다 — 두 배율이 서로 다른 범위를
+        # 가지면 오퍼레이터가 슬라이더 두 개의 끝값을 따로 외워야 한다.
+        scale = _coerce_caption_scale(data.get("source_scale"))
+        if scale is None:
+            invalid.append("source_scale")
+        else:
+            state["source_scale"] = scale
+
+    if "show_source" in data:
+        show = data.get("show_source")
+        # `bool` 만 받는다. 1/0/"true" 를 받아 주면 프로토콜이 조용히 넓어지고
+        # 그 관용이 어디까지인지 아무도 모르게 된다 (`_coerce_caption_scale`
+        # 과 같은 원칙).
+        if not isinstance(show, bool):
+            invalid.append("show_source")
+        else:
+            state["show_source"] = show
+
     if "theme" in data:
         theme = _coerce_stage_theme(data.get("theme"))
         if theme is None:
@@ -314,7 +350,7 @@ async def _handle_stage_control(websocket, data, user_info):
         # 상태도 발행도 없다. 사유는 서버 로그로만 (RL-006).
         print(
             f"[Control] stage_control 거절 (room={room_id}): "
-            f"invalid={invalid} data={ {k: data.get(k) for k in ('caption_scale', 'theme', 'logo_bar_tone', 'presentation') if k in data} }"
+            f"invalid={invalid} data={ {k: data.get(k) for k in _STAGE_CONTROL_KEYS if k in data} }"
         )
         await websocket.send(
             json.dumps(
@@ -938,8 +974,16 @@ async def _handle_transcript(
         stream_room_id = current_user.get("room_id")
 
         async def _viewer_partial(cumulative_text):
+            # 원문은 **부분에도** 실어 보낸다 (#189). 전사는 번역이 시작되기
+            # 전에 이미 완성돼 있으므로, 무대가 번역이 타자기로 흐르는 동안
+            # 원문을 먼저 보여 줄 수 있다. 최종에만 실으면 "번역이 다 나온
+            # 뒤에야 원문이 뜨는" 역순이 된다.
             await _publish_partial_to_viewers(
-                stream_room_id, cumulative_text, target_lang
+                stream_room_id,
+                cumulative_text,
+                target_lang,
+                source_text=transcript,
+                source_lang=source_lang,
             )
 
         translated_text = await _stream_llm_translation(
@@ -1007,7 +1051,9 @@ async def _handle_transcript(
     )
 
 
-async def _publish_partial_to_viewers(room_id, text, lang):
+async def _publish_partial_to_viewers(
+    room_id, text, lang, *, source_text="", source_lang=""
+):
     """스트리밍 부분(누적) 번역을 뷰어 SSE 메인 채널로 흘려보낸다 (#116).
 
     - ``lang`` 은 최종 broadcast 가 쓰는 채널(primary_output_lang == target_lang)
@@ -1031,6 +1077,10 @@ async def _publish_partial_to_viewers(room_id, text, lang):
                 "lang": lang,
                 "partial": True,
                 "timestamp": time.time(),
+                # #189: 무대 원문 표시용. 뷰어는 이 필드를 읽지 않으므로
+                # 무시되고, 무대만 `show_source` 가 켜졌을 때 렌더한다.
+                "source_text": source_text,
+                "source_lang": source_lang,
             },
         )
     except Exception as e:

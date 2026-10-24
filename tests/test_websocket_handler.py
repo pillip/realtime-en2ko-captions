@@ -1419,6 +1419,102 @@ def _run_with_spy(ws, repo, spy, *, room_id="r1"):
     )
 
 
+class TestStageSourceControl:
+    """무대 원문 표시/배율 — 받는 쪽(서버) 계약 (#189).
+
+    배율은 번역과 **같은 범위 규칙**(`_coerce_caption_scale`)을 쓰고, 표시는
+    엄격한 bool 이다. 둘 다 `caption_scale` 과 같은 세션 한정 상태다.
+    """
+
+    def test_source_scale_and_show_source_update_state_and_ack(self):
+        from tests.broadcast_spy import SpyBroadcastManager
+
+        spy = SpyBroadcastManager()
+        ws = _ws_yielding(
+            [{"type": "stage_control", "source_scale": 1.2, "show_source": True}]
+        )
+
+        sent = _run_with_spy(ws, _RecordingRoomRepo(), spy)
+
+        assert spy.get_control("r1") == {"source_scale": 1.2, "show_source": True}
+        assert spy.control_count == 1, spy.control_calls
+        _room_id, payload = spy.control_calls[0]
+        assert payload["source_scale"] == 1.2
+        assert payload["show_source"] is True
+        ack = next(m for m in sent if m["type"] == "stage_control_ack")
+        assert ack["source_scale"] == 1.2
+        assert ack["show_source"] is True
+
+    @pytest.mark.parametrize("scale", [0.79, 1.61, "1.2", True, float("nan")])
+    def test_source_scale_uses_the_same_range_rule_as_the_caption(self, scale):
+        """번역 배율과 **같은 값들이** 거절돼야 한다.
+
+        범위가 갈라지면 오퍼레이터가 슬라이더마다 끝값을 따로 외워야 하고,
+        UI 만 어긋난 채 조용히 거절당한다. `True` 가 목록에 있는 이유는
+        파이썬에서 `bool` 이 `int` 라 1.0 으로 통과해 버리기 때문이다.
+        """
+        from tests.broadcast_spy import SpyBroadcastManager
+
+        spy = SpyBroadcastManager()
+        ws = _ws_yielding([{"type": "stage_control", "source_scale": scale}])
+
+        sent = _run_with_spy(ws, _RecordingRoomRepo(), spy)
+
+        assert spy.get_control("r1") is None
+        assert spy.control_count == 0
+        assert any(m["type"] == "stage_control_error" for m in sent)
+
+    @pytest.mark.parametrize("value", [1, 0, "true", "", None, 1.0])
+    def test_show_source_takes_only_a_real_bool(self, value):
+        """1/0/"true" 를 받아 주면 프로토콜이 조용히 넓어진다."""
+        from tests.broadcast_spy import SpyBroadcastManager
+
+        spy = SpyBroadcastManager()
+        ws = _ws_yielding([{"type": "stage_control", "show_source": value}])
+
+        sent = _run_with_spy(ws, _RecordingRoomRepo(), spy)
+
+        assert spy.get_control("r1") is None
+        assert spy.control_count == 0
+        assert any(m["type"] == "stage_control_error" for m in sent)
+
+    def test_show_source_false_is_a_value_not_an_absence(self):
+        """`False` 는 "끄라" 는 **지시**다 — 키 없음과 구분돼야 한다.
+
+        falsy 로 분기하면 끄는 조작이 조용히 무시되고, 오퍼레이터는 체크를 풀어도
+        무대가 그대로인 화면을 보게 된다.
+        """
+        from tests.broadcast_spy import SpyBroadcastManager
+
+        spy = SpyBroadcastManager()
+        ws = _ws_yielding([{"type": "stage_control", "show_source": False}])
+
+        sent = _run_with_spy(ws, _RecordingRoomRepo(), spy)
+
+        assert spy.get_control("r1") == {"show_source": False}
+        assert spy.control_count == 1
+        ack = next(m for m in sent if m["type"] == "stage_control_ack")
+        assert ack["show_source"] is False
+
+    def test_the_rejection_log_key_list_matches_what_the_handler_reads(self):
+        """거절 로그의 키 목록이 핸들러가 읽는 키와 같아야 한다 (RL-001).
+
+        손으로 적어 두면 필드를 늘릴 때마다 갈라지고, 거절 로그에서 방금 추가한
+        필드만 조용히 빠진다 — 진단이 제일 필요한 순간에.
+        """
+        import inspect
+        import re
+
+        import websocket_handler
+
+        source = inspect.getsource(websocket_handler._handle_stage_control)
+        read = set(re.findall(r'if "([a-z_]+)" in data:', source))
+        assert read == set(websocket_handler._STAGE_CONTROL_KEYS), (
+            f"핸들러가 읽는 키 {sorted(read)} 와 로그 목록 "
+            f"{sorted(websocket_handler._STAGE_CONTROL_KEYS)} 가 다르다"
+        )
+
+
 class TestStageControlMessage:
     """무대 자막 배율 — 받는 쪽(서버) 계약. ISSUE-54 가 보내는 쪽을 만든다."""
 
