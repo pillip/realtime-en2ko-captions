@@ -167,7 +167,12 @@ def _connected_boot(**overrides) -> dict:
 
 @pytest.fixture
 def load_webrtc(page, tmp_path):
-    def _load(boot: dict, *, local_scale: str | None = None):
+    def _load(
+        boot: dict,
+        *,
+        local_scale: str | None = None,
+        local_show_source: bool = False,
+    ):
         # ISSUE-48 / RL-024: 치환을 fixture 가 재구현하면 프로덕션이 고쳐져도
         # 이 파일은 옛 경로를 계속 테스트한다. 프로덕션 함수를 그대로 부른다.
         from operator_ui import render_component_html
@@ -182,6 +187,10 @@ def load_webrtc(page, tmp_path):
             scale_literal = json.dumps(local_scale)
             page.add_init_script(
                 f"try {{ localStorage.setItem('stageCaptionScale', {scale_literal}); }} catch (e) {{}}"
+            )
+        if local_show_source:
+            page.add_init_script(
+                "try { localStorage.setItem('stageShowSource', '1'); } catch (e) {}"
             )
         page.goto(target.as_uri(), wait_until="load")
         page.wait_for_timeout(700)
@@ -428,6 +437,87 @@ class TestServerSnapshotWins:
             "the component announced a scale nobody asked for — on a shared room "
             "that would overwrite another operator's setting at page load"
         )
+
+
+class TestStageSourceReachesTheVenue:
+    """세션 시작 **전에** 켠 원문이 무대에 전달되는가 (#192).
+
+    이것이 "원문이 안 보인다" 의 실제 원인이었다 — 패널은 켜진 채, 무대는
+    끝까지 꺼짐.
+    """
+
+    @staticmethod
+    def _open_panel(page) -> None:
+        page.locator("#settingsFab").click()
+        page.wait_for_timeout(400)
+
+    def test_a_toggle_made_before_the_session_is_delivered_when_it_opens(
+        self, load_webrtc
+    ):
+        page = load_webrtc(_connected_boot())
+        # 세션 시작 **전** 상태를 만든다 — 소켓은 있지만 아직 열리지 않았다.
+        page.evaluate("() => { window.__wsInstances[0].readyState = 0; }")
+
+        self._open_panel(page)
+        page.locator("#stageSourceToggle").check()
+        page.wait_for_timeout(_AFTER_DEBOUNCE_MS)
+
+        # 아직 아무것도 못 나갔다 — 여기가 결함의 출발점이었다.
+        assert [
+            m for m in _stage_controls(page) if "show_source" in m
+        ] == [], "소켓이 닫혀 있는데 전송됐다 — 이 테스트의 전제가 깨졌다"
+
+        page.evaluate("() => { window.__wsInstances[0].readyState = 1; }")
+        _deliver(
+            page,
+            {
+                "type": "auth_success",
+                "message": "인증 완료",
+                "room_id": "room-42",
+                "control": None,
+            },
+        )
+        page.wait_for_timeout(_AFTER_DEBOUNCE_MS)
+
+        sent = _stage_controls(page)
+        assert any(m.get("show_source") is True for m in sent), (
+            f"세션 시작 전에 켠 원문이 전달되지 않았다: {sent!r} — 패널은 켜진 "
+            "채 무대만 꺼져 있게 된다"
+        )
+
+    def test_a_restored_local_value_alone_announces_nothing(self, load_webrtc):
+        """폴백은 밀어 올리지 않는다 — 공유 룸에서 남의 설정을 덮어쓴다.
+
+        `test_a_room_without_control_state_sends_nothing_on_load` 와 같은 계약을
+        원문 필드에도 적용한다. 다른 점은 **조작 여부**뿐이다: 위 테스트는
+        사용자가 눌렀고, 이쪽은 localStorage 에서 복원되기만 했다.
+        """
+        page = page_with_local_source(load_webrtc)
+        self._open_panel(page)
+        assert (
+            page.locator("#stageSourceToggle").is_checked() is True
+        ), "폴백 복원이 안 되면 아래 단언이 비어 있는 상태를 통과시킨다"
+
+        _deliver(
+            page,
+            {
+                "type": "auth_success",
+                "message": "인증 완료",
+                "room_id": "room-42",
+                "control": None,
+            },
+        )
+        page.wait_for_timeout(_AFTER_DEBOUNCE_MS)
+
+        assert [m for m in _stage_controls(page) if "show_source" in m] == [], (
+            "로드만으로 원문 상태를 알렸다 — 공유 룸에서 다른 오퍼레이터의 "
+            "설정을 덮어쓴다"
+        )
+
+
+def page_with_local_source(load_webrtc):
+    """localStorage 에 원문 표시가 켜진 채로 로드된 페이지."""
+    return load_webrtc(_connected_boot(), local_show_source=True)
 
 
 class TestAckDoesNotLoop:

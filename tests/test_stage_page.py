@@ -2240,27 +2240,56 @@ class TestStageSourceText:
         assert body is not None, f"{name}() not found"
         return body.group(2)
 
-    def test_one_utterance_is_one_entry_not_two_siblings(self, stage_html):
-        """번역과 원문은 **한 래퍼** 안에 산다.
+    def test_the_lines_are_flat_siblings_like_the_operator_caption_view(
+        self, stage_html
+    ):
+        """원문과 번역은 **평평한 형제**다 — 오퍼레이터 자막 화면과 같은 배치 (#192).
 
-        형제로 두면 두 가지가 동시에 깨진다:
-          1) DOM 상한(`MAX_LINES`)이 컨테이너의 직계 자식을 세므로 한 발화가
-             둘로 세어진다 — 잘라낼 때 번역만 남고 원문이 떨어져 나간다.
-          2) "현재 줄" 판정이 `:last-child` 인데 원문이 마지막 자식이 되어
-             그 판정이 통째로 빗나간다.
+        래퍼로 묶었다가(#189) 되돌렸다. 래퍼의 근거였던 두 가지가 평평한 배치
+        에서도 성립하기 때문이다:
 
-        둘 다 **글자 대비 문제가 아니라서** 기존 테스트가 잡지 못한다.
+          - "현재 줄" 판정: 순서가 원문 → 번역이라 **번역이 늘 마지막 자식**이다.
+            `:last-child` 가 그대로 맞는다.
+          - DOM 상한: 요소 수 제한이 목적이지 발화 수 보존이 아니다. 경계에서
+            짝 없는 줄이 한 개 남을 수 있지만 잘려 나가는 쪽은 언제나 맨 위이고
+            화면은 하단 고정이다.
+
+        대신 구조가 한 겹 얇아지고 오퍼레이터 화면과 같은 모양이 된다.
         """
         fn = self._js(stage_html, "_ensureCurrentLine")
-        assert 'entry.className = "caption-entry"' in fn, fn
-        assert "entry.appendChild(div)" in fn, fn
-        assert "container.appendChild(entry)" in fn, fn
-        # 번역 라인이 컨테이너에 직접 붙으면 위의 두 결함이 되살아난다.
-        assert "container.appendChild(div)" not in fn, fn
+        assert "container.appendChild(div)" in fn, fn
+        assert "caption-entry" not in stage_html, "래퍼가 남아 있다"
+        assert ".caption-container .caption-line:last-child" in stage_html
 
-        assert (
-            ".caption-container .caption-entry:last-child .caption-line" in stage_html
-        ), "현재 줄 판정이 entry 를 거치지 않는다"
+    def test_the_source_sits_closer_to_its_own_translation(self, stage_html):
+        """원문과 번역이 **한 덩어리**로 묶여 보인다 (#192).
+
+        컨테이너 `gap` 하나로는 "원문↔번역"(가깝게)과 "발화↔발화"(멀게)를
+        구분할 수 없다 — gap 은 모든 형제에 똑같이 걸린다. 세로 margin 은
+        RL-012 로 금지돼 있으므로 **각 줄이 자기 아래 여백을 padding 으로**
+        들고 간다.
+
+        그 여백을 원문이 직접 들고 있는 것이 핵심이다: 원문이 꺼지면
+        `display: none` 과 함께 사라져 발화 간격이 저절로 원래대로 돌아온다.
+        `.caption-source + .caption-line` 쪽에 걸면 **원문을 한 번도 켜지 않는
+        룸의 화면까지** 이 기능 때문에 바뀐다.
+        """
+        container = _rule_block(stage_html, ".caption-container")
+        assert "gap: 0;" in container, container
+
+        source = _rule_block(stage_html, ".caption-source")
+        line = _rule_block(stage_html, ".caption-line")
+        pad = lambda block: int(  # noqa: E731
+            re.search(r"padding-bottom:\s*(\d+)px", block).group(1)
+        )
+        assert pad(source) < pad(line), (
+            f"원문 아래 여백({pad(source)}px)이 발화 간격({pad(line)}px)보다 "
+            "좁아야 한 덩어리로 묶인다"
+        )
+        # 마지막 줄까지 20px 를 들고 있으면 최신 자막이 바닥에서 들려 보인다.
+        assert "padding-bottom: 0;" in _rule_block(
+            stage_html, ".caption-container .caption-line:last-child"
+        )
 
     def test_the_source_node_is_filled_even_while_hidden(self, stage_html):
         """꺼져 있어도 노드는 채운다 — 켜는 순간 쌓인 줄까지 나타나야 한다.
@@ -2272,7 +2301,7 @@ class TestStageSourceText:
         fn = self._js(stage_html, "setCurrentSource")
         assert "show_source" not in fn, fn
         assert "data-source" not in fn, fn
-        assert 'querySelector(".caption-source")' in fn, fn
+        assert "caption-source" in fn, fn
         # 빈 원문으로 노드를 만들면 entry 의 gap 만 벌린다.
         assert "!text" in fn, fn
 
@@ -2294,12 +2323,12 @@ class TestStageSourceText:
         노드가 다 있고 대비도 그대로이기 때문이다.
         """
         fn = self._js(stage_html, "setCurrentSource")
-        assert "insertBefore(node, currentEntry.firstChild)" in fn, fn
-        assert "currentEntry.appendChild(node)" not in fn, fn
+        assert "container.insertBefore(node, currentLine)" in fn, fn
+        assert "container.appendChild(node)" not in fn, fn
 
-        entry = _rule_block(stage_html, ".caption-entry")
-        assert "column-reverse" not in entry, entry
-        assert "flex-direction: column;" in entry, entry
+        container = _rule_block(stage_html, ".caption-container")
+        assert "column-reverse" not in container, container
+        assert "flex-direction: column;" in container, container
 
     def test_the_default_is_off_and_off_removes_the_attribute(self, stage_html):
         """기본은 꺼짐이고, 끄면 속성을 **지운다** (테마/로고 톤과 같은 규칙).
@@ -2366,14 +2395,20 @@ class TestStageSourceText:
             "setCurrentSource(payload.source_text)"
         ), body
 
-    def test_resubscribe_clears_the_entry_pointer_too(self, stage_html):
-        """언어를 바꾸면 entry 포인터도 비운다 (RL-022 — 튜플 전체 초기화).
+    def test_the_source_hangs_off_the_current_line_not_a_separate_pointer(
+        self, stage_html
+    ):
+        """원문은 **현재 번역 라인**을 기준으로 찾는다 — 별도 포인터가 없다 (#192).
 
-        컨테이너는 비워지는데 포인터가 남으면, 다음 원문이 **DOM 에서 떨어져
-        나간 노드**에 쓰여 화면에 영원히 나타나지 않는다.
+        래퍼 시절에는 `currentEntry` 라는 두 번째 포인터가 있었고, 그래서
+        `resubscribe` 가 그것까지 비우지 않으면 다음 원문이 **DOM 에서 떨어져
+        나간 노드**에 쓰였다. 기준을 `currentLine` 하나로 줄이면 그 결함군이
+        통째로 사라진다 — 비울 포인터가 하나뿐이다.
         """
-        fn = self._js(stage_html, "resubscribe")
-        assert "currentEntry = null" in fn, fn
+        assert "currentEntry" not in stage_html, "두 번째 포인터가 남아 있다"
+        fn = self._js(stage_html, "setCurrentSource")
+        assert "if (!currentLine || !text) return;" in fn, fn
+        assert "currentLine.previousElementSibling" in fn, fn
 
 
 class TestStageCaptionScale:

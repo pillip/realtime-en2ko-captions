@@ -194,6 +194,66 @@ class TestStageSourceControls:
         assert handler is not None, "토글 핸들러가 없다"
         assert "!!e.target.checked" in handler.group(1), handler.group(1)
 
+    def test_the_panel_pushes_its_state_when_the_server_knows_nothing(self, html: str):
+        """세션 시작 전에 켜 둔 토글이 **무대에 전달된다** (#192).
+
+        이것이 없으면 "원문이 안 보인다" 가 된다. 세션 시작 **전에** 토글을
+        켜면 소켓이 없어 전송이 조용히 건너뛰어지고 localStorage 에만 남는다.
+        세션을 시작해도 서버는 그 값을 모르니 `auth_success` 에서 복원할 것이
+        없고 — **패널은 켜진 채인데 무대는 끝까지 꺼져 있다.** 오퍼레이터
+        입장에서는 체크박스가 켜져 있는데 화면에 원문이 없는, 설명할 수 없는
+        상태다.
+
+        서버가 아는 값이 있으면 그쪽이 우선이다(룸의 현재 상태가 권위). 모를
+        때만 패널 값을 밀어 올린다.
+        """
+        block = re.search(r"case 'auth_success':(.*?)\n      case ", html, re.S)
+        assert block is not None, "auth_success 분기를 찾지 못했다"
+        body = block.group(1)
+
+        assert "serverKnowsShowSource" in body, body
+        assert "serverKnowsSourceScale" in body, body
+        # 서버가 아는 경우에는 밀어 올리지 않는다 — 안 그러면 왕복이 된다.
+        assert "!serverKnowsShowSource && pendingStageSource.show" in body, body
+        assert "!serverKnowsSourceScale && pendingStageSource.scale" in body, body
+        assert "sendStageShowSource(!!stageSourceToggle.checked)" in body, body
+        # 한 번 흘려보낸 지시는 비운다 — 재인증마다 다시 쏘면 왕복이 된다.
+        assert "pendingStageSource.show = false;" in body, body
+        assert "pendingStageSource.scale = false;" in body, body
+
+    def test_only_a_real_gesture_is_pending_not_the_local_fallback(self, html: str):
+        """밀어 올리는 것은 **이번 페이지의 조작**뿐이다 (#192).
+
+        localStorage 폴백은 "지난번에 이랬다" 일 뿐이다. 그것을 로드만으로 서버에
+        쓰면 공유 룸에서 **다른 오퍼레이터의 설정을 덮어쓴다** — 기존 계약
+        (`test_a_room_without_control_state_sends_nothing_on_load`)이 막고 있는
+        바로 그 동작이다. 조작 핸들러 안에서만 pending 이 서야 둘이 구분된다.
+        """
+        assert "const pendingStageSource = { show: false, scale: false };" in html
+
+        toggle = re.search(
+            r"stageSourceToggle\.onchange = \(e\) => \{(.*?)\n    \};", html, re.S
+        )
+        assert toggle is not None
+        assert (
+            "if (!isTranslationSocketOpen()) pendingStageSource.show = true;"
+            in toggle.group(1)
+        ), toggle.group(1)
+
+        slider = re.search(
+            r"stageSourceSlider\.oninput = \(e\) => \{(.*?)\n    \};", html, re.S
+        )
+        assert slider is not None
+        assert (
+            "if (!isTranslationSocketOpen()) pendingStageSource.scale = true;"
+            in slider.group(1)
+        ), slider.group(1)
+
+        # 복원 경로(loadSettings)는 pending 을 세우지 않는다.
+        restore = re.search(r"const loadSettings = \(\) => \{(.*?)\n  \};", html, re.S)
+        assert restore is not None
+        assert "pendingStageSource" not in restore.group(1), restore.group(1)
+
     def test_the_stage_source_fields_are_restored_from_the_server_snapshot(
         self, html: str
     ):

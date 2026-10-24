@@ -1081,6 +1081,13 @@ try {
   const STAGE_SCALE_SEND_DELAY_MS = 150;
   let stageScaleSendTimer = null;
   let stageSourceSendTimer = null;
+  // 소켓이 닫혀 있는 동안 **사용자가 실제로 만진** 무대 원문 컨트롤 (#192).
+  //
+  // localStorage 폴백과 구분하기 위해 존재한다. 폴백은 "지난번에 이랬다" 일
+  // 뿐이고 그것을 로드 때 서버로 밀어 올리면 공유 룸에서 **다른 오퍼레이터의
+  // 설정을 덮어쓴다** (`test_a_room_without_control_state_sends_nothing_on_load`).
+  // 반면 이번 페이지에서 직접 누른 것은 아직 전달되지 못한 **지시**다.
+  const pendingStageSource = { show: false, scale: false };
 
   // localStorage에서 설정 불러오기
   const loadSettings = () => {
@@ -1569,6 +1576,9 @@ try {
       } catch (err) {
         console.warn('[Control] 원문 배율 로컬 저장 실패:', err);
       }
+      // 소켓이 닫혀 있으면 전송이 조용히 건너뛰어진다 — 그 사실을 기억해 두고
+      // 세션이 열릴 때 흘려보낸다 (#192).
+      if (!isTranslationSocketOpen()) pendingStageSource.scale = true;
       queueStageSourceScale();
     };
   }
@@ -1580,7 +1590,10 @@ try {
       } catch (err) {
         console.warn('[Control] 원문 표시 로컬 저장 실패:', err);
       }
+      if (!isTranslationSocketOpen()) pendingStageSource.show = true;
       sendStageShowSource(on);
+      // 전송이 건너뛰어졌어도 힌트는 현재 상태를 말해야 한다.
+      updateStageScaleHint();
     };
   }
 
@@ -2490,12 +2503,36 @@ try {
         if (data.control && typeof data.control.caption_scale === 'number') {
           showStageScale(data.control.caption_scale);
         }
-        if (data.control && typeof data.control.source_scale === 'number') {
-          showStageSourceScale(data.control.source_scale);
+        // #189/#192: 서버가 이 룸의 값을 들고 있으면 그것이 우선이다.
+        const serverKnowsSourceScale =
+          !!data.control && typeof data.control.source_scale === 'number';
+        const serverKnowsShowSource =
+          !!data.control && typeof data.control.show_source === 'boolean';
+        if (serverKnowsSourceScale) showStageSourceScale(data.control.source_scale);
+        if (serverKnowsShowSource) showStageShowSource(data.control.show_source);
+
+        // 세션 시작 **전에** 누른 조작을 이제서야 흘려보낸다 (#192).
+        //
+        // 이것이 없으면 "원문이 안 보인다" 가 된다: 소켓이 없는 동안의 토글은
+        // 전송이 조용히 건너뛰어지고 localStorage 에만 남는데, 서버는 그 값을
+        // 모르니 위에서 복원할 것도 없다 — **패널은 켜진 채, 무대는 끝까지
+        // 꺼짐.** 체크박스가 켜져 있는데 화면에 원문이 없는, 설명할 수 없는
+        // 상태가 된다.
+        //
+        // **localStorage 폴백은 밀어 올리지 않는다.** 그것은 "지난번에 이랬다"
+        // 일 뿐이고, 로드만으로 서버에 쓰면 공유 룸에서 다른 오퍼레이터의
+        // 설정을 덮어쓴다. 이번 페이지에서 **직접 누른 것**만 보낸다.
+        //
+        // 서버가 이미 아는 필드도 보내지 않는다 — 룸의 현재 상태가 권위이고,
+        // 보내면 서버 값이 곧바로 서버로 되돌아가는 왕복이 된다.
+        if (!serverKnowsShowSource && pendingStageSource.show && stageSourceToggle) {
+          sendStageShowSource(!!stageSourceToggle.checked);
         }
-        if (data.control && typeof data.control.show_source === 'boolean') {
-          showStageShowSource(data.control.show_source);
+        if (!serverKnowsSourceScale && pendingStageSource.scale) {
+          sendStageSourceScale();
         }
+        pendingStageSource.show = false;
+        pendingStageSource.scale = false;
         updateStageScaleHint();
         break;
 

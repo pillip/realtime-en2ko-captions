@@ -1043,9 +1043,11 @@ class TestStageSourceText:
         )
 
         tops = page.evaluate(
-            "() => { const e = document.querySelector('.caption-entry');"
-            "  return [e.querySelector('.caption-source').getBoundingClientRect().top,"
-            "          e.querySelector('.caption-line').getBoundingClientRect().top]; }"
+            "() => ["
+            "  document.querySelector('.caption-source')"
+            "    .getBoundingClientRect().top,"
+            "  document.querySelector('.caption-line')"
+            "    .getBoundingClientRect().top]"
         )
         source_top, line_top = tops
         assert source_top < line_top, (
@@ -1053,8 +1055,12 @@ class TestStageSourceText:
             f"top={line_top})"
         )
 
-    def test_one_utterance_is_one_entry(self, page, capture_server):
-        """발화 하나가 entry 하나 — 번역과 원문이 한 묶음으로 산다."""
+    def test_the_lines_interleave_as_flat_siblings(self, page, capture_server):
+        """원문·번역이 **평평한 형제**로 번갈아 쌓인다 (#192).
+
+        오퍼레이터 자막 화면과 같은 배치다. 순서가 어긋나면 어느 원문이 어느
+        번역의 것인지 화면에서 알 수 없게 된다.
+        """
         _open_stage(page, capture_server)
         for i in range(3):
             page.evaluate(
@@ -1062,19 +1068,27 @@ class TestStageSourceText:
                 "{text: '번역 ' + i, source_text: 'source ' + i}))",
                 i,
             )
+        # 원문 노드는 즉시 생기지만 번역은 rAF 타자기로 점진적으로 드러난다 —
+        # 마지막 줄이 **확정될 때까지** 기다리지 않으면 중간 접두사를 읽는다.
         page.wait_for_function(
-            "() => document.querySelectorAll('.caption-entry').length === 3",
-            timeout=3000,
+            "() => { const l = [...document.querySelectorAll('.caption-line')];"
+            "  return l.length === 3 && l[2].textContent === '번역 2'; }",
+            timeout=5000,
         )
         assert self._source_texts(page) == ["source 0", "source 1", "source 2"]
-        # 번역 라인이 컨테이너 직계로 새지 않는다.
-        assert (
-            page.evaluate(
-                "() => document.querySelectorAll("
-                "'#caption-container > .caption-line').length"
-            )
-            == 0
+
+        order = page.eval_on_selector_all(
+            "#caption-container > *",
+            "els => els.map(el => el.className + '|' + el.textContent)",
         )
+        assert order == [
+            "caption-source|source 0",
+            "caption-line|번역 0",
+            "caption-source|source 1",
+            "caption-line|번역 1",
+            "caption-source|source 2",
+            "caption-line|번역 2",
+        ], order
 
     def test_the_two_scales_move_independently(self, page, capture_server):
         """원문 배율이 번역 글자 크기를 건드리지 않는다 — 그 반대도 마찬가지."""
